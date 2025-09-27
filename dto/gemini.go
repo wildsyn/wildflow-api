@@ -1,13 +1,138 @@
-package gemini
+package dto
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"github.com/gin-gonic/gin"
+	"one-api/common"
+	"one-api/logger"
+	"one-api/types"
+	"strings"
+)
 
 type GeminiChatRequest struct {
 	Contents           []GeminiChatContent        `json:"contents"`
 	SafetySettings     []GeminiChatSafetySettings `json:"safetySettings,omitempty"`
 	GenerationConfig   GeminiChatGenerationConfig `json:"generationConfig,omitempty"`
-	Tools              []GeminiChatTool           `json:"tools,omitempty"`
+	Tools              json.RawMessage            `json:"tools,omitempty"`
+	ToolConfig         *ToolConfig                `json:"toolConfig,omitempty"`
 	SystemInstructions *GeminiChatContent         `json:"systemInstruction,omitempty"`
+	CachedContent      string                     `json:"cachedContent,omitempty"`
+}
+
+type ToolConfig struct {
+	FunctionCallingConfig *FunctionCallingConfig `json:"functionCallingConfig,omitempty"`
+	RetrievalConfig       *RetrievalConfig       `json:"retrievalConfig,omitempty"`
+}
+
+type FunctionCallingConfig struct {
+	Mode                 FunctionCallingConfigMode `json:"mode,omitempty"`
+	AllowedFunctionNames []string                  `json:"allowedFunctionNames,omitempty"`
+}
+type FunctionCallingConfigMode string
+
+type RetrievalConfig struct {
+	LatLng       *LatLng `json:"latLng,omitempty"`
+	LanguageCode string  `json:"languageCode,omitempty"`
+}
+
+type LatLng struct {
+	Latitude  *float64 `json:"latitude,omitempty"`
+	Longitude *float64 `json:"longitude,omitempty"`
+}
+
+func (r *GeminiChatRequest) GetTokenCountMeta() *types.TokenCountMeta {
+	var files []*types.FileMeta = make([]*types.FileMeta, 0)
+
+	var maxTokens int
+
+	if r.GenerationConfig.MaxOutputTokens > 0 {
+		maxTokens = int(r.GenerationConfig.MaxOutputTokens)
+	}
+
+	var inputTexts []string
+	for _, content := range r.Contents {
+		for _, part := range content.Parts {
+			if part.Text != "" {
+				inputTexts = append(inputTexts, part.Text)
+			}
+			if part.InlineData != nil && part.InlineData.Data != "" {
+				if strings.HasPrefix(part.InlineData.MimeType, "image/") {
+					files = append(files, &types.FileMeta{
+						FileType:   types.FileTypeImage,
+						OriginData: part.InlineData.Data,
+					})
+				} else if strings.HasPrefix(part.InlineData.MimeType, "audio/") {
+					files = append(files, &types.FileMeta{
+						FileType:   types.FileTypeAudio,
+						OriginData: part.InlineData.Data,
+					})
+				} else if strings.HasPrefix(part.InlineData.MimeType, "video/") {
+					files = append(files, &types.FileMeta{
+						FileType:   types.FileTypeVideo,
+						OriginData: part.InlineData.Data,
+					})
+				} else {
+					files = append(files, &types.FileMeta{
+						FileType:   types.FileTypeFile,
+						OriginData: part.InlineData.Data,
+					})
+				}
+			}
+		}
+	}
+
+	inputText := strings.Join(inputTexts, "\n")
+	return &types.TokenCountMeta{
+		CombineText: inputText,
+		Files:       files,
+		MaxTokens:   maxTokens,
+	}
+}
+
+func (r *GeminiChatRequest) IsStream(c *gin.Context) bool {
+	if c.Query("alt") == "sse" {
+		return true
+	}
+	return false
+}
+
+func (r *GeminiChatRequest) SetModelName(modelName string) {
+	// GeminiChatRequest does not have a model field, so this method does nothing.
+}
+
+func (r *GeminiChatRequest) GetTools() []GeminiChatTool {
+	var tools []GeminiChatTool
+	if strings.HasSuffix(string(r.Tools), "[") {
+		// is array
+		if err := common.Unmarshal(r.Tools, &tools); err != nil {
+			logger.LogError(nil, "error_unmarshalling_tools: "+err.Error())
+			return nil
+		}
+	} else if strings.HasPrefix(string(r.Tools), "{") {
+		// is object
+		singleTool := GeminiChatTool{}
+		if err := common.Unmarshal(r.Tools, &singleTool); err != nil {
+			logger.LogError(nil, "error_unmarshalling_single_tool: "+err.Error())
+			return nil
+		}
+		tools = []GeminiChatTool{singleTool}
+	}
+	return tools
+}
+
+func (r *GeminiChatRequest) SetTools(tools []GeminiChatTool) {
+	if len(tools) == 0 {
+		r.Tools = json.RawMessage("[]")
+		return
+	}
+
+	// Marshal the tools to JSON
+	data, err := common.Marshal(tools)
+	if err != nil {
+		logger.LogError(nil, "error_marshalling_tools: "+err.Error())
+		return
+	}
+	r.Tools = data
 }
 
 type GeminiThinkingConfig struct {
@@ -32,7 +157,7 @@ func (g *GeminiInlineData) UnmarshalJSON(data []byte) error {
 		MimeTypeSnake string `json:"mime_type"`
 	}
 
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := common.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -53,7 +178,7 @@ type FunctionCall struct {
 	Arguments    any    `json:"args"`
 }
 
-type FunctionResponse struct {
+type GeminiFunctionResponse struct {
 	Name     string                 `json:"name"`
 	Response map[string]interface{} `json:"response"`
 }
@@ -78,7 +203,7 @@ type GeminiPart struct {
 	Thought             bool                           `json:"thought,omitempty"`
 	InlineData          *GeminiInlineData              `json:"inlineData,omitempty"`
 	FunctionCall        *FunctionCall                  `json:"functionCall,omitempty"`
-	FunctionResponse    *FunctionResponse              `json:"functionResponse,omitempty"`
+	FunctionResponse    *GeminiFunctionResponse        `json:"functionResponse,omitempty"`
 	FileData            *GeminiFileData                `json:"fileData,omitempty"`
 	ExecutableCode      *GeminiPartExecutableCode      `json:"executableCode,omitempty"`
 	CodeExecutionResult *GeminiPartCodeExecutionResult `json:"codeExecutionResult,omitempty"`
@@ -93,7 +218,7 @@ func (p *GeminiPart) UnmarshalJSON(data []byte) error {
 		InlineDataSnake *GeminiInlineData `json:"inline_data,omitempty"` // snake_case variant
 	}
 
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := common.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -137,11 +262,19 @@ type GeminiChatGenerationConfig struct {
 	StopSequences      []string              `json:"stopSequences,omitempty"`
 	ResponseMimeType   string                `json:"responseMimeType,omitempty"`
 	ResponseSchema     any                   `json:"responseSchema,omitempty"`
+	ResponseJsonSchema json.RawMessage       `json:"responseJsonSchema,omitempty"`
+	PresencePenalty    *float32              `json:"presencePenalty,omitempty"`
+	FrequencyPenalty   *float32              `json:"frequencyPenalty,omitempty"`
+	ResponseLogprobs   bool                  `json:"responseLogprobs,omitempty"`
+	Logprobs           *int32                `json:"logprobs,omitempty"`
+	MediaResolution    MediaResolution       `json:"mediaResolution,omitempty"`
 	Seed               int64                 `json:"seed,omitempty"`
 	ResponseModalities []string              `json:"responseModalities,omitempty"`
 	ThinkingConfig     *GeminiThinkingConfig `json:"thinkingConfig,omitempty"`
 	SpeechConfig       json.RawMessage       `json:"speechConfig,omitempty"` // RawMessage to allow flexible speech config
 }
+
+type MediaResolution string
 
 type GeminiChatCandidate struct {
 	Content       GeminiChatContent        `json:"content"`
@@ -207,14 +340,74 @@ type GeminiImagePrediction struct {
 
 // Embedding related structs
 type GeminiEmbeddingRequest struct {
+	Model                string            `json:"model,omitempty"`
 	Content              GeminiChatContent `json:"content"`
 	TaskType             string            `json:"taskType,omitempty"`
 	Title                string            `json:"title,omitempty"`
 	OutputDimensionality int               `json:"outputDimensionality,omitempty"`
 }
 
+func (r *GeminiEmbeddingRequest) IsStream(c *gin.Context) bool {
+	// Gemini embedding requests are not streamed
+	return false
+}
+
+func (r *GeminiEmbeddingRequest) GetTokenCountMeta() *types.TokenCountMeta {
+	var inputTexts []string
+	for _, part := range r.Content.Parts {
+		if part.Text != "" {
+			inputTexts = append(inputTexts, part.Text)
+		}
+	}
+	inputText := strings.Join(inputTexts, "\n")
+	return &types.TokenCountMeta{
+		CombineText: inputText,
+	}
+}
+
+func (r *GeminiEmbeddingRequest) SetModelName(modelName string) {
+	if modelName != "" {
+		r.Model = modelName
+	}
+}
+
+type GeminiBatchEmbeddingRequest struct {
+	Requests []*GeminiEmbeddingRequest `json:"requests"`
+}
+
+func (r *GeminiBatchEmbeddingRequest) IsStream(c *gin.Context) bool {
+	// Gemini batch embedding requests are not streamed
+	return false
+}
+
+func (r *GeminiBatchEmbeddingRequest) GetTokenCountMeta() *types.TokenCountMeta {
+	var inputTexts []string
+	for _, request := range r.Requests {
+		meta := request.GetTokenCountMeta()
+		if meta != nil && meta.CombineText != "" {
+			inputTexts = append(inputTexts, meta.CombineText)
+		}
+	}
+	inputText := strings.Join(inputTexts, "\n")
+	return &types.TokenCountMeta{
+		CombineText: inputText,
+	}
+}
+
+func (r *GeminiBatchEmbeddingRequest) SetModelName(modelName string) {
+	if modelName != "" {
+		for _, req := range r.Requests {
+			req.SetModelName(modelName)
+		}
+	}
+}
+
 type GeminiEmbeddingResponse struct {
 	Embedding ContentEmbedding `json:"embedding"`
+}
+
+type GeminiBatchEmbeddingResponse struct {
+	Embeddings []*ContentEmbedding `json:"embeddings"`
 }
 
 type ContentEmbedding struct {
