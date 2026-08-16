@@ -39,10 +39,11 @@ import (
 	_ "net/http/pprof"
 )
 
-//go:embed web/dist
+// Frontend is maintained and deployed separately in wildflow-web.
+// Set SERVE_EMBEDDED_FRONTEND=true only for an upstream-compatible single-binary
+// experiment and provide a local web/dist overlay; normal builds are API-only.
 var buildFS embed.FS
 
-//go:embed web/dist/index.html
 var indexPage []byte
 
 func main() {
