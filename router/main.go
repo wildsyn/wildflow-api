@@ -12,18 +12,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func SetRouter(router *gin.Engine, assets WebAssets) {
+func SetRouter(router *gin.Engine, _ WebAssets) {
 	SetApiRouter(router)
 	SetDashboardRouter(router)
 	SetRelayRouter(router)
 	SetVideoRouter(router)
 	frontendBaseUrl := os.Getenv("FRONTEND_BASE_URL")
-	serveEmbeddedFrontend := os.Getenv("SERVE_EMBEDDED_FRONTEND") == "true"
 	if common.IsMasterNode && frontendBaseUrl != "" {
 		frontendBaseUrl = ""
 		common.SysLog("FRONTEND_BASE_URL is ignored on master node")
 	}
-	if frontendBaseUrl == "" && !serveEmbeddedFrontend {
+	if frontendBaseUrl == "" {
 		router.NoRoute(func(c *gin.Context) {
 			c.Set(middleware.RouteTagKey, "web")
 			c.JSON(http.StatusNotFound, gin.H{
@@ -41,5 +40,4 @@ func SetRouter(router *gin.Engine, assets WebAssets) {
 		})
 		return
 	}
-	SetWebRouter(router, assets)
 }

@@ -39,9 +39,9 @@ import (
 	_ "net/http/pprof"
 )
 
-// Frontend is maintained and deployed separately in wildflow-web.
-// Set SERVE_EMBEDDED_FRONTEND=true only for an upstream-compatible single-binary
-// experiment and provide a local web/dist overlay; normal builds are API-only.
+// Frontend is maintained and deployed separately in wildflow-web. These empty
+// values retain the upstream router function signature while API-only mode is
+// the WildFlow default.
 var buildFS embed.FS
 
 var indexPage []byte

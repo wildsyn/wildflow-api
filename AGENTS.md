@@ -1,4 +1,13 @@
-# AGENTS.md — Project Conventions for new-api
+# AGENTS.md — WildFlow API and upstream New API conventions
+
+This repository is the public AGPL control-plane backend for WildFlow 1.0. It uses a filtered New API history and must
+preserve all New API and QuantumNous attribution, `LICENSE`, `NOTICE`, `UPSTREAM.md`, and the original module/import
+identity. The `web/` source belongs in `wildflow-web`; GPU workers, leases, deployment credentials, and Artifact storage
+belong in the private `wildflow-inference` repository.
+
+All changes go through pull requests. Authentication, billing, payment, idempotency, public routes, database migrations,
+and the internal inference contract require security and contract tests. A merged PR does not authorize deployment,
+database migration, DNS changes, or public release.
 
 DO NOT send optional commentary
 

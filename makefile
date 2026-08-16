@@ -1,6 +1,4 @@
-WEB_DIR = ./web
 API_DIR = .
-DEV_WEB_PORT ?= 5173
 DEV_COMPOSE_FILE = docker-compose.dev.yml
 DEV_POSTGRES_SERVICE = postgres
 DEV_API_SERVICE = new-api
@@ -8,16 +6,12 @@ DEV_POSTGRES_DB = new-api
 DEV_POSTGRES_USER = root
 DEV_SQLITE_PATH ?= one-api.db
 
-.PHONY: all build-web build-all-web start-api dev dev-api dev-api-rebuild dev-web reset-setup test
+.PHONY: all build start-api dev dev-api dev-api-rebuild reset-setup test
 
-all: build-all-web start-api
+all: build
 
-build-web:
-	@echo "Building web frontend..."
-	@cd $(WEB_DIR) && bun install --frozen-lockfile
-	@cd $(WEB_DIR) && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$$(cat ../VERSION) bun run build
-
-build-all-web: build-web
+build:
+	@GOWORK=off go build ./...
 
 start-api:
 	@echo "Starting api dev server..."
@@ -31,15 +25,8 @@ dev-api-rebuild:
 	@echo "Rebuilding and starting api service (docker)..."
 	@docker compose -f $(DEV_COMPOSE_FILE) up -d --build $(DEV_API_SERVICE)
 
-dev-web:
-	@echo "Starting web frontend dev server..."
-	@echo "Web frontend: http://localhost:$(DEV_WEB_PORT)"
-	@cd $(WEB_DIR) && bun install
-	@cd $(WEB_DIR) && bun run dev -- --host 0.0.0.0 --port $(DEV_WEB_PORT)
+dev: dev-api
 
-dev: dev-api dev-web
-
-# The main package embeds the ignored web/dist output and is covered after build-web.
 test:
 	@echo "Testing root Go module..."
 	@root_module=$$(GOWORK=off go list -m); \

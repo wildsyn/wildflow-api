@@ -14,7 +14,6 @@ import (
 func TestSetRouterDefaultsToAPIOnly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("FRONTEND_BASE_URL", "")
-	t.Setenv("SERVE_EMBEDDED_FRONTEND", "")
 
 	engine := gin.New()
 	require.NotPanics(t, func() {
