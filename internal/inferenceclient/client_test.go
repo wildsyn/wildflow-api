@@ -13,14 +13,14 @@ import (
 func validRequest() JobCreateRequest {
 	return JobCreateRequest{
 		OperationID:          "op-1",
-		RequestDigest:       "digest-1",
-		RequestID:           "request-1",
-		TenantRef:           "tenant-a",
-		ProductModelRef:     "tts/voxcpm2",
-		ModelVersionRef:     "voxcpm2@2026-08",
-		InputArtifactRefs:   []string{"input://script-1"},
-		Parameters:          map[string]any{"speed": 1.0},
-		DeadlineAt:          time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC),
+		RequestDigest:        "digest-1",
+		RequestID:            "request-1",
+		TenantRef:            "tenant-a",
+		ProductModelRef:      "tts/voxcpm2",
+		ModelVersionRef:      "voxcpm2@2026-08",
+		InputArtifactRefs:    []string{"input://script-1"},
+		Parameters:           map[string]any{"speed": 1.0},
+		DeadlineAt:           time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC),
 		CallbackCapabilities: []string{},
 	}
 }
@@ -123,6 +123,36 @@ func TestSubmitJobPreservesRetryAfterForRetryableStatus(t *testing.T) {
 	}
 	if retryable.StatusCode != http.StatusServiceUnavailable || retryable.RetryAfter != "17" {
 		t.Fatalf("unexpected retryable error: %#v", retryable)
+	}
+}
+
+func TestSubmitJobDoesNotForwardTokenAcrossRedirect(t *testing.T) {
+	t.Parallel()
+
+	receiverRequests := 0
+	receiver := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		receiverRequests++
+	}))
+	defer receiver.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", receiver.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL, Token: "sensitive-token", Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = client.SubmitJob(context.Background(), validRequest())
+	var apiError *APIError
+	if !errors.As(err, &apiError) || apiError.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("expected redirect APIError, got %T: %v", err, err)
+	}
+	if receiverRequests != 0 {
+		t.Fatalf("redirect receiver got %d requests", receiverRequests)
 	}
 }
 
