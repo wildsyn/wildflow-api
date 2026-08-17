@@ -42,7 +42,7 @@ func setupWildFlowBillingReconcilerTest(t *testing.T) *gorm.DB {
 
 func createReconcilerOperation(t *testing.T, db *gorm.DB, suffix string, userID int, tokenID int, jobID string) *model.WildFlowOperation {
 	t.Helper()
-	user := &model.User{Id: userID, Username: "reconciler-" + suffix, Quota: 100_000, Group: "default"}
+	user := &model.User{Id: userID, Username: "reconciler-" + suffix, Quota: 100_000, Group: "default", AffCode: "aff-" + suffix}
 	require.NoError(t, db.Create(user).Error)
 	token := &model.Token{Id: tokenID, UserId: userID, Key: "token-" + suffix, RemainQuota: 100_000}
 	require.NoError(t, db.Create(token).Error)

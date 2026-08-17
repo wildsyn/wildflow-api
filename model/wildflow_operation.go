@@ -95,3 +95,20 @@ func UpdateWildFlowOperationExecution(
 			"updated_time":    time.Now().Unix(),
 		}).Error
 }
+
+func ListWildFlowOperationsForBillingReconciliation(limit int) ([]*WildFlowOperation, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var operations []*WildFlowOperation
+	err := DB.Where(
+		"billing_state = ? AND job_id <> ? AND state <> ?",
+		WildFlowBillingStateReserved,
+		"",
+		"recovery_required",
+	).
+		Order("updated_time asc, id asc").
+		Limit(limit).
+		Find(&operations).Error
+	return operations, err
+}
