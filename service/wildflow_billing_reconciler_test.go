@@ -123,6 +123,15 @@ func TestReconcileWildFlowBillingFinalizesJobsWithoutUserPolling(t *testing.T) {
 	succeeded := createReconcilerOperation(t, db, "succeeded", 101, 201, "job-succeeded")
 	failed := createReconcilerOperation(t, db, "failed", 102, 202, "job-failed")
 	missingArtifact := createReconcilerOperation(t, db, "missing-artifact", 103, 203, "job-missing-artifact")
+	billingConflict := createReconcilerOperation(t, db, "billing-conflict", 105, 205, "job-billing-conflict")
+	require.NoError(t, db.Model(&model.WildFlowOperation{}).
+		Where("operation_id = ?", billingConflict.OperationID).
+		Updates(map[string]any{
+			"billing_state":  model.WildFlowBillingStateRefunding,
+			"billing_source": model.WildFlowBillingSourceSubscription,
+		}).Error)
+	billingConflict.BillingState = model.WildFlowBillingStateRefunding
+	billingConflict.BillingSource = model.WildFlowBillingSourceSubscription
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -133,6 +142,8 @@ func TestReconcileWildFlowBillingFinalizesJobsWithoutUserPolling(t *testing.T) {
 			_, _ = w.Write([]byte(`{"job":{"id":"job-failed","state":"failed","last_error":"provider failed"}}`))
 		case "/internal/v1/jobs/job-missing-artifact":
 			_, _ = w.Write([]byte(`{"job":{"id":"job-missing-artifact","state":"succeeded"}}`))
+		case "/internal/v1/jobs/job-billing-conflict":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-billing-conflict","state":"succeeded","artifacts":[{"id":"artifact-conflict","job_id":"job-billing-conflict","media_type":"image/png","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -148,15 +159,18 @@ func TestReconcileWildFlowBillingFinalizesJobsWithoutUserPolling(t *testing.T) {
 
 	processed, err := ReconcileWildFlowBillingOnce(context.Background(), client, 100)
 	require.NoError(t, err)
-	assert.Equal(t, 3, processed)
+	assert.Equal(t, 4, processed)
 
 	require.NoError(t, db.Where("operation_id = ?", succeeded.OperationID).First(succeeded).Error)
 	require.NoError(t, db.Where("operation_id = ?", failed.OperationID).First(failed).Error)
 	require.NoError(t, db.Where("operation_id = ?", missingArtifact.OperationID).First(missingArtifact).Error)
+	require.NoError(t, db.Where("operation_id = ?", billingConflict.OperationID).First(billingConflict).Error)
 	assert.Equal(t, model.WildFlowBillingStateSettled, succeeded.BillingState)
 	assert.Equal(t, model.WildFlowBillingStateRefunded, failed.BillingState)
 	assert.Equal(t, "recovery_required", missingArtifact.State)
 	assert.Equal(t, model.WildFlowBillingStateReserved, missingArtifact.BillingState)
+	assert.Equal(t, "recovery_required", billingConflict.State)
+	assert.Equal(t, model.WildFlowBillingStateRefunding, billingConflict.BillingState)
 
 	var failedUser model.User
 	require.NoError(t, db.First(&failedUser, 102).Error)

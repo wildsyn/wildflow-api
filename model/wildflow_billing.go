@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	WildFlowBillingStatePending  = "pending"
-	WildFlowBillingStateReserved = "reserved"
-	WildFlowBillingStateSettled  = "settled"
-	WildFlowBillingStateRefunded = "refunded"
+	WildFlowBillingStatePending   = "pending"
+	WildFlowBillingStateReserved  = "reserved"
+	WildFlowBillingStateRefunding = "refunding"
+	WildFlowBillingStateSettled   = "settled"
+	WildFlowBillingStateRefunded  = "refunded"
 
 	WildFlowBillingSourceWallet       = "wallet"
 	WildFlowBillingSourceSubscription = "subscription"
@@ -278,10 +279,18 @@ func RefundWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 	if operation == nil || operation.BillingState == WildFlowBillingStateRefunded {
 		return operation, false, nil
 	}
-	if operation.BillingState != WildFlowBillingStateReserved || (operation.State != "failed" && operation.State != "cancelled") {
+	if (operation.BillingState != WildFlowBillingStateReserved && operation.BillingState != WildFlowBillingStateRefunding) ||
+		(operation.State != "failed" && operation.State != "cancelled") {
 		return operation, false, nil
 	}
 	if operation.BillingSource == WildFlowBillingSourceSubscription {
+		operation, err = claimWildFlowSubscriptionRefund(operationID)
+		if err != nil {
+			return nil, false, err
+		}
+		if operation == nil || operation.BillingState == WildFlowBillingStateRefunded {
+			return operation, false, nil
+		}
 		if err := RefundSubscriptionPreConsume(operation.OperationID); err != nil {
 			return operation, false, err
 		}
@@ -299,7 +308,11 @@ func RefundWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 			result = locked
 			return nil
 		}
-		if locked.BillingState != WildFlowBillingStateReserved || (locked.State != "failed" && locked.State != "cancelled") {
+		expectedBillingState := WildFlowBillingStateReserved
+		if locked.BillingSource == WildFlowBillingSourceSubscription {
+			expectedBillingState = WildFlowBillingStateRefunding
+		}
+		if locked.BillingState != expectedBillingState || (locked.State != "failed" && locked.State != "cancelled") {
 			result = locked
 			return nil
 		}
@@ -354,6 +367,46 @@ func RefundWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 		syncWildFlowBillingQuotaCache(result.UserID, tokenKey, userDelta, result.BillingTokenQuota)
 	}
 	return result, changed, nil
+}
+
+func claimWildFlowSubscriptionRefund(operationID string) (*WildFlowOperation, error) {
+	var result *WildFlowOperation
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		operation, err := loadWildFlowOperationForBilling(tx, operationID)
+		if err != nil {
+			return err
+		}
+		if operation.BillingState == WildFlowBillingStateRefunded {
+			result = operation
+			return nil
+		}
+		if operation.BillingSource != WildFlowBillingSourceSubscription ||
+			(operation.State != "failed" && operation.State != "cancelled") {
+			result = operation
+			return nil
+		}
+		switch operation.BillingState {
+		case WildFlowBillingStateRefunding:
+			result = operation
+			return nil
+		case WildFlowBillingStateReserved:
+			now := time.Now().Unix()
+			if err := tx.Model(&WildFlowOperation{}).Where("id = ?", operation.ID).Updates(map[string]any{
+				"billing_state": WildFlowBillingStateRefunding,
+				"updated_time":  now,
+			}).Error; err != nil {
+				return err
+			}
+			operation.BillingState = WildFlowBillingStateRefunding
+			operation.UpdatedTime = now
+			result = operation
+			return nil
+		default:
+			result = operation
+			return nil
+		}
+	})
+	return result, err
 }
 
 func GetWildFlowOperationByID(operationID string) (*WildFlowOperation, error) {

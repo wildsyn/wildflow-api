@@ -99,6 +99,17 @@ func ReconcileWildFlowBillingOnce(ctx context.Context, client *inferenceclient.C
 		operation.State = state
 		operation.LastErrorCode = errorCode
 		if finalizeErr := FinalizeWildFlowOperationBilling(ctx, operation, len(job.Artifacts)); finalizeErr != nil {
+			if errors.Is(finalizeErr, model.ErrWildFlowBillingStateConflict) {
+				if recoveryErr := model.UpdateWildFlowOperationExecution(
+					operation.OperationID,
+					operation.JobID,
+					"recovery_required",
+					"billing_state_conflict",
+				); recoveryErr != nil {
+					reconciliationErrors = append(reconciliationErrors, fmt.Errorf("operation %s recovery persistence: %w", operation.OperationID, recoveryErr))
+				}
+				continue
+			}
 			reconciliationErrors = append(reconciliationErrors, fmt.Errorf("operation %s billing: %w", operation.OperationID, finalizeErr))
 		}
 	}

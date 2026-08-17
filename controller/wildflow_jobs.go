@@ -440,6 +440,21 @@ func finalizeWildFlowOperationBilling(c *gin.Context, operation *model.WildFlowO
 		wildFlowJobError(c, http.StatusServiceUnavailable, "recovery_required", "job result requires recovery")
 		return false
 	}
+	if errors.Is(err, model.ErrWildFlowBillingStateConflict) {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"billing_state_conflict",
+		); updateErr != nil {
+			wildFlowInternalError(c, updateErr)
+			return false
+		}
+		operation.State = "recovery_required"
+		operation.LastErrorCode = "billing_state_conflict"
+		wildFlowJobError(c, http.StatusServiceUnavailable, "recovery_required", "job billing requires recovery")
+		return false
+	}
 	wildFlowInternalError(c, err)
 	return false
 }

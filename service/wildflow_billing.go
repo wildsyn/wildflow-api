@@ -49,14 +49,14 @@ func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuot
 			return model.WildFlowBillingQuote{}, ErrWildFlowInvalidParameters
 		}
 		billableUnits = int64(utf8.RuneCountInString(content))
-		unit = "10k_characters"
-		amountCNY = decimal.RequireFromString("0.8").
+		unit = offering.Pricing.Unit
+		amountCNY = decimal.NewFromFloat(offering.Pricing.Amount).
 			Mul(decimal.NewFromInt(billableUnits)).
 			Div(decimal.NewFromInt(10_000))
 	case WildFlowModelFlux2:
 		billableUnits = 1
-		unit = "image"
-		amountCNY = decimal.RequireFromString("0.05")
+		unit = offering.Pricing.Unit
+		amountCNY = decimal.NewFromFloat(offering.Pricing.Amount)
 	default:
 		return model.WildFlowBillingQuote{}, ErrWildFlowUnsupportedModel
 	}
@@ -88,12 +88,12 @@ func ReserveWildFlowOperationBilling(operation *model.WildFlowOperation, request
 	if operation == nil {
 		return nil, fmt.Errorf("nil WildFlow operation")
 	}
+	if operation.BillingState == model.WildFlowBillingStateReserved || operation.BillingState == model.WildFlowBillingStateSettled {
+		return operation, nil
+	}
 	quote, err := QuoteWildFlowBilling(request)
 	if err != nil {
 		return nil, err
-	}
-	if operation.BillingState == model.WildFlowBillingStateReserved || operation.BillingState == model.WildFlowBillingStateSettled {
-		return model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
 	}
 
 	userSetting, err := model.GetUserSetting(operation.UserID, true)
@@ -183,6 +183,9 @@ func FinalizeWildFlowOperationBilling(ctx context.Context, operation *model.Wild
 			return err
 		}
 		if settled != nil {
+			if settled.BillingState != model.WildFlowBillingStateSettled {
+				return model.ErrWildFlowBillingStateConflict
+			}
 			if err := model.RecordWildFlowBillingLog(settled, model.LogTypeConsume, "WildFlow job settled"); err != nil {
 				return err
 			}
@@ -195,6 +198,9 @@ func FinalizeWildFlowOperationBilling(ctx context.Context, operation *model.Wild
 			return err
 		}
 		if refunded != nil {
+			if refunded.BillingState != model.WildFlowBillingStateRefunded {
+				return model.ErrWildFlowBillingStateConflict
+			}
 			if err := model.RecordWildFlowBillingLog(refunded, model.LogTypeRefund, "WildFlow job refunded"); err != nil {
 				return err
 			}

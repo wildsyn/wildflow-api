@@ -165,20 +165,42 @@ func TestReserveWildFlowOperationBillingUsesSubscriptionPreferenceDurably(t *tes
 	assert.Equal(t, 100_000-3_425, token.RemainQuota)
 
 	require.NoError(t, model.UpdateWildFlowOperationExecution(operation.OperationID, "job-subscription", "failed", "execution_failed"))
-	// Simulate a process stopping after it durably claimed the subscription
-	// refund but before the idempotent refund completed.
-	require.NoError(t, db.Model(&model.WildFlowOperation{}).
-		Where("operation_id = ?", operation.OperationID).
-		Update("billing_state", model.WildFlowBillingStateRefunding).Error)
 	second.State = "failed"
 	second.JobID = "job-subscription"
-	second.BillingState = model.WildFlowBillingStateRefunding
 	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), second, 0))
 	require.NoError(t, db.First(subscription, subscription.Id).Error)
 	require.NoError(t, db.First(token, token.Id).Error)
 	assert.Zero(t, subscription.AmountUsed)
 	assert.Equal(t, 100_000, token.RemainQuota)
 	assert.Equal(t, model.WildFlowBillingStateRefunded, second.BillingState)
+
+	recoveryOperation := &model.WildFlowOperation{
+		OperationID:          "op-subscription-refund-recovery",
+		UserID:               user.Id,
+		TokenID:              token.Id,
+		IdempotencyKeyDigest: "key-subscription-refund-recovery",
+		RequestDigest:        "request-subscription-refund-recovery",
+		RequestID:            "request-id-subscription-refund-recovery",
+		ProductModelRef:      WildFlowModelFlux2,
+		ModelVersionRef:      "black-forest-labs/FLUX.2-klein-4B",
+		State:                "submitting",
+	}
+	require.NoError(t, db.Create(recoveryOperation).Error)
+	recoveryOperation, err = ReserveWildFlowOperationBilling(recoveryOperation, request)
+	require.NoError(t, err)
+	require.NoError(t, model.UpdateWildFlowOperationExecution(recoveryOperation.OperationID, "job-subscription-recovery", "failed", "execution_failed"))
+	// Simulate a process stopping after it durably claimed the subscription
+	// refund but before the idempotent refund completed.
+	require.NoError(t, db.Model(&model.WildFlowOperation{}).
+		Where("operation_id = ?", recoveryOperation.OperationID).
+		Update("billing_state", model.WildFlowBillingStateRefunding).Error)
+	recoveryOperation.State = "failed"
+	recoveryOperation.JobID = "job-subscription-recovery"
+	recoveryOperation.BillingState = model.WildFlowBillingStateRefunding
+	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), recoveryOperation, 0))
+	require.NoError(t, db.First(subscription, subscription.Id).Error)
+	assert.Zero(t, subscription.AmountUsed)
+	assert.Equal(t, model.WildFlowBillingStateRefunded, recoveryOperation.BillingState)
 }
 
 func TestQuoteWildFlowBillingRejectsInvalidRuntimeConversion(t *testing.T) {
