@@ -18,7 +18,7 @@ const (
 
 type oidcEnrollmentEndpoints struct {
 	authorization *url.URL
-	endSession    *url.URL
+	invalidation  *url.URL
 	enrollment    *url.URL
 	callbackURL   string
 	returnURL     string
@@ -56,6 +56,10 @@ func validatedOIDCEnrollmentEndpoints() (*oidcEnrollmentEndpoints, error) {
 	if !sameOIDCOrigin(authorization, endSession) || !sameOIDCOrigin(authorization, enrollment) {
 		return nil, errors.New("OIDC enrollment endpoints must share one origin")
 	}
+	invalidation := *authorization
+	invalidation.Path = "/if/flow/default-invalidation-flow/"
+	invalidation.RawPath = ""
+	invalidation.RawQuery = ""
 	application, err := parseOIDCHTTPSURL(strings.TrimRight(system_setting.ServerAddress, "/"))
 	if err != nil || (application.Path != "" && application.Path != "/") || application.RawQuery != "" {
 		return nil, errors.New("invalid application server address")
@@ -64,7 +68,7 @@ func validatedOIDCEnrollmentEndpoints() (*oidcEnrollmentEndpoints, error) {
 	base := strings.TrimRight(application.String(), "/")
 	return &oidcEnrollmentEndpoints{
 		authorization: authorization,
-		endSession:    endSession,
+		invalidation:  &invalidation,
 		enrollment:    enrollment,
 		callbackURL:   base + "/oauth/oidc",
 		returnURL:     base + "/api/oauth/oidc/enroll/start",
@@ -106,10 +110,9 @@ func BeginOIDCEnrollment(c *gin.Context) {
 		true,
 		true,
 	)
-	logoutURL := *endpoints.endSession
+	logoutURL := *endpoints.invalidation
 	query := logoutURL.Query()
-	query.Set("client_id", system_setting.GetOIDCSettings().ClientId)
-	query.Set("post_logout_redirect_uri", endpoints.returnURL)
+	query.Set("next", endpoints.returnURL)
 	logoutURL.RawQuery = query.Encode()
 	c.Redirect(http.StatusFound, logoutURL.String())
 }
