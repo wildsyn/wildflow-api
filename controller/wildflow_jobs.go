@@ -75,8 +75,17 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		}
 		operation.State = job.State
 		operation.LastErrorCode = errorCode
+		if finalizeErr := service.FinalizeWildFlowOperationBilling(c.Request.Context(), operation, len(job.Artifacts)); finalizeErr != nil {
+			wildFlowInternalError(c, finalizeErr)
+			return
+		}
 		writeWildFlowOperationHeaders(c, operation)
 		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
+		return
+	}
+	operation, err = service.ReserveWildFlowOperationBilling(operation, request)
+	if err != nil {
+		writeWildFlowBillingError(c, err)
 		return
 	}
 
@@ -122,6 +131,10 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 	operation.JobID = job.ID
 	operation.State = job.State
 	operation.LastErrorCode = ""
+	if err := service.FinalizeWildFlowOperationBilling(c.Request.Context(), operation, len(job.Artifacts)); err != nil {
+		wildFlowInternalError(c, err)
+		return
+	}
 	status := http.StatusOK
 	if created {
 		status = http.StatusAccepted
@@ -186,6 +199,10 @@ func GetWildFlowJob(c *gin.Context) {
 	}
 	operation.State = job.State
 	operation.LastErrorCode = errorCode
+	if err := service.FinalizeWildFlowOperationBilling(c.Request.Context(), operation, len(job.Artifacts)); err != nil {
+		wildFlowInternalError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
 }
 
@@ -215,6 +232,10 @@ func CancelWildFlowJob(c *gin.Context) {
 	}
 	operation.State = job.State
 	operation.LastErrorCode = errorCode
+	if err := service.FinalizeWildFlowOperationBilling(c.Request.Context(), operation, len(job.Artifacts)); err != nil {
+		wildFlowInternalError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, operation)
 }
 
@@ -414,6 +435,18 @@ func writeWildFlowOperationError(c *gin.Context, err error) {
 	default:
 		wildFlowInternalError(c, err)
 	}
+}
+
+func writeWildFlowBillingError(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrWildFlowBillingInsufficientQuota) {
+		wildFlowJobError(c, http.StatusForbidden, "insufficient_quota", "insufficient quota for this job")
+		return
+	}
+	if errors.Is(err, model.ErrWildFlowBillingStateConflict) {
+		wildFlowJobError(c, http.StatusConflict, "billing_state_conflict", "billing state conflicts with this request")
+		return
+	}
+	wildFlowInternalError(c, err)
 }
 
 func writeWildFlowInferenceError(c *gin.Context, err error) {

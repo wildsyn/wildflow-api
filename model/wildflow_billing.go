@@ -371,3 +371,62 @@ func syncWildFlowBillingQuotaCache(userID int, tokenKey string, userDelta int, t
 		}
 	}
 }
+
+func RecordWildFlowBillingLog(operation *WildFlowOperation, logType int, content string) error {
+	if operation == nil {
+		return fmt.Errorf("nil WildFlow operation")
+	}
+	if logType == LogTypeConsume && !common.LogConsumeEnabled {
+		return nil
+	}
+	if LOG_DB == nil {
+		return fmt.Errorf("log database is not initialized")
+	}
+	var existing int64
+	if err := LOG_DB.Model(&Log{}).
+		Where("request_id = ? AND type = ?", operation.OperationID, logType).
+		Count(&existing).Error; err != nil {
+		return err
+	}
+	if existing > 0 {
+		return nil
+	}
+	username, _ := GetUsernameById(operation.UserID, true)
+	tokenName := ""
+	if operation.TokenID > 0 {
+		if token, err := GetTokenById(operation.TokenID); err == nil {
+			tokenName = token.Name
+		}
+	}
+	group := ""
+	var user User
+	if err := DB.Select("group").Where("id = ?", operation.UserID).First(&user).Error; err == nil {
+		group = user.Group
+	}
+	other := map[string]any{
+		"operation_id":      operation.OperationID,
+		"job_id":            operation.JobID,
+		"billing_source":    operation.BillingSource,
+		"currency":          operation.BillingCurrency,
+		"amount_micros":     operation.BillingAmountMicros,
+		"unit":              operation.BillingUnit,
+		"billable_units":    operation.BillingBillableUnits,
+		"quota_per_unit":    operation.BillingQuotaPerUnit,
+		"usd_exchange_rate": operation.BillingUSDExchangeRate,
+		"price_version":     operation.BillingPriceVersion,
+	}
+	return createLog(&Log{
+		UserId:    operation.UserID,
+		Username:  username,
+		CreatedAt: common.GetTimestamp(),
+		Type:      logType,
+		Content:   content,
+		TokenName: tokenName,
+		ModelName: operation.ProductModelRef,
+		Quota:     operation.BillingQuota,
+		TokenId:   operation.TokenID,
+		Group:     group,
+		RequestId: operation.OperationID,
+		Other:     common.MapToJsonStr(other),
+	})
+}

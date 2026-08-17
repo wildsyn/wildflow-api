@@ -24,6 +24,8 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	t.Helper()
 	previousDB := model.DB
 	previousLogDB := model.LOG_DB
+	previousRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
 	dsn := "file:wildflow-jobs-" + uuid.NewString() + "?mode=memory&cache=shared"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
@@ -54,6 +56,7 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	t.Cleanup(func() {
 		model.DB = previousDB
 		model.LOG_DB = previousLogDB
+		common.RedisEnabled = previousRedisEnabled
 		sqlDB, sqlErr := db.DB()
 		if sqlErr == nil {
 			_ = sqlDB.Close()

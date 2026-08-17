@@ -1,7 +1,10 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -11,6 +14,8 @@ import (
 )
 
 const wildFlowRetailPriceVersion = "wildflow-retail-cny-v1"
+
+var ErrWildFlowBillingInsufficientQuota = errors.New("insufficient quota for WildFlow job")
 
 func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuote, error) {
 	request, err := NormalizeWildFlowJobRequest(request)
@@ -74,4 +79,129 @@ func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuot
 		return model.WildFlowBillingQuote{}, err
 	}
 	return quote, nil
+}
+
+func ReserveWildFlowOperationBilling(operation *model.WildFlowOperation, request WildFlowJobRequest) (*model.WildFlowOperation, error) {
+	if operation == nil {
+		return nil, fmt.Errorf("nil WildFlow operation")
+	}
+	quote, err := QuoteWildFlowBilling(request)
+	if err != nil {
+		return nil, err
+	}
+	if operation.BillingState == model.WildFlowBillingStateReserved || operation.BillingState == model.WildFlowBillingStateSettled {
+		return model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
+	}
+
+	userSetting, err := model.GetUserSetting(operation.UserID, true)
+	if err != nil {
+		return nil, err
+	}
+	preference := common.NormalizeBillingPreference(userSetting.BillingPreference)
+
+	tryWallet := func() (*model.WildFlowOperation, error) {
+		reserved, reserveErr := model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
+		if errors.Is(reserveErr, model.ErrWildFlowInsufficientUserQuota) || errors.Is(reserveErr, model.ErrWildFlowInsufficientTokenQuota) {
+			return nil, fmt.Errorf("%w: %v", ErrWildFlowBillingInsufficientQuota, reserveErr)
+		}
+		return reserved, reserveErr
+	}
+	trySubscription := func() (*model.WildFlowOperation, error) {
+		result, preConsumeErr := model.PreConsumeUserSubscription(
+			operation.OperationID,
+			operation.UserID,
+			operation.ProductModelRef,
+			0,
+			int64(quote.Quota),
+		)
+		if preConsumeErr != nil {
+			if strings.Contains(preConsumeErr.Error(), "no active subscription") || strings.Contains(preConsumeErr.Error(), "subscription quota insufficient") {
+				return nil, fmt.Errorf("%w: %v", ErrWildFlowBillingInsufficientQuota, preConsumeErr)
+			}
+			return nil, preConsumeErr
+		}
+		reserved, attachErr := model.AttachWildFlowSubscriptionBilling(operation.OperationID, quote, result.UserSubscriptionId)
+		if errors.Is(attachErr, model.ErrWildFlowInsufficientTokenQuota) {
+			if refundErr := model.RefundSubscriptionPreConsume(operation.OperationID); refundErr != nil {
+				return nil, fmt.Errorf("refund subscription after token quota failure: %w", refundErr)
+			}
+			return nil, fmt.Errorf("%w: %v", ErrWildFlowBillingInsufficientQuota, attachErr)
+		}
+		return reserved, attachErr
+	}
+
+	switch preference {
+	case "subscription_only":
+		return trySubscription()
+	case "wallet_only":
+		return tryWallet()
+	case "wallet_first":
+		reserved, reserveErr := tryWallet()
+		if errors.Is(reserveErr, ErrWildFlowBillingInsufficientQuota) {
+			return trySubscription()
+		}
+		return reserved, reserveErr
+	case "subscription_first":
+		fallthrough
+	default:
+		hasSubscription, subscriptionErr := model.HasActiveUserSubscription(operation.UserID)
+		if subscriptionErr != nil {
+			return nil, subscriptionErr
+		}
+		if !hasSubscription {
+			return tryWallet()
+		}
+		reserved, reserveErr := trySubscription()
+		if !errors.Is(reserveErr, ErrWildFlowBillingInsufficientQuota) {
+			return reserved, reserveErr
+		}
+		allowWalletOverflow, overflowErr := model.UserActiveSubscriptionsAllowWalletOverflow(operation.UserID)
+		if overflowErr != nil {
+			return nil, overflowErr
+		}
+		if allowWalletOverflow {
+			return tryWallet()
+		}
+		return nil, reserveErr
+	}
+}
+
+func FinalizeWildFlowOperationBilling(ctx context.Context, operation *model.WildFlowOperation, artifactCount int) error {
+	if operation == nil || operation.BillingState == "" || operation.BillingState == model.WildFlowBillingStatePending {
+		return nil
+	}
+	switch operation.State {
+	case "succeeded":
+		if artifactCount == 0 {
+			return fmt.Errorf("succeeded WildFlow job has no durable artifact")
+		}
+		settled, _, err := model.SettleWildFlowOperationBilling(operation.OperationID)
+		if err != nil {
+			return err
+		}
+		if settled != nil {
+			if err := model.RecordWildFlowBillingLog(settled, model.LogTypeConsume, "WildFlow job settled"); err != nil {
+				return err
+			}
+			*operation = *settled
+		}
+		return nil
+	case "failed", "cancelled":
+		refunded, _, err := model.RefundWildFlowOperationBilling(operation.OperationID)
+		if err != nil {
+			return err
+		}
+		if refunded != nil {
+			if err := model.RecordWildFlowBillingLog(refunded, model.LogTypeRefund, "WildFlow job refunded"); err != nil {
+				return err
+			}
+			*operation = *refunded
+		}
+		return nil
+	case "recovery_required":
+		return nil
+	default:
+		_ = ctx
+		return nil
+	}
 }
