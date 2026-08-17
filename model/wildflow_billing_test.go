@@ -93,6 +93,7 @@ func TestRefundWildFlowBillingRestoresWalletAndTokenExactlyOnce(t *testing.T) {
 	quote := testWildFlowBillingQuote()
 	_, err := ReserveWildFlowWalletBilling(operation.OperationID, quote)
 	require.NoError(t, err)
+	require.NoError(t, UpdateWildFlowOperationExecution(operation.OperationID, "job-refund", "failed", "execution_failed"))
 
 	first, changed, err := RefundWildFlowOperationBilling(operation.OperationID)
 	require.NoError(t, err)
@@ -116,6 +117,7 @@ func TestSettleWildFlowBillingIsIdempotentAndDoesNotMoveReservedQuota(t *testing
 	quote := testWildFlowBillingQuote()
 	_, err := ReserveWildFlowWalletBilling(operation.OperationID, quote)
 	require.NoError(t, err)
+	require.NoError(t, UpdateWildFlowOperationExecution(operation.OperationID, "job-settle", "succeeded", ""))
 
 	first, changed, err := SettleWildFlowOperationBilling(operation.OperationID)
 	require.NoError(t, err)
