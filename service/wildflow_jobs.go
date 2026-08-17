@@ -1,0 +1,254 @@
+package service
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"math"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/google/uuid"
+)
+
+var (
+	ErrWildFlowIdempotencyRequired = errors.New("Idempotency-Key is required")
+	ErrWildFlowIdempotencyConflict = errors.New("Idempotency-Key was already used with a different request")
+	ErrWildFlowUnsupportedModel    = errors.New("unsupported WildFlow model")
+	ErrWildFlowInvalidParameters   = errors.New("invalid model parameters")
+)
+
+type WildFlowJobRequest struct {
+	Model      string         `json:"model"`
+	Parameters map[string]any `json:"parameters"`
+}
+
+const (
+	WildFlowModelVoxCPM2 = "VoxCPM2"
+	WildFlowModelFlux2   = "FLUX.2 [klein] 4B"
+)
+
+var wildFlowTTSVoices = map[string]struct{}{
+	"shuoshuren": {},
+	"dabin":      {},
+	"tingting":   {},
+	"default":    {},
+	"wangliqun":  {},
+}
+
+func NormalizeWildFlowJobRequest(request WildFlowJobRequest) (WildFlowJobRequest, error) {
+	request.Model = strings.TrimSpace(request.Model)
+	parameters := make(map[string]any, len(request.Parameters)+1)
+	for key, value := range request.Parameters {
+		parameters[key] = value
+	}
+	request.Parameters = parameters
+
+	switch request.Model {
+	case WildFlowModelVoxCPM2:
+	case "tts-standard", "tts-voxcpm2", "voxcpm2", "openbmb/VoxCPM2":
+		request.Model = WildFlowModelVoxCPM2
+		if _, exists := request.Parameters["voice"]; !exists {
+			request.Parameters["voice"] = "default"
+		}
+	case "tts-premium":
+		request.Model = WildFlowModelVoxCPM2
+		request.Parameters["voice"] = "wangliqun"
+	case WildFlowModelFlux2:
+	case "flux2-klein-4b", "flux2", "black-forest-labs/FLUX.2-klein-4B":
+		request.Model = WildFlowModelFlux2
+	default:
+		return WildFlowJobRequest{}, ErrWildFlowUnsupportedModel
+	}
+
+	return request, nil
+}
+
+func PrepareWildFlowOperation(
+	userID int,
+	tokenID int,
+	idempotencyKey string,
+	requestID string,
+	request WildFlowJobRequest,
+) (*model.WildFlowOperation, bool, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" || len(idempotencyKey) > 200 {
+		return nil, false, ErrWildFlowIdempotencyRequired
+	}
+	request, err := NormalizeWildFlowJobRequest(request)
+	if err != nil {
+		return nil, false, err
+	}
+	offering, ok := FindWildFlowOffering(request.Model)
+	if !ok {
+		return nil, false, ErrWildFlowUnsupportedModel
+	}
+	if err := validateWildFlowParameters(offering.Kind, request.Parameters); err != nil {
+		return nil, false, err
+	}
+	canonical, err := common.Marshal(request)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode WildFlow request: %w", err)
+	}
+	requestDigest := sha256Hex(canonical)
+	keyDigest := sha256Hex([]byte(idempotencyKey))
+	existing, err := model.GetWildFlowOperationByUserAndKey(userID, keyDigest)
+	if err != nil {
+		return nil, false, err
+	}
+	if existing != nil {
+		if existing.RequestDigest != requestDigest {
+			return nil, false, ErrWildFlowIdempotencyConflict
+		}
+		return existing, false, nil
+	}
+
+	operation := &model.WildFlowOperation{
+		OperationID:          "op-" + uuid.NewString(),
+		UserID:               userID,
+		TokenID:              tokenID,
+		IdempotencyKeyDigest: keyDigest,
+		RequestDigest:        requestDigest,
+		RequestID:            requestID,
+		ProductModelRef:      offering.ID,
+		ModelVersionRef:      offering.ModelVersionRef,
+		State:                "submitting",
+	}
+	if err := model.CreateWildFlowOperation(operation); err != nil {
+		existing, lookupErr := model.GetWildFlowOperationByUserAndKey(userID, keyDigest)
+		if lookupErr != nil {
+			return nil, false, lookupErr
+		}
+		if existing == nil {
+			return nil, false, err
+		}
+		if existing.RequestDigest != requestDigest {
+			return nil, false, ErrWildFlowIdempotencyConflict
+		}
+		return existing, false, nil
+	}
+	return operation, true, nil
+}
+
+func FindWildFlowOffering(id string) (WildFlowOffering, bool) {
+	for _, offering := range canonicalWildFlowCatalog {
+		if offering.ID == id {
+			return offering, true
+		}
+	}
+	return WildFlowOffering{}, false
+}
+
+func sha256Hex(value []byte) string {
+	digest := sha256.Sum256(value)
+	return hex.EncodeToString(digest[:])
+}
+
+func validateWildFlowParameters(kind string, parameters map[string]any) error {
+	if parameters == nil || len(parameters) == 0 || len(parameters) > 20 {
+		return ErrWildFlowInvalidParameters
+	}
+	if kind == "tts" {
+		return validateWildFlowTTSParameters(parameters)
+	}
+	if kind == "image" {
+		return validateWildFlowImageParameters(parameters)
+	}
+	return ErrWildFlowUnsupportedModel
+}
+
+func validateWildFlowTTSParameters(parameters map[string]any) error {
+	allowed := map[string]bool{"input": true, "text": true, "voice": true, "speed": true}
+	for key := range parameters {
+		if !allowed[key] {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	input, hasInput := parameters["input"]
+	text, hasText := parameters["text"]
+	if hasInput == hasText {
+		return ErrWildFlowInvalidParameters
+	}
+	value := input
+	if hasText {
+		value = text
+	}
+	content, ok := value.(string)
+	if !ok || utf8.RuneCountInString(content) == 0 || utf8.RuneCountInString(content) > 20_000 {
+		return ErrWildFlowInvalidParameters
+	}
+	voiceValue, valid := parameters["voice"].(string)
+	if !valid {
+		return ErrWildFlowInvalidParameters
+	}
+	if _, allowed := wildFlowTTSVoices[voiceValue]; !allowed {
+		return ErrWildFlowInvalidParameters
+	}
+	if speed, exists := parameters["speed"]; exists {
+		value, valid := finiteNumber(speed)
+		if !valid || value < 0.25 || value > 4 {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	return nil
+}
+
+func validateWildFlowImageParameters(parameters map[string]any) error {
+	allowed := map[string]bool{
+		"prompt": true, "width": true, "height": true,
+		"num_inference_steps": true, "guidance_scale": true, "seed": true,
+	}
+	for key := range parameters {
+		if !allowed[key] {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	prompt, ok := parameters["prompt"].(string)
+	if !ok || len(prompt) == 0 || len(prompt) > 20_000 {
+		return ErrWildFlowInvalidParameters
+	}
+	for _, key := range []string{"width", "height"} {
+		if raw, exists := parameters[key]; exists {
+			value, valid := boundedInteger(raw, 256, 2048)
+			if !valid || value%8 != 0 {
+				return ErrWildFlowInvalidParameters
+			}
+		}
+	}
+	if raw, exists := parameters["num_inference_steps"]; exists {
+		if _, valid := boundedInteger(raw, 1, 100); !valid {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	if raw, exists := parameters["seed"]; exists {
+		if _, valid := boundedInteger(raw, 0, math.MaxInt64); !valid {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	if raw, exists := parameters["guidance_scale"]; exists {
+		value, valid := finiteNumber(raw)
+		if !valid || value < 0 || value > 20 {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	return nil
+}
+
+func boundedInteger(value any, minimum int64, maximum int64) (int64, bool) {
+	number, ok := finiteNumber(value)
+	if !ok || math.Trunc(number) != number || number < float64(minimum) || number > float64(maximum) {
+		return 0, false
+	}
+	return int64(number), true
+}
+
+func finiteNumber(value any) (float64, bool) {
+	number, ok := value.(float64)
+	if !ok || math.IsNaN(number) || math.IsInf(number, 0) {
+		return 0, false
+	}
+	return number, true
+}

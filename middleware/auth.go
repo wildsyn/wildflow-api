@@ -482,6 +482,20 @@ func TokenAuth() func(c *gin.Context) {
 	}
 }
 
+// WildFlowLegacyAPIKeyCompatibility maps the old WildCloud X-API-Key header
+// onto the existing bearer-token verifier. It is intentionally applied only to
+// the two legacy compatibility routes.
+func WildFlowLegacyAPIKeyCompatibility() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.GetHeader("Authorization") == "" {
+			if key := strings.TrimSpace(c.GetHeader("X-API-Key")); key != "" {
+				c.Request.Header.Set("Authorization", "Bearer "+key)
+			}
+		}
+		c.Next()
+	}
+}
+
 func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) error {
 	if token == nil {
 		return fmt.Errorf("token is nil")
