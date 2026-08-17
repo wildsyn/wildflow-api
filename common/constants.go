@@ -12,9 +12,9 @@ import (
 
 var StartTime = time.Now().Unix() // unit: second
 var Version = "v0.0.0"            // this hard coding will be replaced automatically when building, no need to manually change
-var SystemName = "New API"
+var SystemName = "野生流动"
 var Footer = ""
-var Logo = ""
+var Logo = "/logo.png"
 var TopUpLink = ""
 
 // var ChatLink = ""
@@ -23,8 +23,8 @@ var QuotaPerUnit = 500 * 1000.0 // $0.002 / 1K tokens
 // 保留旧变量以兼容历史逻辑，实际展示由 general_setting.quota_display_type 控制
 var DisplayInCurrencyEnabled = true
 var DisplayTokenStatEnabled = true
-var DrawingEnabled = true
-var TaskEnabled = true
+var DrawingEnabled = false
+var TaskEnabled = false
 var DataExportEnabled = true
 var DataExportInterval = 5         // unit: minute
 var DataExportDefaultTime = "hour" // unit: minute

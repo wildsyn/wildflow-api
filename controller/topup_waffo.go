@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -61,13 +60,9 @@ func getWaffoCurrency() string {
 }
 
 func buildWaffoTopUpGoodsInfo(amount int64) *order.GoodsInfo {
-	appName := strings.TrimSpace(common.SystemName)
-	if appName == "" {
-		appName = "New API"
-	}
 	return &order.GoodsInfo{
 		GoodsName: fmt.Sprintf("Recharge %d credits", amount),
-		AppName:   appName,
+		AppName:   getPublicSystemName(),
 	}
 }
 

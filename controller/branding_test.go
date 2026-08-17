@@ -51,6 +51,7 @@ func TestGetStatusNormalizesLegacyPublicBrandDefaults(t *testing.T) {
 	)
 	assert.Equal(t, false, payload.Data["enable_drawing"])
 	assert.Equal(t, false, payload.Data["enable_task"])
+	assert.Equal(t, "野生流动", buildWaffoTopUpGoodsInfo(100).AppName)
 }
 
 func TestGetStatusPreservesExplicitPublicBrandOverrides(t *testing.T) {
