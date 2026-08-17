@@ -864,8 +864,8 @@ func (user *User) ClearBinding(bindingType string) error {
 		if err := tx.Model(&User{}).Where("id = ?", user.Id).Update(column, "").Error; err != nil {
 			return err
 		}
-		if bindingType == ExternalIdentityProviderTelegram {
-			return ReleaseExternalIdentityWithTx(tx, ExternalIdentityProviderTelegram, user.Id)
+		if bindingType == ExternalIdentityProviderTelegram || bindingType == ExternalIdentityProviderOIDC {
+			return ReleaseExternalIdentityWithTx(tx, bindingType, user.Id)
 		}
 		return nil
 	}); err != nil {
@@ -1091,7 +1091,15 @@ func IsDiscordIdAlreadyTaken(discordId string) bool {
 }
 
 func IsOidcIdAlreadyTaken(oidcId string) bool {
-	return DB.Where("oidc_id = ?", oidcId).Find(&User{}).RowsAffected == 1
+	oidcId = strings.TrimSpace(oidcId)
+	if oidcId == "" {
+		return false
+	}
+	if DB.Where("provider = ? AND subject = ?", ExternalIdentityProviderOIDC, oidcId).
+		Find(&ExternalIdentityClaim{}).RowsAffected == 1 {
+		return true
+	}
+	return DB.Unscoped().Where("oidc_id = ?", oidcId).Find(&User{}).RowsAffected == 1
 }
 
 func IsTelegramIdAlreadyTaken(telegramId string) bool {
