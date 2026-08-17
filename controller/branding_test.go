@@ -46,7 +46,7 @@ func TestGetStatusNormalizesLegacyPublicBrandDefaults(t *testing.T) {
 	assert.Equal(t, "/logo.png", payload.Data["logo"])
 	assert.Equal(
 		t,
-		"https://github.com/wildsyn/wildflow/tree/main/docs",
+		"https://docs.wildflow.cn",
 		payload.Data["docs_link"],
 	)
 	assert.Equal(t, false, payload.Data["enable_drawing"])
