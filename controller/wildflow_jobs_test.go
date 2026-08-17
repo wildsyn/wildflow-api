@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -52,6 +53,14 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 		c.Set("id", userID)
 		c.Set("token_id", 7)
 		c.Set(common.RequestIdKey, "request-public-1")
+		if raw := c.GetHeader("X-Test-Model-Limits"); raw != "" {
+			limits := make(map[string]bool)
+			for _, modelName := range strings.Split(raw, ",") {
+				limits[modelName] = true
+			}
+			common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
+			common.SetContextKey(c, constant.ContextKeyTokenModelLimit, limits)
+		}
 		c.Next()
 	})
 	engine.POST("/v1/jobs", CreateWildFlowJob)
@@ -62,6 +71,48 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	engine.GET("/v1/artifacts/:artifact_id", GetWildFlowArtifact)
 	engine.GET("/v1/artifacts/:artifact_id/content", DownloadWildFlowArtifact)
 	return engine, server
+}
+
+func TestCreateWildFlowJobEnforcesTokenModelLimitsBeforeInference(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-model-limit","state":"queued"}}`))
+	}))
+	body := `{"model":"VoxCPM2","parameters":{"input":"hello","voice":"default"}}`
+
+	forbidden := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		body,
+		map[string]string{
+			"Idempotency-Key":     "model-limit-forbidden",
+			"X-Test-Model-Limits": "DeepSeek-V4-Pro",
+		},
+	)
+
+	require.Equal(t, http.StatusForbidden, forbidden.Code, forbidden.Body.String())
+	assert.Contains(t, forbidden.Body.String(), `"code":"model_forbidden"`)
+	assert.Equal(t, 0, requests)
+
+	allowed := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		body,
+		map[string]string{
+			"Idempotency-Key":     "model-limit-allowed",
+			"X-Test-Model-Limits": "VoxCPM2",
+		},
+	)
+
+	require.Equal(t, http.StatusAccepted, allowed.Code, allowed.Body.String())
+	assert.Equal(t, 1, requests)
 }
 
 func TestLegacyWildCloudSpeechRequestMapsToCanonicalVoxCPM2Job(t *testing.T) {
