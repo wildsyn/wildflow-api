@@ -49,6 +49,8 @@ func TestGetStatusNormalizesLegacyPublicBrandDefaults(t *testing.T) {
 		"https://github.com/wildsyn/wildflow/tree/main/docs",
 		payload.Data["docs_link"],
 	)
+	assert.Equal(t, false, payload.Data["enable_drawing"])
+	assert.Equal(t, false, payload.Data["enable_task"])
 }
 
 func TestGetStatusPreservesExplicitPublicBrandOverrides(t *testing.T) {
