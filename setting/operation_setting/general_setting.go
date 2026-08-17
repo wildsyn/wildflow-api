@@ -1,6 +1,10 @@
 package operation_setting
 
-import "github.com/QuantumNous/new-api/setting/config"
+import (
+	"strings"
+
+	"github.com/QuantumNous/new-api/setting/config"
+)
 
 // 额度展示类型
 const (
@@ -8,6 +12,11 @@ const (
 	QuotaDisplayTypeCNY    = "CNY"
 	QuotaDisplayTypeTokens = "TOKENS"
 	QuotaDisplayTypeCustom = "CUSTOM"
+)
+
+const (
+	WildFlowDocsLink     = "https://github.com/wildsyn/wildflow/tree/main/docs"
+	legacyNewAPIDocsLink = "https://docs.newapi.pro"
 )
 
 type GeneralSetting struct {
@@ -24,7 +33,7 @@ type GeneralSetting struct {
 
 // 默认配置
 var generalSetting = GeneralSetting{
-	DocsLink:                   "https://docs.newapi.pro",
+	DocsLink:                   WildFlowDocsLink,
 	PingIntervalEnabled:        false,
 	PingIntervalSeconds:        60,
 	QuotaDisplayType:           QuotaDisplayTypeUSD,
@@ -39,6 +48,14 @@ func init() {
 
 func GetGeneralSetting() *GeneralSetting {
 	return &generalSetting
+}
+
+func GetEffectiveDocsLink() string {
+	docsLink := strings.TrimSpace(generalSetting.DocsLink)
+	if docsLink == "" || strings.TrimRight(docsLink, "/") == legacyNewAPIDocsLink {
+		return WildFlowDocsLink
+	}
+	return docsLink
 }
 
 // IsCurrencyDisplay 是否以货币形式展示（美元或人民币）
