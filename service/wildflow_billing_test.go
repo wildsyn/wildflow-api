@@ -165,8 +165,14 @@ func TestReserveWildFlowOperationBillingUsesSubscriptionPreferenceDurably(t *tes
 	assert.Equal(t, 100_000-3_425, token.RemainQuota)
 
 	require.NoError(t, model.UpdateWildFlowOperationExecution(operation.OperationID, "job-subscription", "failed", "execution_failed"))
+	// Simulate a process stopping after it durably claimed the subscription
+	// refund but before the idempotent refund completed.
+	require.NoError(t, db.Model(&model.WildFlowOperation{}).
+		Where("operation_id = ?", operation.OperationID).
+		Update("billing_state", model.WildFlowBillingStateRefunding).Error)
 	second.State = "failed"
 	second.JobID = "job-subscription"
+	second.BillingState = model.WildFlowBillingStateRefunding
 	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), second, 0))
 	require.NoError(t, db.First(subscription, subscription.Id).Error)
 	require.NoError(t, db.First(token, token.Id).Error)
