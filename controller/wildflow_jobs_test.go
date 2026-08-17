@@ -132,6 +132,27 @@ func TestCreateWildFlowJobPreConsumesRetailPriceExactlyOnce(t *testing.T) {
 	assert.Equal(t, int64(50_000), operation.BillingAmountMicros)
 }
 
+func TestCreateWildFlowJobRejectsInsufficientQuotaBeforeInference(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", 42).Update("quota", 1).Error)
+
+	response := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "insufficient-quota"},
+	)
+
+	require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"code":"insufficient_quota"`)
+	assert.Equal(t, 0, requests)
+}
+
 func TestFailedWildFlowJobRefundsRetailPriceExactlyOnce(t *testing.T) {
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -245,6 +266,43 @@ func TestRecoveryRequiredWildFlowJobKeepsReservation(t *testing.T) {
 	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&operation).Error)
 	assert.Equal(t, 1_000_000-3_425, user.Quota)
 	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+}
+
+func TestSucceededWildFlowJobWithoutArtifactEntersRecoveryRequired(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"id":"job-missing-result","state":"queued"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"job":{"id":"job-missing-result","state":"succeeded"}}`))
+	}))
+	created := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "missing-result"},
+	)
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &payload))
+	operationID := payload["id"].(string)
+
+	status := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	require.Equal(t, http.StatusServiceUnavailable, status.Code, status.Body.String())
+	assert.Equal(t, "5", status.Header().Get("Retry-After"))
+	assert.Contains(t, status.Body.String(), `"code":"recovery_required"`)
+
+	var operation model.WildFlowOperation
+	var user model.User
+	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&operation).Error)
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	assert.Equal(t, "recovery_required", operation.State)
+	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+	assert.Equal(t, 1_000_000-3_425, user.Quota)
 }
 
 func TestCreateWildFlowJobEnforcesTokenModelLimitsBeforeInference(t *testing.T) {

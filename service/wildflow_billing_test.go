@@ -1,13 +1,19 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/glebarez/sqlite"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestQuoteWildFlowBillingUsesRetailCNYPrices(t *testing.T) {
@@ -68,6 +74,105 @@ func TestQuoteWildFlowBillingUsesRetailCNYPrices(t *testing.T) {
 			assert.Equal(t, "7.3", quote.USDExchangeRate)
 		})
 	}
+}
+
+func TestReserveWildFlowOperationBillingUsesSubscriptionPreferenceDurably(t *testing.T) {
+	previousDB := model.DB
+	previousLogDB := model.LOG_DB
+	previousRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	db, err := gorm.Open(sqlite.Open("file:wildflow-subscription-billing-"+uuid.NewString()+"?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(
+		&model.User{},
+		&model.Token{},
+		&model.Log{},
+		&model.SubscriptionPlan{},
+		&model.UserSubscription{},
+		&model.SubscriptionPreConsumeRecord{},
+		&model.WildFlowOperation{},
+	))
+	model.DB = db
+	model.LOG_DB = db
+	t.Cleanup(func() {
+		model.DB = previousDB
+		model.LOG_DB = previousLogDB
+		common.RedisEnabled = previousRedisEnabled
+		sqlDB, sqlErr := db.DB()
+		if sqlErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	user := &model.User{
+		Id:       501,
+		Username: "subscription-billing-user",
+		AffCode:  "subscription-billing-aff",
+		Quota:    0,
+		Group:    "default",
+		Setting:  `{"billing_preference":"subscription_only"}`,
+	}
+	require.NoError(t, db.Create(user).Error)
+	token := &model.Token{Id: 601, UserId: user.Id, Key: "subscription-token", RemainQuota: 100_000}
+	require.NoError(t, db.Create(token).Error)
+	allowWalletOverflow := false
+	plan := &model.SubscriptionPlan{
+		Id:                  700_001,
+		Title:               "WildFlow test plan",
+		Currency:            "CNY",
+		DurationUnit:        model.SubscriptionDurationMonth,
+		DurationValue:       1,
+		Enabled:             true,
+		AllowWalletOverflow: &allowWalletOverflow,
+		TotalAmount:         100_000,
+		QuotaResetPeriod:    model.SubscriptionResetNever,
+	}
+	require.NoError(t, db.Create(plan).Error)
+	model.InvalidateSubscriptionPlanCache(plan.Id)
+	subscription := &model.UserSubscription{
+		Id:                  701,
+		UserId:              user.Id,
+		PlanId:              plan.Id,
+		AmountTotal:         100_000,
+		StartTime:           time.Now().Add(-time.Hour).Unix(),
+		EndTime:             time.Now().Add(time.Hour).Unix(),
+		Status:              "active",
+		AllowWalletOverflow: false,
+	}
+	require.NoError(t, db.Create(subscription).Error)
+	operation := &model.WildFlowOperation{
+		OperationID:          "op-subscription-billing",
+		UserID:               user.Id,
+		TokenID:              token.Id,
+		IdempotencyKeyDigest: "key-subscription-billing",
+		RequestDigest:        "request-subscription-billing",
+		RequestID:            "request-id-subscription-billing",
+		ProductModelRef:      WildFlowModelFlux2,
+		ModelVersionRef:      "black-forest-labs/FLUX.2-klein-4B",
+		State:                "submitting",
+	}
+	require.NoError(t, db.Create(operation).Error)
+	request := WildFlowJobRequest{Model: WildFlowModelFlux2, Parameters: map[string]any{"prompt": "一只熊猫"}}
+
+	first, err := ReserveWildFlowOperationBilling(operation, request)
+	require.NoError(t, err)
+	second, err := ReserveWildFlowOperationBilling(first, request)
+	require.NoError(t, err)
+	assert.Equal(t, model.WildFlowBillingSourceSubscription, second.BillingSource)
+	require.NoError(t, db.First(subscription, subscription.Id).Error)
+	require.NoError(t, db.First(token, token.Id).Error)
+	assert.Equal(t, int64(3_425), subscription.AmountUsed)
+	assert.Equal(t, 100_000-3_425, token.RemainQuota)
+
+	require.NoError(t, model.UpdateWildFlowOperationExecution(operation.OperationID, "job-subscription", "failed", "execution_failed"))
+	second.State = "failed"
+	second.JobID = "job-subscription"
+	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), second, 0))
+	require.NoError(t, db.First(subscription, subscription.Id).Error)
+	require.NoError(t, db.First(token, token.Id).Error)
+	assert.Zero(t, subscription.AmountUsed)
+	assert.Equal(t, 100_000, token.RemainQuota)
+	assert.Equal(t, model.WildFlowBillingStateRefunded, second.BillingState)
 }
 
 func TestQuoteWildFlowBillingRejectsInvalidRuntimeConversion(t *testing.T) {
