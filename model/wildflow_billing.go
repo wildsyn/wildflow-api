@@ -311,15 +311,21 @@ func RefundWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 		}
 		if locked.BillingTokenQuota > 0 && locked.TokenID > 0 {
 			var token Token
-			if err := tx.Unscoped().Where("id = ?", locked.TokenID).First(&token).Error; err != nil {
-				return err
-			}
-			tokenKey = token.Key
-			if err := tx.Unscoped().Model(&Token{}).Where("id = ?", locked.TokenID).Updates(map[string]any{
-				"remain_quota": gorm.Expr("remain_quota + ?", locked.BillingTokenQuota),
-				"used_quota":   gorm.Expr("used_quota - ?", locked.BillingTokenQuota),
-			}).Error; err != nil {
-				return err
+			tokenErr := tx.Unscoped().Where("id = ?", locked.TokenID).First(&token).Error
+			switch {
+			case tokenErr == nil:
+				tokenKey = token.Key
+				if err := tx.Unscoped().Model(&Token{}).Where("id = ?", locked.TokenID).Updates(map[string]any{
+					"remain_quota": gorm.Expr("remain_quota + ?", locked.BillingTokenQuota),
+					"used_quota":   gorm.Expr("used_quota - ?", locked.BillingTokenQuota),
+				}).Error; err != nil {
+					return err
+				}
+			case errors.Is(tokenErr, gorm.ErrRecordNotFound):
+				// A deleted API token no longer has a quota balance to restore. The
+				// user's wallet/subscription refund must still complete exactly once.
+			default:
+				return tokenErr
 			}
 		}
 		now := time.Now().Unix()
