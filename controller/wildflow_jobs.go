@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/internal/inferenceclient"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -36,6 +38,10 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 	request, err = service.NormalizeWildFlowJobRequest(request)
 	if err != nil {
 		writeWildFlowOperationError(c, err)
+		return
+	}
+	if !wildFlowTokenAllowsModel(c, request.Model) {
+		wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token is not allowed to use this model")
 		return
 	}
 
@@ -122,6 +128,22 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 	}
 	writeWildFlowOperationHeaders(c, operation)
 	c.JSON(status, operation)
+}
+
+func wildFlowTokenAllowsModel(c *gin.Context, modelName string) bool {
+	if !common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) {
+		return true
+	}
+	rawLimits, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
+	if !ok {
+		return false
+	}
+	limits, ok := rawLimits.(map[string]bool)
+	if !ok {
+		return false
+	}
+	matchingName := ratio_setting.FormatMatchingModelName(modelName)
+	return limits[modelName] || limits[matchingName]
 }
 
 func wildFlowIdempotencyKey(c *gin.Context) string {
