@@ -72,6 +72,32 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.TokenAuth())
 	relayV1Router.Use(middleware.ModelRequestRateLimit())
 	{
+		// WildFlow first-party durable jobs bypass channel distribution. The
+		// control plane owns identity and Operation state; the private inference
+		// service owns execution and artifacts.
+		relayV1Router.POST("/jobs", controller.CreateWildFlowJob)
+		relayV1Router.GET("/jobs/:operation_id", controller.GetWildFlowJob)
+		relayV1Router.POST("/jobs/:operation_id/cancel", controller.CancelWildFlowJob)
+		relayV1Router.GET("/artifacts/:artifact_id", controller.GetWildFlowArtifact)
+		relayV1Router.GET("/artifacts/:artifact_id/content", controller.DownloadWildFlowArtifact)
+	}
+	{
+		// First-party aliases use the durable Job path. Other models continue
+		// through the normal New API channel distributor.
+		relayV1Router.POST(
+			"/audio/speech",
+			controller.TryWildFlowSpeechCompatibility,
+			middleware.Distribute(),
+			func(c *gin.Context) { controller.Relay(c, types.RelayFormatOpenAIAudio) },
+		)
+		relayV1Router.POST(
+			"/images/generations",
+			controller.TryWildFlowImageCompatibility,
+			middleware.Distribute(),
+			func(c *gin.Context) { controller.Relay(c, types.RelayFormatOpenAIImage) },
+		)
+	}
+	{
 		// WebSocket 路由（统一到 Relay）
 		wsRouter := relayV1Router.Group("")
 		wsRouter.Use(middleware.Distribute())
@@ -114,9 +140,6 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.POST("/edits", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIImage)
 		})
-		httpRouter.POST("/images/generations", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIImage)
-		})
 		httpRouter.POST("/images/edits", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIImage)
 		})
@@ -131,9 +154,6 @@ func SetRelayRouter(router *gin.Engine) {
 			controller.Relay(c, types.RelayFormatOpenAIAudio)
 		})
 		httpRouter.POST("/audio/translations", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAIAudio)
-		})
-		httpRouter.POST("/audio/speech", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIAudio)
 		})
 
@@ -168,6 +188,17 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.POST("/fine-tunes/:id/cancel", controller.RelayNotImplemented)
 		httpRouter.GET("/fine-tunes/:id/events", controller.RelayNotImplemented)
 		httpRouter.DELETE("/models/:model", controller.RelayNotImplemented)
+	}
+
+	legacyWildCloudRouter := router.Group("/api/v1")
+	legacyWildCloudRouter.Use(middleware.RouteTag("relay"))
+	legacyWildCloudRouter.Use(middleware.SystemPerformanceCheck())
+	legacyWildCloudRouter.Use(middleware.WildFlowLegacyAPIKeyCompatibility())
+	legacyWildCloudRouter.Use(middleware.TokenAuth())
+	legacyWildCloudRouter.Use(middleware.ModelRequestRateLimit())
+	{
+		legacyWildCloudRouter.POST("/audio/speech", controller.CreateWildFlowLegacySpeechJob)
+		legacyWildCloudRouter.POST("/images/generations", controller.CreateWildFlowLegacyImageJob)
 	}
 
 	relayMjRouter := router.Group("/mj")

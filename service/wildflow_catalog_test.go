@@ -16,9 +16,8 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 		assert.Equal(t, "Bearer internal-test-token", r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[
-			{"id":"tts-standard","model_version_ref":"openbmb/VoxCPM2","callable":true},
-			{"id":"tts-premium","model_version_ref":"openbmb/VoxCPM2","callable":true},
-			{"id":"flux2-klein-4b","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
+			{"id":"VoxCPM2","model_version_ref":"openbmb/VoxCPM2","callable":true},
+			{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
 			{"id":"untrusted-extra","model_version_ref":"other/model","callable":true}
 		]}`))
 	}))
@@ -28,24 +27,23 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 
 	catalog := GetWildFlowCatalog(context.Background())
 
-	require.Len(t, catalog, 3)
-	assert.Equal(t, []string{"tts-standard", "tts-premium", "flux2-klein-4b"}, []string{
-		catalog[0].ID, catalog[1].ID, catalog[2].ID,
+	require.Len(t, catalog, 2)
+	assert.Equal(t, []string{"VoxCPM2", "FLUX.2 [klein] 4B"}, []string{
+		catalog[0].ID, catalog[1].ID,
 	})
 	assert.True(t, catalog[0].Callable)
 	assert.True(t, catalog[1].Callable)
-	assert.True(t, catalog[2].Callable)
-	assert.Equal(t, "openbmb/VoxCPM2", catalog[1].ModelVersionRef)
-	assert.Equal(t, "wangliqun-premium", catalog[1].Profile)
+	assert.Equal(t, "openbmb/VoxCPM2", catalog[0].ModelVersionRef)
+	assert.Equal(t, "¥0.8 / 万字符", catalog[0].Pricing.Display)
 }
 
-func TestGetWildFlowCatalogFailsClosedButStillDisplaysThreeOfferings(t *testing.T) {
+func TestGetWildFlowCatalogFailsClosedButStillDisplaysTwoModels(t *testing.T) {
 	t.Setenv("WILDFLOW_INFERENCE_URL", "")
 	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "")
 
 	catalog := GetWildFlowCatalog(context.Background())
 
-	require.Len(t, catalog, 3)
+	require.Len(t, catalog, 2)
 	for _, offering := range catalog {
 		assert.False(t, offering.Callable)
 		assert.Equal(t, "unavailable", offering.Status)

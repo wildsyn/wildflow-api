@@ -15,15 +15,30 @@ import (
 const wildFlowCatalogResponseLimit = 256 * 1024
 
 type WildFlowOffering struct {
-	ID              string `json:"id"`
-	DisplayName     string `json:"display_name"`
-	Kind            string `json:"kind"`
-	Vendor          string `json:"vendor"`
-	ModelVersionRef string `json:"model_version_ref"`
-	Profile         string `json:"profile"`
-	Description     string `json:"description"`
-	Callable        bool   `json:"callable"`
-	Status          string `json:"status"`
+	ID                 string                 `json:"id"`
+	DisplayName        string                 `json:"display_name"`
+	Kind               string                 `json:"kind"`
+	Vendor             string                 `json:"vendor"`
+	ModelVersionRef    string                 `json:"model_version_ref"`
+	Description        string                 `json:"description"`
+	RequiredParameters []string               `json:"required_parameters,omitempty"`
+	Voices             []WildFlowVoice        `json:"voices,omitempty"`
+	Pricing            WildFlowCatalogPricing `json:"pricing"`
+	Callable           bool                   `json:"callable"`
+	Status             string                 `json:"status"`
+}
+
+type WildFlowVoice struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+}
+
+type WildFlowCatalogPricing struct {
+	Currency string  `json:"currency"`
+	Amount   float64 `json:"amount"`
+	Unit     string  `json:"unit"`
+	Display  string  `json:"display"`
 }
 
 type wildFlowRuntimeOffering struct {
@@ -41,31 +56,34 @@ var wildFlowCatalogHTTPClient = &http.Client{
 
 var canonicalWildFlowCatalog = []WildFlowOffering{
 	{
-		ID:              "tts-standard",
-		DisplayName:     "VoxCPM2 标准语音合成",
-		Kind:            "tts",
-		Vendor:          "OpenBMB",
-		ModelVersionRef: "openbmb/VoxCPM2",
-		Profile:         "standard",
-		Description:     "通用音色、声音设计与声音克隆。",
+		ID:                 "VoxCPM2",
+		DisplayName:        "VoxCPM2",
+		Kind:               "tts",
+		Vendor:             "OpenBMB",
+		ModelVersionRef:    "openbmb/VoxCPM2",
+		Description:        "支持四个内置音色与王立群克隆音色的语音合成模型。",
+		RequiredParameters: []string{"voice"},
+		Voices: []WildFlowVoice{
+			{ID: "shuoshuren", Name: "说书人", Category: "official"},
+			{ID: "dabin", Name: "大斌", Category: "official"},
+			{ID: "tingting", Name: "婷婷", Category: "official"},
+			{ID: "default", Name: "默认", Category: "official"},
+			{ID: "wangliqun", Name: "王立群", Category: "custom"},
+		},
+		Pricing: WildFlowCatalogPricing{
+			Currency: "CNY", Amount: 0.8, Unit: "10k_characters", Display: "¥0.8 / 万字符",
+		},
 	},
 	{
-		ID:              "tts-premium",
-		DisplayName:     "VoxCPM2 王立群精品语音",
-		Kind:            "tts",
-		Vendor:          "OpenBMB",
-		ModelVersionRef: "openbmb/VoxCPM2",
-		Profile:         "wangliqun-premium",
-		Description:     "基于同一 VoxCPM2 底模的王立群精品音色产品。",
-	},
-	{
-		ID:              "flux2-klein-4b",
+		ID:              "FLUX.2 [klein] 4B",
 		DisplayName:     "FLUX.2 [klein] 4B 图片生成",
 		Kind:            "image",
 		Vendor:          "Black Forest Labs",
 		ModelVersionRef: "black-forest-labs/FLUX.2-klein-4B",
-		Profile:         "default",
 		Description:     "支持中英文提示词的开源图片生成模型。",
+		Pricing: WildFlowCatalogPricing{
+			Currency: "CNY", Amount: 0.05, Unit: "image", Display: "¥0.05 / 张",
+		},
 	},
 }
 

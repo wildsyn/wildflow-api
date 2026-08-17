@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,8 +17,8 @@ func validRequest() JobCreateRequest {
 		RequestDigest:        "digest-1",
 		RequestID:            "request-1",
 		TenantRef:            "tenant-a",
-		ProductModelRef:      "tts/voxcpm2",
-		ModelVersionRef:      "voxcpm2@2026-08",
+		ProductModelRef:      "tts-standard",
+		ModelVersionRef:      "openbmb/VoxCPM2",
 		InputArtifactRefs:    []string{"input://script-1"},
 		Parameters:           map[string]any{"speed": 1.0},
 		DeadlineAt:           time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC),
@@ -179,6 +180,37 @@ func TestNewFailsClosedForUnsafeConfiguration(t *testing.T) {
 	}
 }
 
+func TestNewAllowsExplicitInternalHTTPDeployment(t *testing.T) {
+	t.Parallel()
+
+	client, err := New(Config{
+		BaseURL:           "http://inference.internal:8120",
+		Token:             "token",
+		Timeout:           time.Second,
+		AllowInternalHTTP: true,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected client")
+	}
+}
+
+func TestNewStillRejectsPublicHTTPWhenInternalExceptionIsEnabled(t *testing.T) {
+	t.Parallel()
+
+	_, err := New(Config{
+		BaseURL:           "http://example.com:8120",
+		Token:             "token",
+		Timeout:           time.Second,
+		AllowInternalHTTP: true,
+	})
+	if err == nil {
+		t.Fatal("expected public HTTP URL to remain rejected")
+	}
+}
+
 func TestSubmitJobValidatesIdentityFieldsBeforeNetwork(t *testing.T) {
 	t.Parallel()
 
@@ -200,5 +232,91 @@ func TestSubmitJobValidatesIdentityFieldsBeforeNetwork(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("invalid request reached inference service: %d requests", requests)
+	}
+}
+
+func TestJobAndArtifactReadsStayTenantScoped(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer internal-token" {
+			t.Fatalf("unexpected authorization: %q", got)
+		}
+		if got := r.Header.Get("X-WildFlow-Tenant-Ref"); got != "user:42" {
+			t.Fatalf("unexpected tenant ref: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/jobs/job-1":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-1","state":"succeeded","artifacts":[{"id":"artifact-1","job_id":"job-1","media_type":"audio/wav","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/internal/v1/jobs/job-1:cancel":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-1","state":"cancelled","artifacts":[]}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-1":
+			_, _ = w.Write([]byte(`{"artifact":{"id":"artifact-1","job_id":"job-1","media_type":"audio/wav","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL, Token: "internal-token", Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	job, err := client.GetJob(context.Background(), "job-1", "user:42")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if job.State != "succeeded" || len(job.Artifacts) != 1 || job.Artifacts[0].ID != "artifact-1" {
+		t.Fatalf("unexpected job: %#v", job)
+	}
+	cancelled, err := client.CancelJob(context.Background(), "job-1", "user:42")
+	if err != nil {
+		t.Fatalf("CancelJob: %v", err)
+	}
+	if cancelled.State != "cancelled" {
+		t.Fatalf("unexpected cancelled job: %#v", cancelled)
+	}
+	artifact, err := client.GetArtifact(context.Background(), "artifact-1", "user:42")
+	if err != nil {
+		t.Fatalf("GetArtifact: %v", err)
+	}
+	if artifact.JobID != "job-1" || artifact.MediaType != "audio/wav" {
+		t.Fatalf("unexpected artifact: %#v", artifact)
+	}
+}
+
+func TestOpenArtifactContentReturnsVerifiedInternalStream(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/artifacts/artifact-1/content" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("X-WildFlow-Tenant-Ref"); got != "user:42" {
+			t.Fatalf("unexpected tenant ref: %q", got)
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("Content-Disposition", `attachment; filename="artifact-1.wav"`)
+		_, _ = w.Write([]byte("audio-result"))
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL, Token: "internal-token", Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	content, err := client.OpenArtifactContent(context.Background(), "artifact-1", "user:42")
+	if err != nil {
+		t.Fatalf("OpenArtifactContent: %v", err)
+	}
+	defer content.Body.Close()
+	payload, err := io.ReadAll(content.Body)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	if string(payload) != "audio-result" || content.MediaType != "audio/wav" {
+		t.Fatalf("unexpected content: %#v payload=%q", content, payload)
 	}
 }
