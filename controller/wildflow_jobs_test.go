@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -151,6 +152,90 @@ func TestCreateWildFlowJobRejectsInsufficientQuotaBeforeInference(t *testing.T) 
 	require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
 	assert.Contains(t, response.Body.String(), `"code":"insufficient_quota"`)
 	assert.Equal(t, 0, requests)
+}
+
+func createWildFlowControllerSubscription(t *testing.T, planID int, amountTotal int64, allowWalletOverflow bool) *model.UserSubscription {
+	t.Helper()
+	plan := &model.SubscriptionPlan{
+		Id:                  planID,
+		Title:               "WildFlow controller billing plan",
+		Currency:            "CNY",
+		DurationUnit:        model.SubscriptionDurationMonth,
+		DurationValue:       1,
+		Enabled:             true,
+		AllowWalletOverflow: &allowWalletOverflow,
+		TotalAmount:         amountTotal,
+		QuotaResetPeriod:    model.SubscriptionResetNever,
+	}
+	require.NoError(t, model.DB.Create(plan).Error)
+	model.InvalidateSubscriptionPlanCache(plan.Id)
+	subscription := &model.UserSubscription{
+		UserId:              42,
+		PlanId:              plan.Id,
+		AmountTotal:         amountTotal,
+		StartTime:           time.Now().Add(-time.Hour).Unix(),
+		EndTime:             time.Now().Add(time.Hour).Unix(),
+		Status:              "active",
+		AllowWalletOverflow: allowWalletOverflow,
+	}
+	require.NoError(t, model.DB.Create(subscription).Error)
+	return subscription
+}
+
+func TestCreateWildFlowJobUsesActiveSubscriptionBeforeWallet(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-subscription-first","state":"queued"}}`))
+	}))
+	subscription := createWildFlowControllerSubscription(t, 810_001, 100_000, false)
+
+	response := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "subscription-first"},
+	)
+	require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
+
+	var user model.User
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(subscription, subscription.Id).Error)
+	require.NoError(t, model.DB.Where("job_id = ?", "job-subscription-first").First(&operation).Error)
+	assert.Equal(t, 1_000_000, user.Quota)
+	assert.Equal(t, int64(3_425), subscription.AmountUsed)
+	assert.Equal(t, model.WildFlowBillingSourceSubscription, operation.BillingSource)
+}
+
+func TestCreateWildFlowJobFallsBackToWalletWhenSubscriptionAllowsOverflow(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-wallet-overflow","state":"queued"}}`))
+	}))
+	subscription := createWildFlowControllerSubscription(t, 810_002, 1, true)
+
+	response := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "wallet-overflow"},
+	)
+	require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
+
+	var user model.User
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(subscription, subscription.Id).Error)
+	require.NoError(t, model.DB.Where("job_id = ?", "job-wallet-overflow").First(&operation).Error)
+	assert.Equal(t, 1_000_000-3_425, user.Quota)
+	assert.Zero(t, subscription.AmountUsed)
+	assert.Equal(t, model.WildFlowBillingSourceWallet, operation.BillingSource)
 }
 
 func TestFailedWildFlowJobRefundsRetailPriceExactlyOnce(t *testing.T) {

@@ -67,6 +67,24 @@ func testWildFlowBillingQuote() WildFlowBillingQuote {
 	}
 }
 
+func TestWildFlowBillingQuoteValidationRejectsIncompleteSnapshots(t *testing.T) {
+	tests := []WildFlowBillingQuote{
+		{},
+		{Currency: "CNY", AmountMicros: 50_000, Unit: "image", BillableUnits: 1, Quota: 3_425},
+	}
+	for _, quote := range tests {
+		require.Error(t, quote.Validate())
+	}
+}
+
+func TestWildFlowBillingHelpersRejectInvalidReferences(t *testing.T) {
+	_, err := AttachWildFlowSubscriptionBilling("missing-operation", WildFlowBillingQuote{}, 0)
+	require.Error(t, err)
+	_, err = AttachWildFlowSubscriptionBilling("missing-operation", testWildFlowBillingQuote(), 0)
+	require.Error(t, err)
+	require.Error(t, RecordWildFlowBillingLog(nil, LogTypeConsume, "invalid"))
+}
+
 func TestReserveWildFlowWalletBillingIsIdempotent(t *testing.T) {
 	db := setupWildFlowBillingModelTest(t)
 	user, token, operation := createWildFlowBillingFixture(t, db, "wallet-reserve")
@@ -85,6 +103,29 @@ func TestReserveWildFlowWalletBillingIsIdempotent(t *testing.T) {
 	assert.Equal(t, WildFlowBillingStateReserved, first.BillingState)
 	assert.Equal(t, WildFlowBillingStateReserved, second.BillingState)
 	assert.Equal(t, WildFlowBillingSourceWallet, second.BillingSource)
+}
+
+func TestReserveWildFlowWalletBillingRejectsChangedPriceSnapshot(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	_, _, operation := createWildFlowBillingFixture(t, db, "price-conflict")
+	quote := testWildFlowBillingQuote()
+	_, err := ReserveWildFlowWalletBilling(operation.OperationID, quote)
+	require.NoError(t, err)
+	quote.AmountMicros++
+
+	_, err = ReserveWildFlowWalletBilling(operation.OperationID, quote)
+	require.ErrorIs(t, err, ErrWildFlowBillingStateConflict)
+}
+
+func TestReserveWildFlowWalletBillingRejectsInsufficientTokenQuota(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	user, token, operation := createWildFlowBillingFixture(t, db, "token-insufficient")
+	require.NoError(t, db.Model(token).Update("remain_quota", 1).Error)
+
+	_, err := ReserveWildFlowWalletBilling(operation.OperationID, testWildFlowBillingQuote())
+	require.ErrorIs(t, err, ErrWildFlowInsufficientTokenQuota)
+	require.NoError(t, db.First(user, user.Id).Error)
+	assert.Equal(t, 100_000, user.Quota)
 }
 
 func TestRefundWildFlowBillingRestoresWalletAndTokenExactlyOnce(t *testing.T) {
@@ -152,4 +193,31 @@ func TestRefundWildFlowBillingDoesNotReleaseRecoveryHold(t *testing.T) {
 	assert.Equal(t, 100_000-quote.Quota, user.Quota)
 	assert.Equal(t, 100_000-quote.Quota, token.RemainQuota)
 	assert.Equal(t, WildFlowBillingStateReserved, current.BillingState)
+}
+
+func TestRefundWildFlowBillingRestoresFundingWhenTokenWasDeleted(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	user, token, operation := createWildFlowBillingFixture(t, db, "deleted-token-refund")
+	_, err := ReserveWildFlowWalletBilling(operation.OperationID, testWildFlowBillingQuote())
+	require.NoError(t, err)
+	require.NoError(t, db.Unscoped().Delete(token).Error)
+	require.NoError(t, UpdateWildFlowOperationExecution(operation.OperationID, "job-deleted-token", "failed", "execution_failed"))
+
+	refunded, changed, err := RefundWildFlowOperationBilling(operation.OperationID)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	require.NoError(t, db.First(user, user.Id).Error)
+	assert.Equal(t, 100_000, user.Quota)
+	assert.Equal(t, WildFlowBillingStateRefunded, refunded.BillingState)
+}
+
+func TestGetWildFlowOperationByIDReturnsNilForUnknownOperation(t *testing.T) {
+	setupWildFlowBillingModelTest(t)
+	operation, err := GetWildFlowOperationByID("op-does-not-exist")
+	require.NoError(t, err)
+	assert.Nil(t, operation)
+	_, err = ReserveWildFlowWalletBilling("op-does-not-exist", testWildFlowBillingQuote())
+	require.Error(t, err)
+	_, err = AttachWildFlowSubscriptionBilling("op-does-not-exist", testWildFlowBillingQuote(), 1)
+	require.Error(t, err)
 }

@@ -186,3 +186,25 @@ func TestQuoteWildFlowBillingRejectsInvalidRuntimeConversion(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestQuoteWildFlowBillingRejectsUnsupportedModel(t *testing.T) {
+	_, err := QuoteWildFlowBilling(WildFlowJobRequest{
+		Model:      "unsupported-model",
+		Parameters: map[string]any{"prompt": "test"},
+	})
+	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
+}
+
+func TestWildFlowBillingServiceIgnoresUnbilledAndNonTerminalOperations(t *testing.T) {
+	_, err := ReserveWildFlowOperationBilling(nil, WildFlowJobRequest{})
+	require.Error(t, err)
+	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), nil, 0))
+	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), &model.WildFlowOperation{
+		BillingState: model.WildFlowBillingStatePending,
+		State:        "queued",
+	}, 0))
+	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), &model.WildFlowOperation{
+		BillingState: model.WildFlowBillingStateReserved,
+		State:        "running",
+	}, 0))
+}

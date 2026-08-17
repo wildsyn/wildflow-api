@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,54 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestStartWildFlowBillingReconcilerFailsClosedWithoutAuthorityOrConfiguration(t *testing.T) {
+	previousMasterNode := common.IsMasterNode
+	t.Cleanup(func() {
+		common.IsMasterNode = previousMasterNode
+		wildFlowBillingReconcilerOnce = sync.Once{}
+	})
+	wildFlowBillingReconcilerOnce = sync.Once{}
+	common.IsMasterNode = false
+	StartWildFlowBillingReconciler()
+	assert.False(t, wildFlowBillingReconcilerRunning.Load())
+
+	wildFlowBillingReconcilerOnce = sync.Once{}
+	common.IsMasterNode = true
+	t.Setenv("WILDFLOW_INFERENCE_URL", "")
+	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "")
+	StartWildFlowBillingReconciler()
+	assert.False(t, wildFlowBillingReconcilerRunning.Load())
+}
+
+func TestStartWildFlowBillingReconcilerProcessesReservedJobsWhenConfigured(t *testing.T) {
+	db := setupWildFlowBillingReconcilerTest(t)
+	operation := createReconcilerOperation(t, db, "startup", 111, 211, "job-startup")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"job":{"id":"job-startup","state":"succeeded","artifacts":[{"id":"artifact-startup","job_id":"job-startup","media_type":"image/png","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}`))
+	}))
+	t.Cleanup(server.Close)
+	previousMasterNode := common.IsMasterNode
+	t.Cleanup(func() {
+		common.IsMasterNode = previousMasterNode
+		wildFlowBillingReconcilerOnce = sync.Once{}
+	})
+	common.IsMasterNode = true
+	wildFlowBillingReconcilerOnce = sync.Once{}
+	t.Setenv("WILDFLOW_INFERENCE_URL", server.URL)
+	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "internal-token")
+	t.Setenv("WILDFLOW_INFERENCE_ALLOW_INTERNAL_HTTP", "true")
+	t.Setenv("WILDFLOW_BILLING_RECONCILE_SECONDS", "300")
+
+	StartWildFlowBillingReconciler()
+	require.Eventually(t, func() bool {
+		if err := db.Where("operation_id = ?", operation.OperationID).First(operation).Error; err != nil {
+			return false
+		}
+		return operation.BillingState == model.WildFlowBillingStateSettled
+	}, time.Second, 10*time.Millisecond)
+}
 
 func setupWildFlowBillingReconcilerTest(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -112,4 +161,34 @@ func TestReconcileWildFlowBillingFinalizesJobsWithoutUserPolling(t *testing.T) {
 	var failedUser model.User
 	require.NoError(t, db.First(&failedUser, 102).Error)
 	assert.Equal(t, 100_000, failedUser.Quota)
+}
+
+func TestReconcileWildFlowBillingKeepsReservationOnTransientInferenceFailure(t *testing.T) {
+	db := setupWildFlowBillingReconcilerTest(t)
+	operation := createReconcilerOperation(t, db, "transient", 104, 204, "job-transient")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	client, err := inferenceclient.New(inferenceclient.Config{
+		BaseURL:           server.URL,
+		Token:             "internal-token",
+		Timeout:           time.Second,
+		AllowInternalHTTP: true,
+	})
+	require.NoError(t, err)
+
+	processed, err := ReconcileWildFlowBillingOnce(context.Background(), client, 100)
+	require.Error(t, err)
+	assert.Zero(t, processed)
+	require.NoError(t, db.Where("operation_id = ?", operation.OperationID).First(operation).Error)
+	assert.Equal(t, "queued", operation.State)
+	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+}
+
+func TestReconcileWildFlowBillingRejectsNilClient(t *testing.T) {
+	processed, err := ReconcileWildFlowBillingOnce(context.Background(), nil, 100)
+	require.Error(t, err)
+	assert.Zero(t, processed)
 }
