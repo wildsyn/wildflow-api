@@ -15,7 +15,10 @@ import (
 
 const wildFlowRetailPriceVersion = "wildflow-retail-cny-v1"
 
-var ErrWildFlowBillingInsufficientQuota = errors.New("insufficient quota for WildFlow job")
+var (
+	ErrWildFlowBillingInsufficientQuota = errors.New("insufficient quota for WildFlow job")
+	ErrWildFlowMissingArtifact          = errors.New("succeeded WildFlow job has no durable artifact")
+)
 
 func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuote, error) {
 	request, err := NormalizeWildFlowJobRequest(request)
@@ -173,7 +176,7 @@ func FinalizeWildFlowOperationBilling(ctx context.Context, operation *model.Wild
 	switch operation.State {
 	case "succeeded":
 		if artifactCount == 0 {
-			return fmt.Errorf("succeeded WildFlow job has no durable artifact")
+			return ErrWildFlowMissingArtifact
 		}
 		settled, _, err := model.SettleWildFlowOperationBilling(operation.OperationID)
 		if err != nil {
