@@ -35,8 +35,10 @@ type oidcOAuthResponse struct {
 type oidcUser struct {
 	OpenID            string `json:"sub"`
 	Email             string `json:"email"`
+	EmailVerified     bool   `json:"email_verified"`
 	Name              string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`
+	LegacyUsername    string `json:"legacy_username"`
 	Picture           string `json:"picture"`
 }
 
@@ -144,7 +146,7 @@ func (p *OIDCProvider) GetUserInfo(ctx context.Context, token *OAuthToken) (*OAu
 		return nil, err
 	}
 
-	if oidcUser.OpenID == "" || oidcUser.Email == "" {
+	if oidcUser.OpenID == "" || oidcUser.Email == "" || !oidcUser.EmailVerified {
 		logger.LogError(ctx, fmt.Sprintf("[OAuth-OIDC] GetUserInfo failed: empty fields (sub=%s, email=%s)", oidcUser.OpenID, oidcUser.Email))
 		return nil, NewOAuthError(i18n.MsgOAuthUserInfoEmpty, map[string]any{"Provider": "OIDC"})
 	}
@@ -155,7 +157,10 @@ func (p *OIDCProvider) GetUserInfo(ctx context.Context, token *OAuthToken) (*OAu
 		ProviderUserID: oidcUser.OpenID,
 		Username:       oidcUser.PreferredUsername,
 		DisplayName:    oidcUser.Name,
-		Email:          oidcUser.Email,
+		Email:          model.NormalizeEmail(oidcUser.Email),
+		Extra: map[string]any{
+			"legacy_username": strings.TrimSpace(oidcUser.LegacyUsername),
+		},
 	}, nil
 }
 

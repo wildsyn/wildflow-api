@@ -29,6 +29,24 @@ type oauthFlowPayload struct {
 	AffiliateCode string `json:"affiliate_code,omitempty"`
 }
 
+func createOAuthFlow(provider, intent, affiliateCode string, userID int, sessionID string) (string, time.Time, error) {
+	payload, err := common.Marshal(oauthFlowPayload{AffiliateCode: affiliateCode})
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt := time.Now().Add(oauthAuthFlowTTL)
+	state, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
+		Purpose:   model.AuthFlowPurposeOAuth,
+		Provider:  provider,
+		Intent:    intent,
+		UserId:    userID,
+		SessionId: sessionID,
+		Payload:   string(payload),
+		ExpiresAt: expiresAt,
+	})
+	return state, expiresAt, err
+}
+
 // providerParams returns map with Provider key for i18n templates
 func providerParams(name string) map[string]any {
 	return map[string]any{"Provider": name}
@@ -62,21 +80,7 @@ func GenerateOAuthCode(c *gin.Context) {
 		userID = identity.UserID
 		sessionID = identity.SessionID
 	}
-	payload, err := common.Marshal(oauthFlowPayload{AffiliateCode: request.Aff})
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	expiresAt := time.Now().Add(oauthAuthFlowTTL)
-	state, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
-		Purpose:   model.AuthFlowPurposeOAuth,
-		Provider:  request.Provider,
-		Intent:    request.Intent,
-		UserId:    userID,
-		SessionId: sessionID,
-		Payload:   string(payload),
-		ExpiresAt: expiresAt,
-	})
+	state, expiresAt, err := createOAuthFlow(request.Provider, request.Intent, request.Aff, userID, sessionID)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -206,6 +210,8 @@ func HandleOAuth(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgUserRegisterDisabled)
 		case *OAuthEmailAlreadyTakenError:
 			common.ApiErrorI18n(c, i18n.MsgUserEmailAlreadyTaken)
+		case *OAuthLegacyAccountBindingError:
+			common.ApiErrorMsg(c, "旧账号迁移未完成，请重新从统一注册入口开始")
 		default:
 			common.ApiError(c, err)
 		}
@@ -278,14 +284,16 @@ func handleOAuthBind(c *gin.Context, provider oauth.Provider, pendingFlow *model
 			common.ApiError(c, err)
 			return
 		}
+	} else if _, ok := provider.(*oauth.OIDCProvider); ok {
+		_, err = model.BindOIDCIdentity(user.Id, oauthUser.ProviderUserID)
 	} else {
 		// Built-in provider: update user record directly
 		provider.SetProviderUserID(&user, oauthUser.ProviderUserID)
 		err = user.Update(false)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 
 	common.ApiSuccessI18n(c, i18n.MsgOAuthBindSuccess, gin.H{
@@ -308,6 +316,19 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 			return nil, &OAuthUserDeletedError{}
 		}
 		return user, nil
+	}
+
+	if _, ok := provider.(*oauth.OIDCProvider); ok {
+		if legacyUsername, ok := oauthUser.Extra["legacy_username"].(string); ok && strings.TrimSpace(legacyUsername) != "" {
+			legacyUser, err := model.BindLegacyOIDCUser(legacyUsername, oauthUser.ProviderUserID, oauthUser.Email)
+			if err != nil {
+				if errors.Is(err, model.ErrEmailAlreadyTaken) {
+					return nil, &OAuthEmailAlreadyTakenError{}
+				}
+				return nil, &OAuthLegacyAccountBindingError{}
+			}
+			return legacyUser, nil
+		}
 	}
 
 	// Try to find user with legacy ID (for GitHub migration from login to numeric ID)
@@ -409,6 +430,11 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 
 			// Set the provider user ID on the user model and update
 			provider.SetProviderUserID(user, oauthUser.ProviderUserID)
+			if _, ok := provider.(*oauth.OIDCProvider); ok {
+				if err := model.ClaimExternalIdentityWithTx(tx, model.ExternalIdentityProviderOIDC, oauthUser.ProviderUserID, user.Id); err != nil {
+					return err
+				}
+			}
 			if err := tx.Model(user).Updates(map[string]interface{}{
 				"github_id":   user.GitHubId,
 				"discord_id":  user.DiscordId,
@@ -450,6 +476,12 @@ type OAuthEmailAlreadyTakenError struct{}
 
 func (e *OAuthEmailAlreadyTakenError) Error() string {
 	return "email is already in use"
+}
+
+type OAuthLegacyAccountBindingError struct{}
+
+func (e *OAuthLegacyAccountBindingError) Error() string {
+	return "legacy account binding failed"
 }
 
 // handleOAuthError handles OAuth errors and returns translated message
