@@ -60,9 +60,10 @@ func TestOIDCEnrollmentLogsOutCentralSessionThenStartsOAuth(t *testing.T) {
 
 	logoutURL, err := url.Parse(beginResponse.Header().Get("Location"))
 	require.NoError(t, err)
-	assert.Equal(t, "auth.wildflow.cn", logoutURL.Host)
-	assert.Equal(t, "wildflow-main", logoutURL.Query().Get("client_id"))
-	assert.Equal(t, "https://wildflow.cn/api/oauth/oidc/enroll/start", logoutURL.Query().Get("post_logout_redirect_uri"))
+	assert.Equal(t, "https://auth.wildflow.cn/if/flow/default-invalidation-flow/", logoutURL.Scheme+"://"+logoutURL.Host+logoutURL.Path)
+	assert.Equal(t, "https://wildflow.cn/api/oauth/oidc/enroll/start", logoutURL.Query().Get("next"))
+	assert.Empty(t, logoutURL.Query().Get("client_id"))
+	assert.Empty(t, logoutURL.Query().Get("post_logout_redirect_uri"))
 
 	var enrollmentCookie *http.Cookie
 	for _, cookie := range beginResponse.Result().Cookies() {
