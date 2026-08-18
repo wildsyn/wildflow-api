@@ -47,7 +47,7 @@ func TestSetRouterExposesPublicServiceInfoAtRoot(t *testing.T) {
 		"service": "WildFlow API",
 		"api_base": "/v1",
 		"api_version": "v1",
-		"documentation": "https://github.com/wildsyn/wildflow/tree/main/docs",
+		"documentation": "https://docs.wildflow.cn",
 		"website": "https://wildflow.cn"
 	}`, response.Body.String())
 }

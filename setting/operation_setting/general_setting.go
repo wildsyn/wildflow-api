@@ -15,7 +15,7 @@ const (
 )
 
 const (
-	WildFlowDocsLink     = "https://github.com/wildsyn/wildflow/tree/main/docs"
+	WildFlowDocsLink     = "https://docs.wildflow.cn"
 	legacyNewAPIDocsLink = "https://docs.newapi.pro"
 )
 
