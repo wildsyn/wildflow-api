@@ -8,26 +8,42 @@ import (
 )
 
 type WildFlowOperation struct {
-	ID                   int64  `json:"-" gorm:"primaryKey"`
-	OperationID          string `json:"id" gorm:"type:varchar(64);uniqueIndex"`
-	UserID               int    `json:"-" gorm:"uniqueIndex:idx_wildflow_operation_user_key,priority:1;index"`
-	TokenID              int    `json:"-" gorm:"index"`
-	IdempotencyKeyDigest string `json:"-" gorm:"type:char(64);uniqueIndex:idx_wildflow_operation_user_key,priority:2"`
-	RequestDigest        string `json:"-" gorm:"type:char(64)"`
-	RequestID            string `json:"request_id" gorm:"type:varchar(64);index"`
-	ProductModelRef      string `json:"model" gorm:"type:varchar(200);index"`
-	ModelVersionRef      string `json:"model_version_ref" gorm:"type:varchar(200)"`
-	JobID                string `json:"job_id,omitempty" gorm:"type:varchar(200);index"`
-	State                string `json:"state" gorm:"type:varchar(32);index"`
-	LastErrorCode        string `json:"error,omitempty" gorm:"type:varchar(64)"`
-	CreatedTime          int64  `json:"created_at" gorm:"bigint"`
-	UpdatedTime          int64  `json:"updated_at" gorm:"bigint"`
+	ID                     int64  `json:"-" gorm:"primaryKey"`
+	OperationID            string `json:"id" gorm:"type:varchar(64);uniqueIndex"`
+	UserID                 int    `json:"-" gorm:"uniqueIndex:idx_wildflow_operation_user_key,priority:1;index"`
+	TokenID                int    `json:"-" gorm:"index"`
+	IdempotencyKeyDigest   string `json:"-" gorm:"type:char(64);uniqueIndex:idx_wildflow_operation_user_key,priority:2"`
+	RequestDigest          string `json:"-" gorm:"type:char(64)"`
+	RequestID              string `json:"request_id" gorm:"type:varchar(64);index"`
+	ProductModelRef        string `json:"model" gorm:"type:varchar(200);index"`
+	ModelVersionRef        string `json:"model_version_ref" gorm:"type:varchar(200)"`
+	JobID                  string `json:"job_id,omitempty" gorm:"type:varchar(200);index"`
+	State                  string `json:"state" gorm:"type:varchar(32);index"`
+	LastErrorCode          string `json:"error,omitempty" gorm:"type:varchar(64)"`
+	BillingState           string `json:"-" gorm:"type:varchar(32);index"`
+	BillingSource          string `json:"-" gorm:"type:varchar(32)"`
+	BillingSubscriptionID  int    `json:"-" gorm:"index"`
+	BillingQuota           int    `json:"-"`
+	BillingTokenQuota      int    `json:"-"`
+	BillingCurrency        string `json:"-" gorm:"type:varchar(8)"`
+	BillingAmountMicros    int64  `json:"-" gorm:"bigint"`
+	BillingUnit            string `json:"-" gorm:"type:varchar(32)"`
+	BillingBillableUnits   int64  `json:"-" gorm:"bigint"`
+	BillingQuotaPerUnit    string `json:"-" gorm:"type:varchar(64)"`
+	BillingUSDExchangeRate string `json:"-" gorm:"type:varchar(64)"`
+	BillingPriceVersion    string `json:"-" gorm:"type:varchar(64)"`
+	BillingSettledTime     int64  `json:"-" gorm:"bigint"`
+	CreatedTime            int64  `json:"created_at" gorm:"bigint"`
+	UpdatedTime            int64  `json:"updated_at" gorm:"bigint"`
 }
 
 func (operation *WildFlowOperation) BeforeCreate(_ *gorm.DB) error {
 	now := time.Now().Unix()
 	if operation.CreatedTime == 0 {
 		operation.CreatedTime = now
+	}
+	if operation.BillingState == "" {
+		operation.BillingState = WildFlowBillingStatePending
 	}
 	operation.UpdatedTime = now
 	return nil
@@ -78,4 +94,21 @@ func UpdateWildFlowOperationExecution(
 			"last_error_code": errorCode,
 			"updated_time":    time.Now().Unix(),
 		}).Error
+}
+
+func ListWildFlowOperationsForBillingReconciliation(limit int) ([]*WildFlowOperation, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var operations []*WildFlowOperation
+	err := DB.Where(
+		"billing_state IN ? AND job_id <> ? AND state <> ?",
+		[]string{WildFlowBillingStateReserved, WildFlowBillingStateRefunding},
+		"",
+		"recovery_required",
+	).
+		Order("updated_time asc, id asc").
+		Limit(limit).
+		Find(&operations).Error
+	return operations, err
 }

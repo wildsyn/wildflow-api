@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -23,13 +24,40 @@ import (
 func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin.Engine, *httptest.Server) {
 	t.Helper()
 	previousDB := model.DB
+	previousLogDB := model.LOG_DB
+	previousRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
 	dsn := "file:wildflow-jobs-" + uuid.NewString() + "?mode=memory&cache=shared"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.WildFlowOperation{}))
+	require.NoError(t, db.AutoMigrate(
+		&model.User{},
+		&model.Token{},
+		&model.Log{},
+		&model.SubscriptionPlan{},
+		&model.UserSubscription{},
+		&model.SubscriptionPreConsumeRecord{},
+		&model.WildFlowOperation{},
+	))
 	model.DB = db
+	model.LOG_DB = db
+	require.NoError(t, db.Create(&model.User{
+		Id:       42,
+		Username: "wildflow-billing-user",
+		Quota:    1_000_000,
+		Group:    "default",
+	}).Error)
+	require.NoError(t, db.Create(&model.Token{
+		Id:          7,
+		UserId:      42,
+		Key:         "wildflow-test-token",
+		Name:        "wildflow-test-token",
+		RemainQuota: 1_000_000,
+	}).Error)
 	t.Cleanup(func() {
 		model.DB = previousDB
+		model.LOG_DB = previousLogDB
+		common.RedisEnabled = previousRedisEnabled
 		sqlDB, sqlErr := db.DB()
 		if sqlErr == nil {
 			_ = sqlDB.Close()
@@ -71,6 +99,320 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	engine.GET("/v1/artifacts/:artifact_id", GetWildFlowArtifact)
 	engine.GET("/v1/artifacts/:artifact_id/content", DownloadWildFlowArtifact)
 	return engine, server
+}
+
+func TestCreateWildFlowJobPreConsumesRetailPriceExactlyOnce(t *testing.T) {
+	submissions := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"job":{"id":"job-billed-image","state":"queued"}}`))
+			return
+		}
+		submissions++
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-billed-image","state":"queued"}}`))
+	}))
+	body := `{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`
+
+	created := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "billed-image"})
+	replayed := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "billed-image"})
+
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	require.Equal(t, http.StatusOK, replayed.Code, replayed.Body.String())
+	assert.Equal(t, 1, submissions)
+	var user model.User
+	var token model.Token
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(&token, 7).Error)
+	require.NoError(t, model.DB.Where("job_id = ?", "job-billed-image").First(&operation).Error)
+	assert.Equal(t, 1_000_000-3_425, user.Quota)
+	assert.Equal(t, 1_000_000-3_425, token.RemainQuota)
+	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+	assert.Equal(t, int64(50_000), operation.BillingAmountMicros)
+}
+
+func TestCreateWildFlowJobRejectsInsufficientQuotaBeforeInference(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", 42).Update("quota", 1).Error)
+
+	response := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "insufficient-quota"},
+	)
+
+	require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"code":"insufficient_quota"`)
+	assert.Equal(t, 0, requests)
+}
+
+func TestCreateWildFlowJobDoesNotReserveQuotaWhenInferenceIsNotConfigured(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Setenv("WILDFLOW_INFERENCE_URL", "")
+
+	response := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "inference-not-configured"},
+	)
+
+	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+	var user model.User
+	var token model.Token
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(&token, 7).Error)
+	require.NoError(t, model.DB.Where("user_id = ?", 42).First(&operation).Error)
+	assert.Equal(t, 1_000_000, user.Quota)
+	assert.Equal(t, 1_000_000, token.RemainQuota)
+	assert.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
+}
+
+func createWildFlowControllerSubscription(t *testing.T, planID int, amountTotal int64, allowWalletOverflow bool) *model.UserSubscription {
+	t.Helper()
+	plan := &model.SubscriptionPlan{
+		Id:                  planID,
+		Title:               "WildFlow controller billing plan",
+		Currency:            "CNY",
+		DurationUnit:        model.SubscriptionDurationMonth,
+		DurationValue:       1,
+		Enabled:             true,
+		AllowWalletOverflow: &allowWalletOverflow,
+		TotalAmount:         amountTotal,
+		QuotaResetPeriod:    model.SubscriptionResetNever,
+	}
+	require.NoError(t, model.DB.Create(plan).Error)
+	model.InvalidateSubscriptionPlanCache(plan.Id)
+	subscription := &model.UserSubscription{
+		UserId:              42,
+		PlanId:              plan.Id,
+		AmountTotal:         amountTotal,
+		StartTime:           time.Now().Add(-time.Hour).Unix(),
+		EndTime:             time.Now().Add(time.Hour).Unix(),
+		Status:              "active",
+		AllowWalletOverflow: allowWalletOverflow,
+	}
+	require.NoError(t, model.DB.Create(subscription).Error)
+	return subscription
+}
+
+func TestCreateWildFlowJobUsesActiveSubscriptionBeforeWallet(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-subscription-first","state":"queued"}}`))
+	}))
+	subscription := createWildFlowControllerSubscription(t, 810_001, 100_000, false)
+
+	response := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "subscription-first"},
+	)
+	require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
+
+	var user model.User
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(subscription, subscription.Id).Error)
+	require.NoError(t, model.DB.Where("job_id = ?", "job-subscription-first").First(&operation).Error)
+	assert.Equal(t, 1_000_000, user.Quota)
+	assert.Equal(t, int64(3_425), subscription.AmountUsed)
+	assert.Equal(t, model.WildFlowBillingSourceSubscription, operation.BillingSource)
+}
+
+func TestCreateWildFlowJobFallsBackToWalletWhenSubscriptionAllowsOverflow(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-wallet-overflow","state":"queued"}}`))
+	}))
+	subscription := createWildFlowControllerSubscription(t, 810_002, 1, true)
+
+	response := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "wallet-overflow"},
+	)
+	require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
+
+	var user model.User
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(subscription, subscription.Id).Error)
+	require.NoError(t, model.DB.Where("job_id = ?", "job-wallet-overflow").First(&operation).Error)
+	assert.Equal(t, 1_000_000-3_425, user.Quota)
+	assert.Zero(t, subscription.AmountUsed)
+	assert.Equal(t, model.WildFlowBillingSourceWallet, operation.BillingSource)
+}
+
+func TestFailedWildFlowJobRefundsRetailPriceExactlyOnce(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"id":"job-billed-failed","state":"queued"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"job":{"id":"job-billed-failed","state":"failed","last_error":"provider failed"}}`))
+	}))
+	created := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "billed-failed"},
+	)
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &payload))
+	operationID := payload["id"].(string)
+
+	first := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	second := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+
+	var user model.User
+	var token model.Token
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(&token, 7).Error)
+	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&operation).Error)
+	assert.Equal(t, 1_000_000, user.Quota)
+	assert.Equal(t, 1_000_000, token.RemainQuota)
+	assert.Equal(t, model.WildFlowBillingStateRefunded, operation.BillingState)
+}
+
+func TestSucceededWildFlowJobSettlesRetailPriceExactlyOnce(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"id":"job-billed-succeeded","state":"queued"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"job":{"id":"job-billed-succeeded","state":"succeeded","artifacts":[{"id":"artifact-billed","job_id":"job-billed-succeeded","media_type":"image/png","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}`))
+	}))
+	created := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "billed-succeeded"},
+	)
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &payload))
+	operationID := payload["id"].(string)
+
+	first := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	second := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+
+	var user model.User
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&operation).Error)
+	assert.Equal(t, 3_425, user.UsedQuota)
+	assert.Equal(t, 1, user.RequestCount)
+	assert.Equal(t, model.WildFlowBillingStateSettled, operation.BillingState)
+	var consumeLogs int64
+	require.NoError(t, model.LOG_DB.Model(&model.Log{}).
+		Where("user_id = ? AND type = ? AND request_id = ?", 42, model.LogTypeConsume, operationID).
+		Count(&consumeLogs).Error)
+	assert.Equal(t, int64(1), consumeLogs)
+}
+
+func TestRecoveryRequiredWildFlowJobKeepsReservation(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"id":"job-billed-recovery","state":"queued"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"job":{"id":"job-billed-recovery","state":"recovery_required","last_error":"result ownership unknown"}}`))
+	}))
+	created := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "billed-recovery"},
+	)
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &payload))
+	operationID := payload["id"].(string)
+
+	status := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	require.Equal(t, http.StatusOK, status.Code, status.Body.String())
+
+	var user model.User
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&operation).Error)
+	assert.Equal(t, 1_000_000-3_425, user.Quota)
+	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+}
+
+func TestSucceededWildFlowJobWithoutArtifactEntersRecoveryRequired(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"id":"job-missing-result","state":"queued"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"job":{"id":"job-missing-result","state":"succeeded"}}`))
+	}))
+	created := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "missing-result"},
+	)
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &payload))
+	operationID := payload["id"].(string)
+
+	status := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	require.Equal(t, http.StatusServiceUnavailable, status.Code, status.Body.String())
+	assert.Equal(t, "5", status.Header().Get("Retry-After"))
+	assert.Contains(t, status.Body.String(), `"code":"recovery_required"`)
+
+	var operation model.WildFlowOperation
+	var user model.User
+	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&operation).Error)
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	assert.Equal(t, "recovery_required", operation.State)
+	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+	assert.Equal(t, 1_000_000-3_425, user.Quota)
 }
 
 func TestCreateWildFlowJobEnforcesTokenModelLimitsBeforeInference(t *testing.T) {

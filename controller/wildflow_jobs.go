@@ -75,14 +75,21 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		}
 		operation.State = job.State
 		operation.LastErrorCode = errorCode
+		if !finalizeWildFlowOperationBilling(c, operation, len(job.Artifacts)) {
+			return
+		}
 		writeWildFlowOperationHeaders(c, operation)
 		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
 		return
 	}
-
 	client, err := newWildFlowInferenceClient()
 	if err != nil {
-		markWildFlowRecoveryRequired(c, operation, "inference_not_configured", err)
+		wildFlowJobError(c, http.StatusServiceUnavailable, "inference_unavailable", "inference service is unavailable")
+		return
+	}
+	operation, err = service.ReserveWildFlowOperationBilling(operation, request)
+	if err != nil {
+		writeWildFlowBillingError(c, err)
 		return
 	}
 	job, err := client.SubmitJob(c.Request.Context(), inferenceclient.JobCreateRequest{
@@ -122,6 +129,9 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 	operation.JobID = job.ID
 	operation.State = job.State
 	operation.LastErrorCode = ""
+	if !finalizeWildFlowOperationBilling(c, operation, len(job.Artifacts)) {
+		return
+	}
 	status := http.StatusOK
 	if created {
 		status = http.StatusAccepted
@@ -186,6 +196,9 @@ func GetWildFlowJob(c *gin.Context) {
 	}
 	operation.State = job.State
 	operation.LastErrorCode = errorCode
+	if !finalizeWildFlowOperationBilling(c, operation, len(job.Artifacts)) {
+		return
+	}
 	c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
 }
 
@@ -215,6 +228,9 @@ func CancelWildFlowJob(c *gin.Context) {
 	}
 	operation.State = job.State
 	operation.LastErrorCode = errorCode
+	if !finalizeWildFlowOperationBilling(c, operation, len(job.Artifacts)) {
+		return
+	}
 	c.JSON(http.StatusOK, operation)
 }
 
@@ -403,6 +419,45 @@ func markWildFlowRecoveryRequired(c *gin.Context, operation *model.WildFlowOpera
 	wildFlowJobError(c, http.StatusServiceUnavailable, code, "job submission is temporarily unavailable")
 }
 
+func finalizeWildFlowOperationBilling(c *gin.Context, operation *model.WildFlowOperation, artifactCount int) bool {
+	err := service.FinalizeWildFlowOperationBilling(c.Request.Context(), operation, artifactCount)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, service.ErrWildFlowMissingArtifact) {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"missing_artifact",
+		); updateErr != nil {
+			wildFlowInternalError(c, updateErr)
+			return false
+		}
+		operation.State = "recovery_required"
+		operation.LastErrorCode = "missing_artifact"
+		wildFlowJobError(c, http.StatusServiceUnavailable, "recovery_required", "job result requires recovery")
+		return false
+	}
+	if errors.Is(err, model.ErrWildFlowBillingStateConflict) {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"billing_state_conflict",
+		); updateErr != nil {
+			wildFlowInternalError(c, updateErr)
+			return false
+		}
+		operation.State = "recovery_required"
+		operation.LastErrorCode = "billing_state_conflict"
+		wildFlowJobError(c, http.StatusServiceUnavailable, "recovery_required", "job billing requires recovery")
+		return false
+	}
+	wildFlowInternalError(c, err)
+	return false
+}
+
 func writeWildFlowOperationError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrWildFlowIdempotencyRequired), errors.Is(err, service.ErrWildFlowInvalidParameters):
@@ -414,6 +469,18 @@ func writeWildFlowOperationError(c *gin.Context, err error) {
 	default:
 		wildFlowInternalError(c, err)
 	}
+}
+
+func writeWildFlowBillingError(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrWildFlowBillingInsufficientQuota) {
+		wildFlowJobError(c, http.StatusForbidden, "insufficient_quota", "insufficient quota for this job")
+		return
+	}
+	if errors.Is(err, model.ErrWildFlowBillingStateConflict) {
+		wildFlowJobError(c, http.StatusConflict, "billing_state_conflict", "billing state conflicts with this request")
+		return
+	}
+	wildFlowInternalError(c, err)
 }
 
 func writeWildFlowInferenceError(c *gin.Context, err error) {
