@@ -82,15 +82,14 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
 		return
 	}
+	client, err := newWildFlowInferenceClient()
+	if err != nil {
+		wildFlowJobError(c, http.StatusServiceUnavailable, "inference_unavailable", "inference service is unavailable")
+		return
+	}
 	operation, err = service.ReserveWildFlowOperationBilling(operation, request)
 	if err != nil {
 		writeWildFlowBillingError(c, err)
-		return
-	}
-
-	client, err := newWildFlowInferenceClient()
-	if err != nil {
-		markWildFlowRecoveryRequired(c, operation, "inference_not_configured", err)
 		return
 	}
 	job, err := client.SubmitJob(c.Request.Context(), inferenceclient.JobCreateRequest{

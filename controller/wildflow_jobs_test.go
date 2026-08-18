@@ -154,6 +154,31 @@ func TestCreateWildFlowJobRejectsInsufficientQuotaBeforeInference(t *testing.T) 
 	assert.Equal(t, 0, requests)
 }
 
+func TestCreateWildFlowJobDoesNotReserveQuotaWhenInferenceIsNotConfigured(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Setenv("WILDFLOW_INFERENCE_URL", "")
+
+	response := performWildFlowRequest(
+		t,
+		engine,
+		http.MethodPost,
+		"/v1/jobs",
+		`{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`,
+		map[string]string{"Idempotency-Key": "inference-not-configured"},
+	)
+
+	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+	var user model.User
+	var token model.Token
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(&token, 7).Error)
+	require.NoError(t, model.DB.Where("user_id = ?", 42).First(&operation).Error)
+	assert.Equal(t, 1_000_000, user.Quota)
+	assert.Equal(t, 1_000_000, token.RemainQuota)
+	assert.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
+}
+
 func createWildFlowControllerSubscription(t *testing.T, planID int, amountTotal int64, allowWalletOverflow bool) *model.UserSubscription {
 	t.Helper()
 	plan := &model.SubscriptionPlan{

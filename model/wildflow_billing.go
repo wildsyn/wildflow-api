@@ -170,12 +170,11 @@ func ReserveWildFlowWalletBilling(operationID string, quote WildFlowBillingQuote
 	return result, nil
 }
 
-func AttachWildFlowSubscriptionBilling(operationID string, quote WildFlowBillingQuote, subscriptionID int) (*WildFlowOperation, error) {
+// ReserveWildFlowSubscriptionBilling atomically reserves subscription and token
+// quota and persists the operation billing snapshot.
+func ReserveWildFlowSubscriptionBilling(operationID string, quote WildFlowBillingQuote) (*WildFlowOperation, error) {
 	if err := quote.Validate(); err != nil {
 		return nil, err
-	}
-	if subscriptionID <= 0 {
-		return nil, fmt.Errorf("invalid subscription id")
 	}
 	var result *WildFlowOperation
 	var tokenKey string
@@ -189,6 +188,15 @@ func AttachWildFlowSubscriptionBilling(operationID string, quote WildFlowBilling
 		shouldReserve, err := ensureWildFlowBillingCanReserve(operation, quote)
 		if err != nil || !shouldReserve {
 			result = operation
+			return err
+		}
+		preConsume, err := preConsumeUserSubscriptionTx(
+			tx,
+			operation.OperationID,
+			operation.UserID,
+			int64(quote.Quota),
+		)
+		if err != nil {
 			return err
 		}
 		if operation.TokenID > 0 {
@@ -212,7 +220,12 @@ func AttachWildFlowSubscriptionBilling(operationID string, quote WildFlowBilling
 			}
 		}
 		if err := tx.Model(&WildFlowOperation{}).Where("id = ?", operation.ID).
-			Updates(wildFlowBillingSnapshotUpdates(quote, WildFlowBillingSourceSubscription, subscriptionID, tokenQuota)).Error; err != nil {
+			Updates(wildFlowBillingSnapshotUpdates(
+				quote,
+				WildFlowBillingSourceSubscription,
+				preConsume.UserSubscriptionId,
+				tokenQuota,
+			)).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("id = ?", operation.ID).First(operation).Error; err != nil {

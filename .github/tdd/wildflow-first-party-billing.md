@@ -50,6 +50,24 @@ FLUX.2 offerings charge the configured retail prices in `wildflow-api`.
   exist.
 - GREEN, subscription refund recovery: the same command passed after refund
   ownership was serialized and made resumable by the background reconciler.
+- RED, atomic subscription reservation: `go test ./model -run
+  TestReserveWildFlowSubscriptionBillingRollsBackPreConsumeWhenTokenReserveFails
+  -count=1` failed because no single-transaction reservation contract existed.
+- GREEN, atomic subscription reservation: the same command passed after
+  subscription pre-consume, token reserve, and operation snapshot persistence
+  were moved into one database transaction.
+- RED, atomic subscription refund: `go test ./model -run
+  TestRefundSubscriptionPreConsumeRollsBackSubscriptionAndRecordTogether
+  -count=1` failed because the refund path opened a nested independent
+  transaction.
+- GREEN, atomic subscription refund: the same command passed after the quota
+  update and refund record transition were bound to the caller transaction.
+- RED, unavailable inference configuration: `go test ./controller -run
+  TestCreateWildFlowJobDoesNotReserveQuotaWhenInferenceIsNotConfigured
+  -count=1` showed wallet and token quota were reserved before the local client
+  configuration failed.
+- GREEN, unavailable inference configuration: the same command passed after
+  client configuration validation was moved before every billing side effect.
 
 ## Test specification
 
@@ -63,20 +81,23 @@ FLUX.2 offerings charge the configured retail prices in `wildflow-api`.
 | Unknown or missing results retain funds for recovery | `controller/wildflow_jobs_test.go`, `service/wildflow_billing_reconciler_test.go` | integration | PASS |
 | Background reconciliation works without client polling and preserves funds on transient inference failure | `service/wildflow_billing_reconciler_test.go` | integration | PASS |
 | Deleting an API token cannot block the user's funding refund | `model/wildflow_billing_test.go` | regression | PASS |
+| Subscription reserve failure cannot leave consumed subscription quota behind | `model/wildflow_billing_test.go` | regression | PASS |
+| Subscription quota and refund record roll back together | `model/wildflow_billing_test.go` | regression | PASS |
+| Invalid inference configuration fails before wallet, token, or subscription reservation | `controller/wildflow_jobs_test.go` | regression | PASS |
 
 ## Final verification
 
-- `go test ./... -count=1`: PASS.
+- `go test ./... -count=1`: PASS (1241 tests across 88 packages).
 - `go vet ./...`: PASS.
 - `GOWORK=off go test ./... -count=1` from `relaykit/`: PASS.
-- Focused race run across model/service/controller WildFlow billing tests:
-  PASS.
+- `go test -race ./model ./service ./controller -run
+  'WildFlow|SubscriptionPreConsume' -count=1`: PASS (58 tests).
 - Cross-package coverage command:
   `go test ./model ./service ./controller
   -coverpkg=./model,./service,./controller
   -coverprofile=/tmp/wildflow-billing-cross-cover.out -count=1`: PASS.
 - Deduplicated statement coverage for the three new dedicated billing files:
-  **80.10% (326/407)**. Deduplication takes the maximum hit count for identical
+  **80.89% (326/403)**. Deduplication takes the maximum hit count for identical
   source ranges because `go test` emits one profile section per tested package
   when `-coverpkg` is shared.
 

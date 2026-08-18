@@ -1,7 +1,9 @@
 package model
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
@@ -25,6 +27,64 @@ func setupWildFlowBillingModelTest(t *testing.T) *gorm.DB {
 		}
 	})
 	return db
+}
+
+func TestRefundSubscriptionPreConsumeRollsBackSubscriptionAndRecordTogether(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	require.NoError(t, db.AutoMigrate(&UserSubscription{}, &SubscriptionPreConsumeRecord{}))
+
+	subscription := &UserSubscription{UserId: 91, PlanId: 7, AmountTotal: 100_000, AmountUsed: 3_425, Status: "active"}
+	require.NoError(t, db.Create(subscription).Error)
+	record := &SubscriptionPreConsumeRecord{
+		RequestId:          "op-subscription-rollback",
+		UserId:             subscription.UserId,
+		UserSubscriptionId: subscription.Id,
+		PreConsumed:        3_425,
+		Status:             "consumed",
+	}
+	require.NoError(t, db.Create(record).Error)
+
+	rollbackErr := errors.New("force outer transaction rollback")
+	err := db.Transaction(func(tx *gorm.DB) error {
+		require.NoError(t, refundSubscriptionPreConsumeTx(tx, record.RequestId))
+		return rollbackErr
+	})
+	require.ErrorIs(t, err, rollbackErr)
+
+	require.NoError(t, db.First(subscription, subscription.Id).Error)
+	require.NoError(t, db.First(record, record.Id).Error)
+	assert.Equal(t, int64(3_425), subscription.AmountUsed)
+	assert.Equal(t, "consumed", record.Status)
+}
+
+func TestReserveWildFlowSubscriptionBillingRollsBackPreConsumeWhenTokenReserveFails(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	require.NoError(t, db.AutoMigrate(&SubscriptionPlan{}, &UserSubscription{}, &SubscriptionPreConsumeRecord{}))
+	user, token, operation := createWildFlowBillingFixture(t, db, "subscription-token-rollback")
+	require.NoError(t, db.Model(token).Update("remain_quota", 1).Error)
+
+	plan := &SubscriptionPlan{Title: "billing test", DurationUnit: SubscriptionDurationMonth, DurationValue: 1, TotalAmount: 100_000}
+	require.NoError(t, db.Create(plan).Error)
+	subscription := &UserSubscription{
+		UserId:      user.Id,
+		PlanId:      plan.Id,
+		AmountTotal: 100_000,
+		StartTime:   time.Now().Add(-time.Hour).Unix(),
+		EndTime:     time.Now().Add(time.Hour).Unix(),
+		Status:      "active",
+	}
+	require.NoError(t, db.Create(subscription).Error)
+
+	_, err := ReserveWildFlowSubscriptionBilling(operation.OperationID, testWildFlowBillingQuote())
+	require.ErrorIs(t, err, ErrWildFlowInsufficientTokenQuota)
+
+	require.NoError(t, db.First(subscription, subscription.Id).Error)
+	assert.Zero(t, subscription.AmountUsed)
+	var recordCount int64
+	require.NoError(t, db.Model(&SubscriptionPreConsumeRecord{}).
+		Where("request_id = ?", operation.OperationID).
+		Count(&recordCount).Error)
+	assert.Zero(t, recordCount)
 }
 
 func createWildFlowBillingFixture(t *testing.T, db *gorm.DB, suffix string) (*User, *Token, *WildFlowOperation) {
@@ -78,9 +138,9 @@ func TestWildFlowBillingQuoteValidationRejectsIncompleteSnapshots(t *testing.T) 
 }
 
 func TestWildFlowBillingHelpersRejectInvalidReferences(t *testing.T) {
-	_, err := AttachWildFlowSubscriptionBilling("missing-operation", WildFlowBillingQuote{}, 0)
+	_, err := ReserveWildFlowSubscriptionBilling("missing-operation", WildFlowBillingQuote{})
 	require.Error(t, err)
-	_, err = AttachWildFlowSubscriptionBilling("missing-operation", testWildFlowBillingQuote(), 0)
+	_, err = ReserveWildFlowSubscriptionBilling("missing-operation", testWildFlowBillingQuote())
 	require.Error(t, err)
 	require.Error(t, RecordWildFlowBillingLog(nil, LogTypeConsume, "invalid"))
 }
@@ -218,6 +278,6 @@ func TestGetWildFlowOperationByIDReturnsNilForUnknownOperation(t *testing.T) {
 	assert.Nil(t, operation)
 	_, err = ReserveWildFlowWalletBilling("op-does-not-exist", testWildFlowBillingQuote())
 	require.Error(t, err)
-	_, err = AttachWildFlowSubscriptionBilling("op-does-not-exist", testWildFlowBillingQuote(), 1)
+	_, err = ReserveWildFlowSubscriptionBilling("op-does-not-exist", testWildFlowBillingQuote())
 	require.Error(t, err)
 }

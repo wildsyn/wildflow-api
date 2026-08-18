@@ -110,27 +110,16 @@ func ReserveWildFlowOperationBilling(operation *model.WildFlowOperation, request
 		return reserved, reserveErr
 	}
 	trySubscription := func() (*model.WildFlowOperation, error) {
-		result, preConsumeErr := model.PreConsumeUserSubscription(
-			operation.OperationID,
-			operation.UserID,
-			operation.ProductModelRef,
-			0,
-			int64(quote.Quota),
-		)
-		if preConsumeErr != nil {
-			if strings.Contains(preConsumeErr.Error(), "no active subscription") || strings.Contains(preConsumeErr.Error(), "subscription quota insufficient") {
-				return nil, fmt.Errorf("%w: %v", ErrWildFlowBillingInsufficientQuota, preConsumeErr)
+		reserved, reserveErr := model.ReserveWildFlowSubscriptionBilling(operation.OperationID, quote)
+		if reserveErr != nil {
+			if errors.Is(reserveErr, model.ErrWildFlowInsufficientTokenQuota) ||
+				strings.Contains(reserveErr.Error(), "no active subscription") ||
+				strings.Contains(reserveErr.Error(), "subscription quota insufficient") {
+				return nil, fmt.Errorf("%w: %v", ErrWildFlowBillingInsufficientQuota, reserveErr)
 			}
-			return nil, preConsumeErr
+			return nil, reserveErr
 		}
-		reserved, attachErr := model.AttachWildFlowSubscriptionBilling(operation.OperationID, quote, result.UserSubscriptionId)
-		if errors.Is(attachErr, model.ErrWildFlowInsufficientTokenQuota) {
-			if refundErr := model.RefundSubscriptionPreConsume(operation.OperationID); refundErr != nil {
-				return nil, fmt.Errorf("refund subscription after token quota failure: %w", refundErr)
-			}
-			return nil, fmt.Errorf("%w: %v", ErrWildFlowBillingInsufficientQuota, attachErr)
-		}
-		return reserved, attachErr
+		return reserved, nil
 	}
 
 	switch preference {
