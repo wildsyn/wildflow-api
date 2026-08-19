@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/inferenceclient"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/shopspring/decimal"
@@ -18,6 +21,7 @@ const wildFlowRetailPriceVersion = "wildflow-retail-cny-v1"
 var (
 	ErrWildFlowBillingInsufficientQuota = errors.New("insufficient quota for WildFlow job")
 	ErrWildFlowMissingArtifact          = errors.New("succeeded WildFlow job has no durable artifact")
+	ErrWildFlowInvalidArtifact          = errors.New("succeeded WildFlow job has an incomplete or invalid artifact")
 )
 
 func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuote, error) {
@@ -158,15 +162,121 @@ func ReserveWildFlowOperationBilling(operation *model.WildFlowOperation, request
 	}
 }
 
-func FinalizeWildFlowOperationBilling(ctx context.Context, operation *model.WildFlowOperation, artifactCount int) error {
-	if operation == nil || operation.BillingState == "" || operation.BillingState == model.WildFlowBillingStatePending {
+func ValidateWildFlowCompletedArtifacts(operation *model.WildFlowOperation, artifacts []inferenceclient.Artifact) error {
+	if len(artifacts) == 0 {
+		return ErrWildFlowMissingArtifact
+	}
+	if operation == nil || operation.ProductModelRef != WildFlowModelVoxCPM2 {
+		return nil
+	}
+	if len(artifacts) != 1 || operation.BillingBillableUnits <= 0 {
+		return ErrWildFlowInvalidArtifact
+	}
+
+	artifact := artifacts[0]
+	if artifact.MediaType != "audio/mpeg" || artifact.SizeBytes <= 0 || !validWildFlowSHA256(artifact.SHA256) {
+		return ErrWildFlowInvalidArtifact
+	}
+	if codec, ok := artifact.Metadata["codec"].(string); !ok || codec != "mp3" {
+		return ErrWildFlowInvalidArtifact
+	}
+
+	requiredIntegers := map[string]int64{
+		"bitrate":     96_000,
+		"sample_rate": 48_000,
+		"channels":    1,
+	}
+	for key, expected := range requiredIntegers {
+		value, ok := wildFlowArtifactInteger(artifact.Metadata[key])
+		if !ok || value != expected {
+			return ErrWildFlowInvalidArtifact
+		}
+	}
+	duration, durationOK := wildFlowArtifactInteger(artifact.Metadata["duration_ms"])
+	inputCharacters, inputOK := wildFlowArtifactInteger(artifact.Metadata["input_characters"])
+	completedCharacters, completedOK := wildFlowArtifactInteger(artifact.Metadata["completed_characters"])
+	segmentCount, segmentOK := wildFlowArtifactInteger(artifact.Metadata["segment_count"])
+	completedSegmentCount, completedSegmentOK := wildFlowArtifactInteger(artifact.Metadata["completed_segment_count"])
+	metadataSize, sizeOK := wildFlowArtifactInteger(artifact.Metadata["size_bytes"])
+	metadataSHA256, shaOK := artifact.Metadata["sha256"].(string)
+	if !durationOK || duration <= 0 ||
+		!inputOK || inputCharacters != operation.BillingBillableUnits ||
+		!completedOK || completedCharacters != operation.BillingBillableUnits ||
+		!segmentOK || segmentCount <= 0 ||
+		!completedSegmentOK || completedSegmentCount != segmentCount ||
+		!sizeOK || metadataSize != artifact.SizeBytes ||
+		!shaOK || !validWildFlowSHA256(metadataSHA256) || !strings.EqualFold(metadataSHA256, artifact.SHA256) {
+		return ErrWildFlowInvalidArtifact
+	}
+	return nil
+}
+
+func wildFlowArtifactInteger(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int8:
+		return int64(typed), true
+	case int16:
+		return int64(typed), true
+	case int32:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case uint:
+		if uint64(typed) > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(typed), true
+	case uint8:
+		return int64(typed), true
+	case uint16:
+		return int64(typed), true
+	case uint32:
+		return int64(typed), true
+	case uint64:
+		if typed > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(typed), true
+	case float32:
+		value := float64(typed)
+		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value || value < math.MinInt64 || value > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(value), true
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) || math.Trunc(typed) != typed || typed < math.MinInt64 || typed > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(typed), true
+	default:
+		return 0, false
+	}
+}
+
+func validWildFlowSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func FinalizeWildFlowOperationBilling(ctx context.Context, operation *model.WildFlowOperation, artifacts []inferenceclient.Artifact) error {
+	if operation == nil {
+		return nil
+	}
+	if operation.State == "succeeded" {
+		if err := ValidateWildFlowCompletedArtifacts(operation, artifacts); err != nil {
+			return err
+		}
+	}
+	if operation.BillingState == "" || operation.BillingState == model.WildFlowBillingStatePending {
 		return nil
 	}
 	switch operation.State {
 	case "succeeded":
-		if artifactCount == 0 {
-			return ErrWildFlowMissingArtifact
-		}
 		settled, _, err := model.SettleWildFlowOperationBilling(operation.OperationID)
 		if err != nil {
 			return err
