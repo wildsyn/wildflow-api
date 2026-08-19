@@ -20,7 +20,7 @@ import (
 )
 
 const maxResponseBodyBytes = 1 << 20
-const maxArtifactBodyBytes = 128 << 20
+const maxArtifactBodyBytes = 320 << 20
 
 var resourceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$`)
 var sha256Pattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -364,9 +364,13 @@ func (client *Client) OpenArtifactContent(
 		}
 		return nil, responseError(response, body)
 	}
+	if response.ContentLength < 0 {
+		response.Body.Close()
+		return nil, errors.New("inference artifact content requires a bounded content length")
+	}
 	if response.ContentLength > maxArtifactBodyBytes {
 		response.Body.Close()
-		return nil, errors.New("inference artifact content exceeds 128 MiB limit")
+		return nil, errors.New("inference artifact content exceeds 320 MiB limit")
 	}
 	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || (!strings.HasPrefix(mediaType, "audio/") && !strings.HasPrefix(mediaType, "image/")) {
