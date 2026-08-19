@@ -42,13 +42,20 @@ large response bodies, download header mismatches were not persisted and could
 immediately return to `succeeded`, and reserved `recovery_required` operations
 were permanently excluded from reconciliation.
 
+Checkpoint `4020a7c3` added the final stream-copy reproducer. A response that
+declared the correct bounded length but closed early produced `unexpected EOF`;
+the partial HTTP response was unavoidable, but later status and idempotent replay
+still incorrectly reported `succeeded`.
+
 ## GREEN evidence
 
 Checkpoints `feb1cf3f` and `012dc1cc` implement the Artifact and stream gates.
 Checkpoint `7476ad6e` adds public download mismatch coverage. Checkpoint
 `d1ec9240` separates bounded streaming from the ordinary request deadline,
 persists sticky public recovery state, and lets the background reconciler settle
-or refund repaired reserved operations.
+or refund repaired reserved operations. Checkpoint `a32fed85` persists any body
+copy failure as `recovery_required/artifact_stream_error`, so later reads cannot
+repeat a false success after an already-started partial download.
 
 | Guarantee | Test target | Type | Result |
 |---|---|---|---|
@@ -63,6 +70,7 @@ or refund repaired reserved operations.
 | A validated bounded body can stream beyond the ordinary inference request timeout | `TestOpenArtifactContentDoesNotApplyRequestTimeoutToAValidatedBodyStream` | client integration | PASS |
 | Content mismatches persist `recovery_required`; polling and idempotent replay cannot immediately restore a false success | `TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch` | controller integration | PASS |
 | Reserved recovery operations are revisited so repaired output settles and terminal provider failure refunds | `TestReconcileWildFlowBillingRevisitsReservedRecoveryOperations` | service integration | PASS |
+| An early EOF after correct headers persists stream recovery for subsequent polling and idempotent replay | `TestDownloadVoxCPM2ArtifactPersistsRecoveryAfterStreamFailure` | controller integration | PASS |
 
 Final validation:
 
