@@ -1,0 +1,80 @@
+package controller
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/QuantumNous/new-api/model"
+	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+)
+
+func TestReceiveWildFlowUsageEventIsAuthenticatedImmutableAndIdempotent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	database, err := gorm.Open(sqlite.Open("file:wildflow-usage-events?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(&model.WildFlowOperation{}, &model.WildFlowUsageEvent{}))
+	previousDB := model.DB
+	model.DB = database
+	t.Cleanup(func() { model.DB = previousDB })
+	require.NoError(t, database.Create(&model.WildFlowOperation{
+		OperationID: "operation-1", UserID: 1, TokenID: 1,
+		IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64),
+		RequestID: "request-1", ProductModelRef: "VoxCPM2", ModelVersionRef: "openbmb/VoxCPM2",
+		JobID: "job-1", State: "running",
+	}).Error)
+
+	t.Setenv("WILDFLOW_USAGE_EVENT_TOKEN", strings.Repeat("t", 40))
+	engine := gin.New()
+	engine.POST("/internal/v1/usage-events", ReceiveWildFlowUsageEvent)
+	body := `{
+		"event_id":"usage-1","aggregate_type":"job","aggregate_id":"job-1",
+		"event_type":"usage.recorded.v1","payload":{
+			"usage_event_id":"usage-1","operation_id":"operation-1","job_id":"job-1",
+			"attempt_id":"attempt-1","model_version_ref":"openbmb/VoxCPM2",
+			"channel_type":"provider_connector","kind":"characters","quantity":2,"unit":"character",
+			"started_at":"2026-08-19T00:00:00Z","ended_at":"2026-08-19T00:00:01Z",
+			"evidence_ref":"artifact:artifact-1"
+		}
+	}`
+
+	perform := func(payload string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/internal/v1/usage-events", bytes.NewBufferString(payload))
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 40))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", "usage-1")
+		response := httptest.NewRecorder()
+		engine.ServeHTTP(response, request)
+		return response
+	}
+
+	first := perform(body)
+	assert.Equal(t, http.StatusAccepted, first.Code, first.Body.String())
+	replay := perform(body)
+	assert.Equal(t, http.StatusOK, replay.Code, replay.Body.String())
+	assert.Equal(t, "true", replay.Header().Get("X-WildFlow-Event-Replayed"))
+
+	conflictBody := strings.Replace(body, `"quantity":2`, `"quantity":3`, 1)
+	conflict := perform(conflictBody)
+	assert.Equal(t, http.StatusConflict, conflict.Code, conflict.Body.String())
+	var count int64
+	require.NoError(t, database.Model(&model.WildFlowUsageEvent{}).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
+
+func TestReceiveWildFlowUsageEventRejectsMissingIdentityBeforeDatabaseAccess(t *testing.T) {
+	previousDB := model.DB
+	model.DB = nil
+	t.Cleanup(func() { model.DB = previousDB })
+	t.Setenv("WILDFLOW_USAGE_EVENT_TOKEN", strings.Repeat("t", 40))
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/internal/v1/usage-events", bytes.NewBufferString(`{}`))
+	ReceiveWildFlowUsageEvent(context)
+	assert.Equal(t, http.StatusUnauthorized, context.Writer.Status())
+}
