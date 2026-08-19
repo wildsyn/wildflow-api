@@ -20,7 +20,7 @@ import (
 )
 
 const maxResponseBodyBytes = 1 << 20
-const maxArtifactBodyBytes = 64 << 20
+const maxArtifactBodyBytes = 320 << 20
 
 var resourceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$`)
 var sha256Pattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -37,9 +37,10 @@ type Config struct {
 }
 
 type Client struct {
-	baseURL string
-	token   string
-	http    *http.Client
+	baseURL    string
+	token      string
+	http       *http.Client
+	streamHTTP *http.Client
 }
 
 type JobCreateRequest struct {
@@ -129,14 +130,25 @@ func New(config Config) (*Client, error) {
 		return nil, errors.New("inference client timeout must be positive")
 	}
 
+	checkRedirect := func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("default HTTP transport does not support streaming safeguards")
+	}
+	streamTransport := defaultTransport.Clone()
+	streamTransport.ResponseHeaderTimeout = config.Timeout
 	return &Client{
 		baseURL: strings.TrimRight(baseURL.String(), "/"),
 		token:   config.Token,
 		http: &http.Client{
-			Timeout: config.Timeout,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
+			Timeout:       config.Timeout,
+			CheckRedirect: checkRedirect,
+		},
+		streamHTTP: &http.Client{
+			Transport:     streamTransport,
+			CheckRedirect: checkRedirect,
 		},
 	}, nil
 }
@@ -352,7 +364,7 @@ func (client *Client) OpenArtifactContent(
 	if err != nil {
 		return nil, err
 	}
-	response, err := client.http.Do(request)
+	response, err := client.streamHTTP.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("open inference artifact content: %w", err)
 	}
@@ -364,9 +376,13 @@ func (client *Client) OpenArtifactContent(
 		}
 		return nil, responseError(response, body)
 	}
+	if response.ContentLength < 0 {
+		response.Body.Close()
+		return nil, errors.New("inference artifact content requires a bounded content length")
+	}
 	if response.ContentLength > maxArtifactBodyBytes {
 		response.Body.Close()
-		return nil, errors.New("inference artifact content exceeds 64 MiB limit")
+		return nil, errors.New("inference artifact content exceeds 320 MiB limit")
 	}
 	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || (!strings.HasPrefix(mediaType, "audio/") && !strings.HasPrefix(mediaType, "image/")) {

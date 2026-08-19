@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/inferenceclient"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/glebarez/sqlite"
@@ -167,7 +168,7 @@ func TestReserveWildFlowOperationBillingUsesSubscriptionPreferenceDurably(t *tes
 	require.NoError(t, model.UpdateWildFlowOperationExecution(operation.OperationID, "job-subscription", "failed", "execution_failed"))
 	second.State = "failed"
 	second.JobID = "job-subscription"
-	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), second, 0))
+	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), second, nil))
 	require.NoError(t, db.First(subscription, subscription.Id).Error)
 	require.NoError(t, db.First(token, token.Id).Error)
 	assert.Zero(t, subscription.AmountUsed)
@@ -197,7 +198,7 @@ func TestReserveWildFlowOperationBillingUsesSubscriptionPreferenceDurably(t *tes
 	recoveryOperation.State = "failed"
 	recoveryOperation.JobID = "job-subscription-recovery"
 	recoveryOperation.BillingState = model.WildFlowBillingStateRefunding
-	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), recoveryOperation, 0))
+	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), recoveryOperation, nil))
 	require.NoError(t, db.First(subscription, subscription.Id).Error)
 	assert.Zero(t, subscription.AmountUsed)
 	assert.Equal(t, model.WildFlowBillingStateRefunded, recoveryOperation.BillingState)
@@ -226,13 +227,82 @@ func TestQuoteWildFlowBillingRejectsUnsupportedModel(t *testing.T) {
 func TestWildFlowBillingServiceIgnoresUnbilledAndNonTerminalOperations(t *testing.T) {
 	_, err := ReserveWildFlowOperationBilling(nil, WildFlowJobRequest{})
 	require.Error(t, err)
-	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), nil, 0))
+	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), nil, nil))
 	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), &model.WildFlowOperation{
 		BillingState: model.WildFlowBillingStatePending,
 		State:        "queued",
-	}, 0))
+	}, nil))
 	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), &model.WildFlowOperation{
 		BillingState: model.WildFlowBillingStateReserved,
 		State:        "running",
-	}, 0))
+	}, nil))
+}
+
+func TestValidateWildFlowCompletedArtifactsRequiresCanonicalVoxMP3Evidence(t *testing.T) {
+	const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	operation := &model.WildFlowOperation{
+		ProductModelRef:      WildFlowModelVoxCPM2,
+		BillingBillableUnits: 5,
+	}
+	validArtifact := inferenceclient.Artifact{
+		ID:        "artifact-vox",
+		JobID:     "job-vox",
+		MediaType: "audio/mpeg",
+		SizeBytes: 12,
+		SHA256:    digest,
+		Metadata: map[string]any{
+			"codec":                   "mp3",
+			"bitrate":                 float64(96_000),
+			"sample_rate":             float64(48_000),
+			"channels":                float64(1),
+			"duration_ms":             float64(1_200),
+			"input_characters":        float64(5),
+			"completed_characters":    float64(5),
+			"segment_count":           float64(1),
+			"completed_segment_count": float64(1),
+			"size_bytes":              float64(12),
+			"sha256":                  digest,
+		},
+	}
+	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{validArtifact}))
+
+	tests := []struct {
+		name   string
+		mutate func(*inferenceclient.Artifact)
+	}{
+		{name: "codec", mutate: func(artifact *inferenceclient.Artifact) { artifact.Metadata["codec"] = "wav" }},
+		{name: "bitrate", mutate: func(artifact *inferenceclient.Artifact) { artifact.Metadata["bitrate"] = float64(128_000) }},
+		{name: "sample rate", mutate: func(artifact *inferenceclient.Artifact) { artifact.Metadata["sample_rate"] = float64(44_100) }},
+		{name: "channels", mutate: func(artifact *inferenceclient.Artifact) { artifact.Metadata["channels"] = float64(2) }},
+		{name: "duration", mutate: func(artifact *inferenceclient.Artifact) { artifact.Metadata["duration_ms"] = float64(0) }},
+		{name: "input characters", mutate: func(artifact *inferenceclient.Artifact) { artifact.Metadata["input_characters"] = float64(4) }},
+		{name: "fractional metadata", mutate: func(artifact *inferenceclient.Artifact) { artifact.Metadata["segment_count"] = 1.5 }},
+		{name: "artifact count", mutate: func(artifact *inferenceclient.Artifact) { artifact.Metadata["completed_segment_count"] = float64(0) }},
+		{name: "digest format", mutate: func(artifact *inferenceclient.Artifact) { artifact.Metadata["sha256"] = strings.Repeat("z", 64) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			artifact := validArtifact
+			artifact.Metadata = make(map[string]any, len(validArtifact.Metadata))
+			for key, value := range validArtifact.Metadata {
+				artifact.Metadata[key] = value
+			}
+			test.mutate(&artifact)
+			require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
+		})
+	}
+}
+
+func TestValidateWildFlowCompletedArtifactsPreservesFluxArtifactContract(t *testing.T) {
+	operation := &model.WildFlowOperation{ProductModelRef: WildFlowModelFlux2}
+	artifact := inferenceclient.Artifact{
+		ID:        "artifact-image",
+		JobID:     "job-image",
+		MediaType: "image/png",
+		SizeBytes: 12,
+		SHA256:    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+
+	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
+	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, nil), ErrWildFlowMissingArtifact)
 }

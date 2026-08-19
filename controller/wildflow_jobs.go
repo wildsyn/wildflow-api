@@ -57,6 +57,11 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		writeWildFlowOperationError(c, err)
 		return
 	}
+	if operation.State == "recovery_required" {
+		writeWildFlowOperationHeaders(c, operation)
+		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, nil))
+		return
+	}
 	if operation.JobID != "" {
 		client, clientErr := newWildFlowInferenceClient()
 		if clientErr != nil {
@@ -75,7 +80,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		}
 		operation.State = job.State
 		operation.LastErrorCode = errorCode
-		if !finalizeWildFlowOperationBilling(c, operation, len(job.Artifacts)) {
+		if !finalizeWildFlowOperationBilling(c, operation, job.Artifacts) {
 			return
 		}
 		writeWildFlowOperationHeaders(c, operation)
@@ -129,7 +134,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 	operation.JobID = job.ID
 	operation.State = job.State
 	operation.LastErrorCode = ""
-	if !finalizeWildFlowOperationBilling(c, operation, len(job.Artifacts)) {
+	if !finalizeWildFlowOperationBilling(c, operation, job.Artifacts) {
 		return
 	}
 	status := http.StatusOK
@@ -175,6 +180,10 @@ func GetWildFlowJob(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if operation.State == "recovery_required" {
+		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, nil))
+		return
+	}
 	if operation.JobID == "" {
 		c.JSON(http.StatusOK, operation)
 		return
@@ -196,7 +205,7 @@ func GetWildFlowJob(c *gin.Context) {
 	}
 	operation.State = job.State
 	operation.LastErrorCode = errorCode
-	if !finalizeWildFlowOperationBilling(c, operation, len(job.Artifacts)) {
+	if !finalizeWildFlowOperationBilling(c, operation, job.Artifacts) {
 		return
 	}
 	c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
@@ -228,14 +237,14 @@ func CancelWildFlowJob(c *gin.Context) {
 	}
 	operation.State = job.State
 	operation.LastErrorCode = errorCode
-	if !finalizeWildFlowOperationBilling(c, operation, len(job.Artifacts)) {
+	if !finalizeWildFlowOperationBilling(c, operation, job.Artifacts) {
 		return
 	}
 	c.JSON(http.StatusOK, operation)
 }
 
 func GetWildFlowArtifact(c *gin.Context) {
-	artifact, ok := loadOwnedWildFlowArtifact(c)
+	artifact, _, ok := loadOwnedWildFlowArtifact(c)
 	if !ok {
 		return
 	}
@@ -243,7 +252,7 @@ func GetWildFlowArtifact(c *gin.Context) {
 }
 
 func DownloadWildFlowArtifact(c *gin.Context) {
-	artifact, ok := loadOwnedWildFlowArtifact(c)
+	artifact, operation, ok := loadOwnedWildFlowArtifact(c)
 	if !ok {
 		return
 	}
@@ -262,13 +271,39 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 		return
 	}
 	defer content.Body.Close()
+	if content.MediaType != artifact.MediaType ||
+		(content.ContentLength >= 0 && content.ContentLength != artifact.SizeBytes) {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"artifact_integrity_error",
+		); updateErr != nil {
+			wildFlowInternalError(c, updateErr)
+			return
+		}
+		wildFlowJobError(c, http.StatusServiceUnavailable, "artifact_integrity_error", "artifact content requires recovery")
+		return
+	}
+	filename := content.Filename
+	if artifact.MediaType == "audio/mpeg" {
+		filename = artifact.ID + ".mp3"
+	}
 	c.Header("Content-Type", content.MediaType)
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeWildFlowFilename(content.Filename)))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeWildFlowFilename(filename)))
 	if content.ContentLength >= 0 {
 		c.Header("Content-Length", strconv.FormatInt(content.ContentLength, 10))
 	}
 	c.Status(http.StatusOK)
 	if _, err := io.Copy(c.Writer, content.Body); err != nil {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"artifact_stream_error",
+		); updateErr != nil {
+			logger.LogError(c.Request.Context(), "persist WildFlow artifact stream recovery: "+updateErr.Error())
+		}
 		logger.LogError(c.Request.Context(), "stream WildFlow artifact: "+err.Error())
 	}
 }
@@ -286,28 +321,45 @@ func loadWildFlowOperation(c *gin.Context) (*model.WildFlowOperation, bool) {
 	return operation, true
 }
 
-func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, bool) {
+func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model.WildFlowOperation, bool) {
 	client, err := newWildFlowInferenceClient()
 	if err != nil {
 		wildFlowJobError(c, http.StatusServiceUnavailable, "inference_unavailable", "inference service is unavailable")
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
 	userID := c.GetInt("id")
 	artifact, err := client.GetArtifact(c.Request.Context(), c.Param("artifact_id"), wildFlowTenantRef(userID))
 	if err != nil {
 		writeWildFlowInferenceError(c, err)
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
 	operation, err := model.GetWildFlowOperationForUserAndJob(userID, artifact.JobID)
 	if err != nil {
 		wildFlowInternalError(c, err)
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
 	if operation == nil {
 		wildFlowJobError(c, http.StatusNotFound, "artifact_not_found", "artifact not found")
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
-	return artifact, true
+	if operation.State != "succeeded" || operation.BillingState != model.WildFlowBillingStateSettled {
+		wildFlowJobError(c, http.StatusConflict, "artifact_not_ready", "artifact is not ready")
+		return inferenceclient.Artifact{}, nil, false
+	}
+	if err := service.ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}); err != nil {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"invalid_artifact",
+		); updateErr != nil {
+			wildFlowInternalError(c, updateErr)
+			return inferenceclient.Artifact{}, nil, false
+		}
+		wildFlowJobError(c, http.StatusServiceUnavailable, "recovery_required", "job result requires recovery")
+		return inferenceclient.Artifact{}, nil, false
+	}
+	return artifact, operation, true
 }
 
 func newWildFlowInferenceClient() (*inferenceclient.Client, error) {
@@ -361,7 +413,11 @@ func publicWildFlowArtifact(artifact inferenceclient.Artifact) gin.H {
 
 func publicWildFlowArtifactMetadata(metadata map[string]any) map[string]any {
 	public := make(map[string]any)
-	for _, key := range []string{"characters", "voice", "width", "height", "prompt_length"} {
+	for _, key := range []string{
+		"codec", "bitrate", "sample_rate", "channels", "duration_ms",
+		"input_characters", "completed_characters", "segment_count", "completed_segment_count",
+		"size_bytes", "sha256", "voice", "width", "height", "prompt_length",
+	} {
 		if value, ok := metadata[key]; ok {
 			public[key] = value
 		}
@@ -419,8 +475,8 @@ func markWildFlowRecoveryRequired(c *gin.Context, operation *model.WildFlowOpera
 	wildFlowJobError(c, http.StatusServiceUnavailable, code, "job submission is temporarily unavailable")
 }
 
-func finalizeWildFlowOperationBilling(c *gin.Context, operation *model.WildFlowOperation, artifactCount int) bool {
-	err := service.FinalizeWildFlowOperationBilling(c.Request.Context(), operation, artifactCount)
+func finalizeWildFlowOperationBilling(c *gin.Context, operation *model.WildFlowOperation, artifacts []inferenceclient.Artifact) bool {
+	err := service.FinalizeWildFlowOperationBilling(c.Request.Context(), operation, artifacts)
 	if err == nil {
 		return true
 	}
@@ -436,6 +492,21 @@ func finalizeWildFlowOperationBilling(c *gin.Context, operation *model.WildFlowO
 		}
 		operation.State = "recovery_required"
 		operation.LastErrorCode = "missing_artifact"
+		wildFlowJobError(c, http.StatusServiceUnavailable, "recovery_required", "job result requires recovery")
+		return false
+	}
+	if errors.Is(err, service.ErrWildFlowInvalidArtifact) {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"invalid_artifact",
+		); updateErr != nil {
+			wildFlowInternalError(c, updateErr)
+			return false
+		}
+		operation.State = "recovery_required"
+		operation.LastErrorCode = "invalid_artifact"
 		wildFlowJobError(c, http.StatusServiceUnavailable, "recovery_required", "job result requires recovery")
 		return false
 	}

@@ -83,9 +83,19 @@ func ReconcileWildFlowBillingOnce(ctx context.Context, client *inferenceclient.C
 		state := job.State
 		errorCode := ""
 		switch {
-		case state == "succeeded" && len(job.Artifacts) == 0:
-			state = "recovery_required"
-			errorCode = "missing_artifact"
+		case state == "succeeded":
+			artifactErr := ValidateWildFlowCompletedArtifacts(operation, job.Artifacts)
+			switch {
+			case errors.Is(artifactErr, ErrWildFlowMissingArtifact):
+				state = "recovery_required"
+				errorCode = "missing_artifact"
+			case errors.Is(artifactErr, ErrWildFlowInvalidArtifact):
+				state = "recovery_required"
+				errorCode = "invalid_artifact"
+			case artifactErr != nil:
+				reconciliationErrors = append(reconciliationErrors, fmt.Errorf("operation %s artifact validation: %w", operation.OperationID, artifactErr))
+				continue
+			}
 		case state == "recovery_required":
 			errorCode = "recovery_required"
 		case state == "failed" || strings.TrimSpace(job.LastError) != "":
@@ -98,7 +108,7 @@ func ReconcileWildFlowBillingOnce(ctx context.Context, client *inferenceclient.C
 		operation.JobID = job.ID
 		operation.State = state
 		operation.LastErrorCode = errorCode
-		if finalizeErr := FinalizeWildFlowOperationBilling(ctx, operation, len(job.Artifacts)); finalizeErr != nil {
+		if finalizeErr := FinalizeWildFlowOperationBilling(ctx, operation, job.Artifacts); finalizeErr != nil {
 			if errors.Is(finalizeErr, model.ErrWildFlowBillingStateConflict) {
 				if recoveryErr := model.UpdateWildFlowOperationExecution(
 					operation.OperationID,

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -99,6 +100,19 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	engine.GET("/v1/artifacts/:artifact_id", GetWildFlowArtifact)
 	engine.GET("/v1/artifacts/:artifact_id/content", DownloadWildFlowArtifact)
 	return engine, server
+}
+
+func validVoxArtifactJSON(artifactID string, jobID string, characters int) string {
+	const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	return fmt.Sprintf(
+		`{"id":%q,"job_id":%q,"media_type":"audio/mpeg","size_bytes":12,"sha256":%q,"metadata":{"codec":"mp3","bitrate":96000,"sample_rate":48000,"channels":1,"duration_ms":1200,"input_characters":%d,"completed_characters":%d,"segment_count":1,"completed_segment_count":1,"size_bytes":12,"sha256":%q,"voice":"default"}}`,
+		artifactID,
+		jobID,
+		digest,
+		characters,
+		characters,
+		digest,
+	)
 }
 
 func TestCreateWildFlowJobPreConsumesRetailPriceExactlyOnce(t *testing.T) {
@@ -415,6 +429,73 @@ func TestSucceededWildFlowJobWithoutArtifactEntersRecoveryRequired(t *testing.T)
 	assert.Equal(t, 1_000_000-3_425, user.Quota)
 }
 
+func TestSucceededVoxCPM2JobRejectsIncompleteArtifactsAndKeepsReservation(t *testing.T) {
+	tests := []struct {
+		name     string
+		artifact string
+	}{
+		{
+			name:     "WAV is not a public success artifact",
+			artifact: `{"id":"artifact-invalid","job_id":"job-invalid-vox","media_type":"audio/wav","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
+		},
+		{
+			name:     "required MP3 metadata is missing",
+			artifact: `{"id":"artifact-invalid","job_id":"job-invalid-vox","media_type":"audio/mpeg","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
+		},
+		{
+			name:     "completed characters do not cover billed input",
+			artifact: `{"id":"artifact-invalid","job_id":"job-invalid-vox","media_type":"audio/mpeg","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"codec":"mp3","bitrate":96000,"sample_rate":48000,"channels":1,"duration_ms":1200,"input_characters":5,"completed_characters":4,"segment_count":1,"completed_segment_count":1,"size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`,
+		},
+		{
+			name:     "completed segment count is inconsistent",
+			artifact: `{"id":"artifact-invalid","job_id":"job-invalid-vox","media_type":"audio/mpeg","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"codec":"mp3","bitrate":96000,"sample_rate":48000,"channels":1,"duration_ms":1200,"input_characters":5,"completed_characters":5,"segment_count":2,"completed_segment_count":1,"size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`,
+		},
+		{
+			name:     "metadata size does not match artifact",
+			artifact: `{"id":"artifact-invalid","job_id":"job-invalid-vox","media_type":"audio/mpeg","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"codec":"mp3","bitrate":96000,"sample_rate":48000,"channels":1,"duration_ms":1200,"input_characters":5,"completed_characters":5,"segment_count":1,"completed_segment_count":1,"size_bytes":11,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`,
+		},
+		{
+			name:     "metadata digest does not match artifact",
+			artifact: `{"id":"artifact-invalid","job_id":"job-invalid-vox","media_type":"audio/mpeg","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","metadata":{"codec":"mp3","bitrate":96000,"sample_rate":48000,"channels":1,"duration_ms":1200,"input_characters":5,"completed_characters":5,"segment_count":1,"completed_segment_count":1,"size_bytes":12,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost {
+					w.WriteHeader(http.StatusAccepted)
+					_, _ = w.Write([]byte(`{"job":{"id":"job-invalid-vox","state":"queued"}}`))
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"job":{"id":"job-invalid-vox","state":"succeeded","artifacts":[%s]}}`, test.artifact)
+			}))
+			created := performWildFlowRequest(
+				t,
+				engine,
+				http.MethodPost,
+				"/v1/jobs",
+				`{"model":"VoxCPM2","parameters":{"input":"hello","voice":"default"}}`,
+				map[string]string{"Idempotency-Key": "invalid-vox-artifact"},
+			)
+			require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+			var payload map[string]any
+			require.NoError(t, common.Unmarshal(created.Body.Bytes(), &payload))
+
+			status := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+payload["id"].(string), "", nil)
+
+			require.Equal(t, http.StatusServiceUnavailable, status.Code, status.Body.String())
+			assert.Contains(t, status.Body.String(), `"code":"recovery_required"`)
+			var operation model.WildFlowOperation
+			require.NoError(t, model.DB.Where("operation_id = ?", payload["id"].(string)).First(&operation).Error)
+			assert.Equal(t, "recovery_required", operation.State)
+			assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+			assert.Equal(t, int64(5), operation.BillingBillableUnits)
+		})
+	}
+}
+
 func TestCreateWildFlowJobEnforcesTokenModelLimitsBeforeInference(t *testing.T) {
 	requests := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -673,13 +754,13 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 			_, _ = w.Write([]byte(`{"job":{"id":"job-1","state":"queued"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/jobs/job-1":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"job":{"id":"job-1","state":"succeeded","artifacts":[{"id":"artifact-1","job_id":"job-1","media_type":"audio/wav","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}`))
+			_, _ = fmt.Fprintf(w, `{"job":{"id":"job-1","state":"succeeded","artifacts":[%s]}}`, validVoxArtifactJSON("artifact-1", "job-1", 5))
 		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-1":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"artifact":{"id":"artifact-1","job_id":"job-1","media_type":"audio/wav","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`))
+			_, _ = fmt.Fprintf(w, `{"artifact":%s}`, validVoxArtifactJSON("artifact-1", "job-1", 5))
 		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-1/content":
-			w.Header().Set("Content-Type", "audio/wav")
-			w.Header().Set("Content-Disposition", `attachment; filename="artifact-1.wav"`)
+			w.Header().Set("Content-Type", "audio/mpeg")
+			w.Header().Set("Content-Disposition", `attachment; filename="artifact-1.mp3"`)
 			_, _ = io.Copy(w, bytes.NewBufferString("audio-result"))
 		default:
 			http.NotFound(w, r)
@@ -705,7 +786,139 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	assert.Contains(t, replayed.Body.String(), `"download":"/v1/artifacts/artifact-1/content"`)
 	require.Equal(t, http.StatusOK, artifactResponse.Code, artifactResponse.Body.String())
 	assert.NotContains(t, artifactResponse.Body.String(), "storage_ref")
+	assert.Contains(t, artifactResponse.Body.String(), `"codec":"mp3"`)
+	assert.Contains(t, artifactResponse.Body.String(), `"input_characters":5`)
+	assert.Contains(t, artifactResponse.Body.String(), `"completed_characters":5`)
+	assert.Contains(t, artifactResponse.Body.String(), `"segment_count":1`)
+	assert.Contains(t, artifactResponse.Body.String(), `"completed_segment_count":1`)
 	require.Equal(t, http.StatusOK, downloadResponse.Code, downloadResponse.Body.String())
-	assert.Equal(t, "audio/wav", downloadResponse.Header().Get("Content-Type"))
+	assert.Equal(t, "audio/mpeg", downloadResponse.Header().Get("Content-Type"))
+	assert.Contains(t, downloadResponse.Header().Get("Content-Disposition"), ".mp3")
 	assert.Equal(t, "audio-result", downloadResponse.Body.String())
+}
+
+func TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch(t *testing.T) {
+	tests := []struct {
+		name          string
+		mediaType     string
+		contentLength string
+	}{
+		{name: "media type", mediaType: "audio/wav", contentLength: "12"},
+		{name: "content length", mediaType: "audio/mpeg", contentLength: "11"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			jobReads := 0
+			engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/internal/v1/jobs":
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusAccepted)
+					_, _ = w.Write([]byte(`{"job":{"id":"job-download-mismatch","state":"queued"}}`))
+				case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/jobs/job-download-mismatch":
+					jobReads++
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = fmt.Fprintf(w, `{"job":{"id":"job-download-mismatch","state":"succeeded","artifacts":[%s]}}`, validVoxArtifactJSON("artifact-download-mismatch", "job-download-mismatch", 5))
+				case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-download-mismatch":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = fmt.Fprintf(w, `{"artifact":%s}`, validVoxArtifactJSON("artifact-download-mismatch", "job-download-mismatch", 5))
+				case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-download-mismatch/content":
+					w.Header().Set("Content-Type", test.mediaType)
+					w.Header().Set("Content-Length", test.contentLength)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			created := performWildFlowRequest(
+				t,
+				engine,
+				http.MethodPost,
+				"/v1/jobs",
+				`{"model":"VoxCPM2","parameters":{"input":"hello","voice":"default"}}`,
+				map[string]string{"Idempotency-Key": "download-mismatch"},
+			)
+			require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+			var operation map[string]any
+			require.NoError(t, common.Unmarshal(created.Body.Bytes(), &operation))
+			status := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operation["id"].(string), "", nil)
+			require.Equal(t, http.StatusOK, status.Code, status.Body.String())
+			assert.Equal(t, 1, jobReads)
+
+			download := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-download-mismatch/content", "", nil)
+			recoveryStatus := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operation["id"].(string), "", nil)
+			replay := performWildFlowRequest(
+				t,
+				engine,
+				http.MethodPost,
+				"/v1/jobs",
+				`{"model":"VoxCPM2","parameters":{"input":"hello","voice":"default"}}`,
+				map[string]string{"Idempotency-Key": "download-mismatch"},
+			)
+
+			require.Equal(t, http.StatusServiceUnavailable, download.Code, download.Body.String())
+			assert.Contains(t, download.Body.String(), `"code":"artifact_integrity_error"`)
+			assert.NotEqual(t, "audio/wav", download.Header().Get("Content-Type"))
+			require.Equal(t, http.StatusOK, recoveryStatus.Code, recoveryStatus.Body.String())
+			assert.Contains(t, recoveryStatus.Body.String(), `"state":"recovery_required"`)
+			assert.NotContains(t, recoveryStatus.Body.String(), `"artifacts"`)
+			require.Equal(t, http.StatusOK, replay.Code, replay.Body.String())
+			assert.Contains(t, replay.Body.String(), `"state":"recovery_required"`)
+			assert.Equal(t, 1, jobReads, "recovery_required must be sticky for public polling and replay")
+			var persisted model.WildFlowOperation
+			require.NoError(t, model.DB.Where("operation_id = ?", operation["id"].(string)).First(&persisted).Error)
+			assert.Equal(t, "recovery_required", persisted.State)
+		})
+	}
+}
+
+func TestDownloadVoxCPM2ArtifactPersistsRecoveryAfterStreamFailure(t *testing.T) {
+	jobReads := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/internal/v1/jobs":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"id":"job-stream-failure","state":"queued"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/jobs/job-stream-failure":
+			jobReads++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"job":{"id":"job-stream-failure","state":"succeeded","artifacts":[%s]}}`, validVoxArtifactJSON("artifact-stream-failure", "job-stream-failure", 5))
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-stream-failure":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"artifact":%s}`, validVoxArtifactJSON("artifact-stream-failure", "job-stream-failure", 5))
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-stream-failure/content":
+			w.Header().Set("Content-Type", "audio/mpeg")
+			w.Header().Set("Content-Length", "12")
+			_, _ = w.Write([]byte("short"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	requestBody := `{"model":"VoxCPM2","parameters":{"input":"hello","voice":"default"}}`
+	requestHeaders := map[string]string{"Idempotency-Key": "stream-failure"}
+	created := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", requestBody, requestHeaders)
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	var operation map[string]any
+	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &operation))
+	operationID := operation["id"].(string)
+	status := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	require.Equal(t, http.StatusOK, status.Code, status.Body.String())
+	assert.Equal(t, 1, jobReads)
+
+	download := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-stream-failure/content", "", nil)
+	recoveryStatus := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	replay := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", requestBody, requestHeaders)
+
+	require.Equal(t, http.StatusOK, download.Code, "the public stream had already started before unexpected EOF")
+	assert.Equal(t, "short", download.Body.String())
+	require.Equal(t, http.StatusOK, recoveryStatus.Code, recoveryStatus.Body.String())
+	assert.Contains(t, recoveryStatus.Body.String(), `"state":"recovery_required"`)
+	assert.Contains(t, recoveryStatus.Body.String(), `"error":"artifact_stream_error"`)
+	require.Equal(t, http.StatusOK, replay.Code, replay.Body.String())
+	assert.Contains(t, replay.Body.String(), `"state":"recovery_required"`)
+	assert.Equal(t, 1, jobReads)
+	var persisted model.WildFlowOperation
+	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&persisted).Error)
+	assert.Equal(t, "recovery_required", persisted.State)
+	assert.Equal(t, "artifact_stream_error", persisted.LastErrorCode)
 }
