@@ -57,6 +57,11 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		writeWildFlowOperationError(c, err)
 		return
 	}
+	if operation.State == "recovery_required" {
+		writeWildFlowOperationHeaders(c, operation)
+		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, nil))
+		return
+	}
 	if operation.JobID != "" {
 		client, clientErr := newWildFlowInferenceClient()
 		if clientErr != nil {
@@ -175,6 +180,10 @@ func GetWildFlowJob(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if operation.State == "recovery_required" {
+		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, nil))
+		return
+	}
 	if operation.JobID == "" {
 		c.JSON(http.StatusOK, operation)
 		return
@@ -235,7 +244,7 @@ func CancelWildFlowJob(c *gin.Context) {
 }
 
 func GetWildFlowArtifact(c *gin.Context) {
-	artifact, ok := loadOwnedWildFlowArtifact(c)
+	artifact, _, ok := loadOwnedWildFlowArtifact(c)
 	if !ok {
 		return
 	}
@@ -243,7 +252,7 @@ func GetWildFlowArtifact(c *gin.Context) {
 }
 
 func DownloadWildFlowArtifact(c *gin.Context) {
-	artifact, ok := loadOwnedWildFlowArtifact(c)
+	artifact, operation, ok := loadOwnedWildFlowArtifact(c)
 	if !ok {
 		return
 	}
@@ -264,6 +273,15 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 	defer content.Body.Close()
 	if content.MediaType != artifact.MediaType ||
 		(content.ContentLength >= 0 && content.ContentLength != artifact.SizeBytes) {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"artifact_integrity_error",
+		); updateErr != nil {
+			wildFlowInternalError(c, updateErr)
+			return
+		}
 		wildFlowJobError(c, http.StatusServiceUnavailable, "artifact_integrity_error", "artifact content requires recovery")
 		return
 	}
@@ -295,30 +313,30 @@ func loadWildFlowOperation(c *gin.Context) (*model.WildFlowOperation, bool) {
 	return operation, true
 }
 
-func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, bool) {
+func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model.WildFlowOperation, bool) {
 	client, err := newWildFlowInferenceClient()
 	if err != nil {
 		wildFlowJobError(c, http.StatusServiceUnavailable, "inference_unavailable", "inference service is unavailable")
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
 	userID := c.GetInt("id")
 	artifact, err := client.GetArtifact(c.Request.Context(), c.Param("artifact_id"), wildFlowTenantRef(userID))
 	if err != nil {
 		writeWildFlowInferenceError(c, err)
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
 	operation, err := model.GetWildFlowOperationForUserAndJob(userID, artifact.JobID)
 	if err != nil {
 		wildFlowInternalError(c, err)
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
 	if operation == nil {
 		wildFlowJobError(c, http.StatusNotFound, "artifact_not_found", "artifact not found")
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
 	if operation.State != "succeeded" || operation.BillingState != model.WildFlowBillingStateSettled {
 		wildFlowJobError(c, http.StatusConflict, "artifact_not_ready", "artifact is not ready")
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
 	if err := service.ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}); err != nil {
 		if updateErr := model.UpdateWildFlowOperationExecution(
@@ -328,12 +346,12 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, bool) 
 			"invalid_artifact",
 		); updateErr != nil {
 			wildFlowInternalError(c, updateErr)
-			return inferenceclient.Artifact{}, false
+			return inferenceclient.Artifact{}, nil, false
 		}
 		wildFlowJobError(c, http.StatusServiceUnavailable, "recovery_required", "job result requires recovery")
-		return inferenceclient.Artifact{}, false
+		return inferenceclient.Artifact{}, nil, false
 	}
-	return artifact, true
+	return artifact, operation, true
 }
 
 func newWildFlowInferenceClient() (*inferenceclient.Client, error) {

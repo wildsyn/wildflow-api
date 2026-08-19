@@ -102,10 +102,9 @@ func ListWildFlowOperationsForBillingReconciliation(limit int) ([]*WildFlowOpera
 	}
 	var operations []*WildFlowOperation
 	err := DB.Where(
-		"billing_state IN ? AND job_id <> ? AND state <> ?",
+		"billing_state IN ? AND job_id <> ?",
 		[]string{WildFlowBillingStateReserved, WildFlowBillingStateRefunding},
 		"",
-		"recovery_required",
 	).
 		Order("updated_time asc, id asc").
 		Limit(limit).
