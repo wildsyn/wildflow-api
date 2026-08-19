@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -257,6 +258,50 @@ func TestReconcileWildFlowBillingRequiresCompleteVoxMP3Artifact(t *testing.T) {
 	assert.Equal(t, "recovery_required", operation.State)
 	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
 	assert.Equal(t, int64(5), operation.BillingBillableUnits)
+}
+
+func TestReconcileWildFlowBillingRevisitsReservedRecoveryOperations(t *testing.T) {
+	db := setupWildFlowBillingReconcilerTest(t)
+	repaired := createVoxReconcilerOperation(t, db, "repaired-vox", 107, 207, "job-repaired-vox", "hello")
+	failed := createReconcilerOperation(t, db, "recovery-failed", 108, 208, "job-recovery-failed")
+	for _, operation := range []*model.WildFlowOperation{repaired, failed} {
+		require.NoError(t, model.UpdateWildFlowOperationExecution(operation.OperationID, operation.JobID, "recovery_required", "invalid_artifact"))
+		operation.State = "recovery_required"
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/internal/v1/jobs/job-repaired-vox":
+			const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			_, _ = fmt.Fprintf(w, `{"job":{"id":"job-repaired-vox","state":"succeeded","artifacts":[{"id":"artifact-repaired-vox","job_id":"job-repaired-vox","media_type":"audio/mpeg","size_bytes":12,"sha256":%q,"metadata":{"codec":"mp3","bitrate":96000,"sample_rate":48000,"channels":1,"duration_ms":1200,"input_characters":5,"completed_characters":5,"segment_count":1,"completed_segment_count":1,"size_bytes":12,"sha256":%q}}]}}`, digest, digest)
+		case "/internal/v1/jobs/job-recovery-failed":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-recovery-failed","state":"failed","last_error":"provider failed"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := inferenceclient.New(inferenceclient.Config{
+		BaseURL:           server.URL,
+		Token:             "internal-token",
+		Timeout:           time.Second,
+		AllowInternalHTTP: true,
+	})
+	require.NoError(t, err)
+
+	processed, err := ReconcileWildFlowBillingOnce(context.Background(), client, 100)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, processed)
+	require.NoError(t, db.Where("operation_id = ?", repaired.OperationID).First(repaired).Error)
+	require.NoError(t, db.Where("operation_id = ?", failed.OperationID).First(failed).Error)
+	assert.Equal(t, "succeeded", repaired.State)
+	assert.Equal(t, model.WildFlowBillingStateSettled, repaired.BillingState)
+	assert.Equal(t, "failed", failed.State)
+	assert.Equal(t, model.WildFlowBillingStateRefunded, failed.BillingState)
+	var failedUser model.User
+	require.NoError(t, db.First(&failedUser, failed.UserID).Error)
+	assert.Equal(t, 100_000, failedUser.Quota)
 }
 
 func TestReconcileWildFlowBillingRejectsNilClient(t *testing.T) {

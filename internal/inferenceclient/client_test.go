@@ -373,3 +373,38 @@ func TestOpenArtifactContentRejectsLengthlessStreamsBeforePublicDownloadStarts(t
 	require.Error(t, err)
 	assert.Nil(t, content)
 }
+
+func TestOpenArtifactContentDoesNotApplyRequestTimeoutToAValidatedBodyStream(t *testing.T) {
+	requestTimeout := 100 * time.Millisecond
+	releaseBody := make(chan struct{})
+	released := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Length", "12")
+		_, _ = w.Write([]byte("first-"))
+		w.(http.Flusher).Flush()
+		<-releaseBody
+		_, _ = w.Write([]byte("second"))
+	}))
+	defer server.Close()
+	defer func() {
+		if !released {
+			close(releaseBody)
+		}
+	}()
+	client, err := New(Config{BaseURL: server.URL, Token: "internal-token", Timeout: requestTimeout})
+	require.NoError(t, err)
+
+	content, err := client.OpenArtifactContent(context.Background(), "artifact-1", "user:42")
+	require.NoError(t, err)
+	defer content.Body.Close()
+	timer := time.NewTimer(2 * requestTimeout)
+	defer timer.Stop()
+	<-timer.C
+	close(releaseBody)
+	released = true
+	payload, err := io.ReadAll(content.Body)
+
+	require.NoError(t, err)
+	assert.Equal(t, "first-second", string(payload))
+}

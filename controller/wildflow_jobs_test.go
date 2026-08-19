@@ -808,6 +808,7 @@ func TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch(t *testing.
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			jobReads := 0
 			engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.Method == http.MethodPost && r.URL.Path == "/internal/v1/jobs":
@@ -815,6 +816,7 @@ func TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch(t *testing.
 					w.WriteHeader(http.StatusAccepted)
 					_, _ = w.Write([]byte(`{"job":{"id":"job-download-mismatch","state":"queued"}}`))
 				case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/jobs/job-download-mismatch":
+					jobReads++
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = fmt.Fprintf(w, `{"job":{"id":"job-download-mismatch","state":"succeeded","artifacts":[%s]}}`, validVoxArtifactJSON("artifact-download-mismatch", "job-download-mismatch", 5))
 				case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-download-mismatch":
@@ -840,12 +842,31 @@ func TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch(t *testing.
 			require.NoError(t, common.Unmarshal(created.Body.Bytes(), &operation))
 			status := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operation["id"].(string), "", nil)
 			require.Equal(t, http.StatusOK, status.Code, status.Body.String())
+			assert.Equal(t, 1, jobReads)
 
 			download := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-download-mismatch/content", "", nil)
+			recoveryStatus := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operation["id"].(string), "", nil)
+			replay := performWildFlowRequest(
+				t,
+				engine,
+				http.MethodPost,
+				"/v1/jobs",
+				`{"model":"VoxCPM2","parameters":{"input":"hello","voice":"default"}}`,
+				map[string]string{"Idempotency-Key": "download-mismatch"},
+			)
 
 			require.Equal(t, http.StatusServiceUnavailable, download.Code, download.Body.String())
 			assert.Contains(t, download.Body.String(), `"code":"artifact_integrity_error"`)
 			assert.NotEqual(t, "audio/wav", download.Header().Get("Content-Type"))
+			require.Equal(t, http.StatusOK, recoveryStatus.Code, recoveryStatus.Body.String())
+			assert.Contains(t, recoveryStatus.Body.String(), `"state":"recovery_required"`)
+			assert.NotContains(t, recoveryStatus.Body.String(), `"artifacts"`)
+			require.Equal(t, http.StatusOK, replay.Code, replay.Body.String())
+			assert.Contains(t, replay.Body.String(), `"state":"recovery_required"`)
+			assert.Equal(t, 1, jobReads, "recovery_required must be sticky for public polling and replay")
+			var persisted model.WildFlowOperation
+			require.NoError(t, model.DB.Where("operation_id = ?", operation["id"].(string)).First(&persisted).Error)
+			assert.Equal(t, "recovery_required", persisted.State)
 		})
 	}
 }
