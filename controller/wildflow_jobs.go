@@ -296,6 +296,14 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 	}
 	c.Status(http.StatusOK)
 	if _, err := io.Copy(c.Writer, content.Body); err != nil {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"artifact_stream_error",
+		); updateErr != nil {
+			logger.LogError(c.Request.Context(), "persist WildFlow artifact stream recovery: "+updateErr.Error())
+		}
 		logger.LogError(c.Request.Context(), "stream WildFlow artifact: "+err.Error())
 	}
 }
