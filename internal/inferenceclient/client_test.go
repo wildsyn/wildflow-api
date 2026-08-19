@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func validRequest() JobCreateRequest {
@@ -319,4 +323,53 @@ func TestOpenArtifactContentReturnsVerifiedInternalStream(t *testing.T) {
 	if string(payload) != "audio-result" || content.MediaType != "audio/wav" {
 		t.Fatalf("unexpected content: %#v payload=%q", content, payload)
 	}
+}
+
+func TestOpenArtifactContentUsesThe320MiBFinalArtifactContract(t *testing.T) {
+	tests := []struct {
+		name          string
+		contentLength int64
+		wantError     bool
+	}{
+		{name: "accepts an MP3 above the obsolete 128 MiB cap", contentLength: 200 << 20},
+		{name: "rejects an artifact above 320 MiB", contentLength: (320 << 20) + 1, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "audio/mpeg")
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", test.contentLength))
+			}))
+			defer server.Close()
+			client, err := New(Config{BaseURL: server.URL, Token: "internal-token", Timeout: time.Second})
+			require.NoError(t, err)
+
+			content, err := client.OpenArtifactContent(context.Background(), "artifact-1", "user:42")
+			if test.wantError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			defer content.Body.Close()
+			assert.Equal(t, test.contentLength, content.ContentLength)
+		})
+	}
+}
+
+func TestOpenArtifactContentRejectsLengthlessStreamsBeforePublicDownloadStarts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+		flusher.Flush()
+		_, _ = w.Write([]byte("partial-audio"))
+	}))
+	defer server.Close()
+	client, err := New(Config{BaseURL: server.URL, Token: "internal-token", Timeout: time.Second})
+	require.NoError(t, err)
+
+	content, err := client.OpenArtifactContent(context.Background(), "artifact-1", "user:42")
+
+	require.Error(t, err)
+	assert.Nil(t, content)
 }
