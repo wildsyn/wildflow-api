@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -384,12 +385,16 @@ func TestListModelsUsesAdvancedCustomEndpointTypesFromPricingCache(t *testing.T)
 	ListModels(ctx, constant.ChannelTypeOpenAI)
 
 	payload := decodeListModelsPayload(t, recorder)
-	require.Len(t, payload.Data, 1)
-	require.Equal(t, "gemini-3.5-flash", payload.Data[0].Id)
+	modelsByID := make(map[string]dto.OpenAIModels, len(payload.Data))
+	for _, item := range payload.Data {
+		modelsByID[item.Id] = item
+	}
+	customModel, ok := modelsByID["gemini-3.5-flash"]
+	require.True(t, ok)
 	require.Equal(t, []constant.EndpointType{
 		constant.EndpointTypeOpenAI,
 		constant.EndpointTypeOpenAIResponse,
-	}, payload.Data[0].SupportedEndpointTypes)
+	}, customModel.SupportedEndpointTypes)
 }
 
 func TestListModelsTokenLimitIncludesTieredBillingModel(t *testing.T) {
@@ -491,6 +496,84 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 	require.Empty(t, anthropicResponse.Data)
 	require.Empty(t, anthropicResponse.FirstID)
 	require.Empty(t, anthropicResponse.LastID)
+}
+
+func TestListModelsIncludesAuthorizedWildFlowJobModels(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	setupModelListControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+
+	ListModels(ctx, constant.ChannelTypeOpenAI)
+
+	payload := decodeListModelsPayload(t, recorder)
+	require.Len(t, payload.Data, 2)
+	modelsByID := make(map[string]dto.OpenAIModels, len(payload.Data))
+	for _, item := range payload.Data {
+		modelsByID[item.Id] = item
+	}
+	for _, modelID := range []string{"VoxCPM2", "FLUX.2 [klein] 4B"} {
+		item, ok := modelsByID[modelID]
+		require.True(t, ok)
+		require.Equal(t, "wildflow", item.OwnedBy)
+		require.Equal(t, []constant.EndpointType{constant.EndpointTypeWildFlowJobs}, item.SupportedEndpointTypes)
+	}
+}
+
+func TestListModelsAppliesTokenLimitsToWildFlowJobModels(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	setupModelListControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{
+		"VoxCPM2": true,
+	})
+
+	ListModels(ctx, constant.ChannelTypeOpenAI)
+
+	ids := decodeListModelsResponse(t, recorder)
+	require.Equal(t, map[string]struct{}{"VoxCPM2": {}}, ids)
+}
+
+func TestRetrieveModelSupportsAuthorizedWildFlowJobModel(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "model", Value: "VoxCPM2"}}
+
+	RetrieveModel(ctx, constant.ChannelTypeOpenAI)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var payload dto.OpenAIModels
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	require.Equal(t, "VoxCPM2", payload.Id)
+	require.Equal(t, "wildflow", payload.OwnedBy)
+	require.Equal(t, []constant.EndpointType{constant.EndpointTypeWildFlowJobs}, payload.SupportedEndpointTypes)
+}
+
+func TestRetrieveModelHidesForbiddenWildFlowJobModel(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "model", Value: "VoxCPM2"}}
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{
+		"FLUX.2 [klein] 4B": true,
+	})
+
+	RetrieveModel(ctx, constant.ChannelTypeOpenAI)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var payload struct {
+		Error types.OpenAIError `json:"error"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	require.Equal(t, "model_not_found", payload.Error.Code)
 }
 
 func TestCheckUpdatePasswordRequiresCurrentPassword(t *testing.T) {

@@ -170,6 +170,26 @@ func buildOpenAIModel(modelName string, ownerByModel map[string]string) dto.Open
 	return oaiModel
 }
 
+func appendWildFlowJobModels(c *gin.Context, models []dto.OpenAIModels) []dto.OpenAIModels {
+	seen := make(map[string]bool, len(models))
+	for _, item := range models {
+		seen[item.Id] = true
+	}
+	for _, offering := range service.ListCanonicalWildFlowOfferings() {
+		if seen[offering.ID] || !wildFlowTokenAllowsModel(c, offering.ID) {
+			continue
+		}
+		models = append(models, dto.OpenAIModels{
+			Id:                     offering.ID,
+			Object:                 "model",
+			Created:                1626777600,
+			OwnedBy:                "wildflow",
+			SupportedEndpointTypes: []types.EndpointType{types.EndpointTypeWildFlowJobs},
+		})
+	}
+	return models
+}
+
 type modelListGroups struct {
 	userGroup   string
 	tokenGroup  string
@@ -261,6 +281,9 @@ func ListModels(c *gin.Context, modelType int) {
 	for _, modelName := range userModelNames {
 		userOpenAiModels = append(userOpenAiModels, buildOpenAIModel(modelName, ownerByModel))
 	}
+	if modelType == constant.ChannelTypeOpenAI {
+		userOpenAiModels = appendWildFlowJobModels(c, userOpenAiModels)
+	}
 
 	switch modelType {
 	case constant.ChannelTypeAnthropic:
@@ -329,6 +352,20 @@ func EnabledListModels(c *gin.Context) {
 
 func RetrieveModel(c *gin.Context, modelType int) {
 	modelId := c.Param("model")
+	if offering, ok := service.FindWildFlowOffering(modelId); ok {
+		if modelType == constant.ChannelTypeOpenAI && wildFlowTokenAllowsModel(c, offering.ID) {
+			c.JSON(200, dto.OpenAIModels{
+				Id:                     offering.ID,
+				Object:                 "model",
+				Created:                1626777600,
+				OwnedBy:                "wildflow",
+				SupportedEndpointTypes: []types.EndpointType{types.EndpointTypeWildFlowJobs},
+			})
+			return
+		}
+		writeModelNotFound(c, modelId)
+		return
+	}
 	if aiModel, ok := openAIModelsMap[modelId]; ok {
 		switch modelType {
 		case constant.ChannelTypeAnthropic:
@@ -341,15 +378,19 @@ func RetrieveModel(c *gin.Context, modelType int) {
 		default:
 			c.JSON(200, aiModel)
 		}
-	} else {
-		openAIError := types.OpenAIError{
-			Message: fmt.Sprintf("The model '%s' does not exist", modelId),
-			Type:    "invalid_request_error",
-			Param:   "model",
-			Code:    "model_not_found",
-		}
-		c.JSON(200, gin.H{
-			"error": openAIError,
-		})
+		return
 	}
+	writeModelNotFound(c, modelId)
+}
+
+func writeModelNotFound(c *gin.Context, modelID string) {
+	openAIError := types.OpenAIError{
+		Message: fmt.Sprintf("The model '%s' does not exist", modelID),
+		Type:    "invalid_request_error",
+		Param:   "model",
+		Code:    "model_not_found",
+	}
+	c.JSON(200, gin.H{
+		"error": openAIError,
+	})
 }
