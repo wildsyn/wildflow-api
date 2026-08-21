@@ -325,6 +325,7 @@ func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *te
 			"faster_whisper_model_revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
 			"duration_seconds":              float64(120),
 			"source_artifact_id":            "input-1",
+			"runtime_version_ref":           "exam-dual-asr-runtime-v1-a09e48e-94da20d",
 		},
 	}
 	operation := &model.WildFlowOperation{ProductModelRef: WildFlowModelExamDualASR}
@@ -334,6 +335,9 @@ func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *te
 	}, []inferenceclient.Artifact{artifact}))
 
 	artifact.Metadata["faster_whisper_model_revision"] = "mutable-latest"
+	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
+	artifact.Metadata["faster_whisper_model_revision"] = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
+	artifact.Metadata["runtime_version_ref"] = "mutable-runtime"
 	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
 }
 
