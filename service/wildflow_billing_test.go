@@ -239,6 +239,9 @@ func TestInternalExamDualASRTrialDoesNotCreateRetailBilling(t *testing.T) {
 	assert.Equal(t, model.WildFlowBillingStatePending, reserved.BillingState)
 	_, err = QuoteWildFlowBilling(request)
 	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
+	operation.BillingState = model.WildFlowBillingStateReserved
+	_, err = ReserveWildFlowOperationBilling(operation, request)
+	require.ErrorIs(t, err, model.ErrWildFlowBillingStateConflict)
 }
 
 func TestWildFlowBillingServiceIgnoresUnbilledAndNonTerminalOperations(t *testing.T) {
@@ -317,6 +320,7 @@ func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *te
 		Metadata: map[string]any{
 			"schema_version":                float64(1),
 			"model_version_ref":             WildFlowModelExamDualASR,
+			"model_revision":                "d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478",
 			"vibevoice_model_revision":      "d0c9efdb8d614685062c04425d91e01b6f37d944",
 			"faster_whisper_model_revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
 			"duration_seconds":              float64(120),

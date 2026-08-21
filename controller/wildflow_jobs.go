@@ -1,10 +1,13 @@
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"strconv"
@@ -22,6 +25,49 @@ import (
 )
 
 const wildFlowJobRequestLimit = 256 * 1024
+const wildFlowInputArtifactLimit = int64(2 << 30)
+
+func CreateWildFlowInputArtifact(c *gin.Context) {
+	if !wildFlowTokenAllowsModel(c, service.WildFlowModelExamDualASR) {
+		wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token is not allowed to use this internal workflow")
+		return
+	}
+	mediaType, parameters, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	if err != nil || mediaType != "audio/flac" || len(parameters) != 0 {
+		wildFlowJobError(c, http.StatusUnsupportedMediaType, "unsupported_media_type", "input artifact must be audio/flac")
+		return
+	}
+	if c.Request.ContentLength > wildFlowInputArtifactLimit {
+		wildFlowJobError(c, http.StatusRequestEntityTooLarge, "input_too_large", "input artifact exceeds 2 GiB")
+		return
+	}
+	if c.Request.ContentLength < 4 {
+		wildFlowJobError(c, http.StatusLengthRequired, "content_length_required", "a bounded Content-Length is required")
+		return
+	}
+	digest := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(c.GetHeader("X-WildFlow-Content-SHA256"))), "sha256:")
+	decodedDigest, err := hex.DecodeString(digest)
+	if err != nil || len(decodedDigest) != sha256.Size {
+		wildFlowJobError(c, http.StatusBadRequest, "invalid_digest", "a valid SHA-256 digest is required")
+		return
+	}
+	client, err := newWildFlowInferenceClient()
+	if err != nil {
+		wildFlowJobError(c, http.StatusServiceUnavailable, "inference_unavailable", "inference service is unavailable")
+		return
+	}
+	artifact, err := client.UploadInputArtifact(
+		c.Request.Context(), c.Request.Body, c.Request.ContentLength, digest, wildFlowTenantRef(c.GetInt("id")),
+	)
+	if err != nil {
+		writeWildFlowInputArtifactError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"artifact": gin.H{
+		"id": artifact.ID, "media_type": artifact.MediaType, "size_bytes": artifact.SizeBytes,
+		"sha256": artifact.SHA256, "retention_state": artifact.RetentionState,
+	}})
+}
 
 func CreateWildFlowJob(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, wildFlowJobRequestLimit)
@@ -104,7 +150,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		TenantRef:            wildFlowTenantRef(userID),
 		ProductModelRef:      operation.ProductModelRef,
 		ModelVersionRef:      operation.ModelVersionRef,
-		InputArtifactRefs:    []string{},
+		InputArtifactIDs:     request.InputArtifactIDs,
 		Parameters:           request.Parameters,
 		DeadlineAt:           time.Now().UTC().Add(30 * time.Minute),
 		CallbackCapabilities: []string{},
@@ -147,7 +193,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 
 func wildFlowTokenAllowsModel(c *gin.Context, modelName string) bool {
 	if !common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) {
-		return true
+		return modelName != service.WildFlowModelExamDualASR
 	}
 	rawLimits, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 	if !ok {
@@ -288,6 +334,8 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 	filename := content.Filename
 	if artifact.MediaType == "audio/mpeg" {
 		filename = artifact.ID + ".mp3"
+	} else if artifact.MediaType == "application/json" {
+		filename = artifact.ID + ".json"
 	}
 	c.Header("Content-Type", content.MediaType)
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeWildFlowFilename(filename)))
@@ -342,7 +390,9 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model
 		wildFlowJobError(c, http.StatusNotFound, "artifact_not_found", "artifact not found")
 		return inferenceclient.Artifact{}, nil, false
 	}
-	if operation.State != "succeeded" || operation.BillingState != model.WildFlowBillingStateSettled {
+	internalTrialReady := operation.ProductModelRef == service.WildFlowModelExamDualASR &&
+		operation.BillingState == model.WildFlowBillingStatePending
+	if operation.State != "succeeded" || (operation.BillingState != model.WildFlowBillingStateSettled && !internalTrialReady) {
 		wildFlowJobError(c, http.StatusConflict, "artifact_not_ready", "artifact is not ready")
 		return inferenceclient.Artifact{}, nil, false
 	}
@@ -377,7 +427,7 @@ func decodeWildFlowJobRequest(reader io.Reader) (service.WildFlowJobRequest, err
 		return service.WildFlowJobRequest{}, err
 	}
 	var fields map[string]json.RawMessage
-	if err := common.Unmarshal(body, &fields); err != nil || len(fields) != 2 {
+	if err := common.Unmarshal(body, &fields); err != nil || len(fields) < 2 || len(fields) > 3 {
 		return service.WildFlowJobRequest{}, errors.New("invalid job request")
 	}
 	modelField, hasModel := fields["model"]
@@ -391,6 +441,16 @@ func decodeWildFlowJobRequest(reader io.Reader) (service.WildFlowJobRequest, err
 	}
 	if err := common.Unmarshal(parametersField, &request.Parameters); err != nil {
 		return service.WildFlowJobRequest{}, err
+	}
+	if inputField, exists := fields["input_artifact_ids"]; exists {
+		if err := common.Unmarshal(inputField, &request.InputArtifactIDs); err != nil {
+			return service.WildFlowJobRequest{}, err
+		}
+	}
+	for key := range fields {
+		if key != "model" && key != "parameters" && key != "input_artifact_ids" {
+			return service.WildFlowJobRequest{}, errors.New("invalid job request")
+		}
 	}
 	return request, nil
 }
@@ -417,6 +477,8 @@ func publicWildFlowArtifactMetadata(metadata map[string]any) map[string]any {
 		"codec", "bitrate", "sample_rate", "channels", "duration_ms",
 		"input_characters", "completed_characters", "segment_count", "completed_segment_count",
 		"size_bytes", "sha256", "voice", "width", "height", "prompt_length",
+		"schema_version", "model_version_ref", "model_revision", "vibevoice_model_revision",
+		"faster_whisper_model_revision", "duration_seconds", "source_artifact_id",
 	} {
 		if value, ok := metadata[key]; ok {
 			public[key] = value
@@ -572,6 +634,18 @@ func writeWildFlowInferenceError(c *gin.Context, err error) {
 	}
 	logger.LogError(c.Request.Context(), "WildFlow inference request failed: "+err.Error())
 	wildFlowJobError(c, http.StatusBadGateway, "inference_error", "inference request failed")
+}
+
+func writeWildFlowInputArtifactError(c *gin.Context, err error) {
+	var apiError *inferenceclient.APIError
+	if errors.As(err, &apiError) {
+		switch apiError.StatusCode {
+		case http.StatusBadRequest, http.StatusLengthRequired, http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType:
+			wildFlowJobError(c, apiError.StatusCode, "invalid_input_artifact", "input artifact was rejected")
+			return
+		}
+	}
+	writeWildFlowInferenceError(c, err)
 }
 
 func wildFlowInternalError(c *gin.Context, err error) {

@@ -77,6 +77,7 @@ func SetRelayRouter(router *gin.Engine) {
 		// control plane owns identity and Operation state; the private inference
 		// service owns execution and artifacts.
 		relayV1Router.POST("/jobs", controller.CreateWildFlowJob)
+		relayV1Router.POST("/input-artifacts", controller.CreateWildFlowInputArtifact)
 		relayV1Router.GET("/jobs/:operation_id", controller.GetWildFlowJob)
 		relayV1Router.POST("/jobs/:operation_id/cancel", controller.CancelWildFlowJob)
 		relayV1Router.GET("/artifacts/:artifact_id", controller.GetWildFlowArtifact)

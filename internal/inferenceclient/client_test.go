@@ -114,6 +114,28 @@ func TestUploadInputArtifactStreamsTenantScopedFLACAndValidatesResponse(t *testi
 	assert.Equal(t, int64(len(payload)), artifact.SizeBytes)
 }
 
+func TestUploadInputArtifactDoesNotForwardTokenAcrossRedirect(t *testing.T) {
+	t.Parallel()
+	receiverRequests := 0
+	receiver := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { receiverRequests++ }))
+	defer receiver.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", receiver.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+	payload := []byte("fLaCdata")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	client, err := New(Config{BaseURL: server.URL, Token: "sensitive-token", Timeout: time.Second})
+	require.NoError(t, err)
+
+	_, err = client.UploadInputArtifact(context.Background(), bytes.NewReader(payload), int64(len(payload)), digest, "user:42")
+	var apiError *APIError
+	require.ErrorAs(t, err, &apiError)
+	assert.Equal(t, http.StatusTemporaryRedirect, apiError.StatusCode)
+	assert.Zero(t, receiverRequests)
+}
+
 func TestSubmitJobReturnsTypedConflictWithoutRetry(t *testing.T) {
 	t.Parallel()
 

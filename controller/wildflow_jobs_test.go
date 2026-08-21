@@ -139,6 +139,23 @@ func TestCreateWildFlowInputArtifactRequiresExplicitExamModelAllowlistAndStreams
 	assert.NotContains(t, allowed.Body.String(), "object_key")
 }
 
+func TestCreateWildFlowInputArtifactRejectsInvalidHeadersBeforeInference(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	headers := map[string]string{"X-Test-Model-Limits": service.WildFlowModelExamDualASR}
+
+	wrongType := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", []byte("fLaCdata"), headers)
+	require.Equal(t, http.StatusUnsupportedMediaType, wrongType.Code, wrongType.Body.String())
+
+	headers["Content-Type"] = "audio/flac"
+	headers["X-WildFlow-Content-SHA256"] = "not-a-digest"
+	wrongDigest := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", []byte("fLaCdata"), headers)
+	require.Equal(t, http.StatusBadRequest, wrongDigest.Code, wrongDigest.Body.String())
+	assert.Zero(t, requests)
+}
+
 func TestCreateInternalExamDualASRJobIsExplicitlyAllowlistedHiddenAndUnbilled(t *testing.T) {
 	submissions := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -175,6 +192,38 @@ func TestCreateInternalExamDualASRJobIsExplicitlyAllowlistedHiddenAndUnbilled(t 
 	assert.Equal(t, 1_000_000, user.Quota)
 	assert.Equal(t, 1_000_000, token.RemainQuota)
 	assert.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
+}
+
+func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T) {
+	content := []byte(`{"schema_version":1}`)
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
+	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","duration_seconds":120,"source_artifact_id":"input-1"}`, service.WildFlowModelExamDualASR)
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/artifacts/artifact-asr":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"artifact":{"id":"artifact-asr","job_id":"job-asr","media_type":"application/json","size_bytes":%d,"sha256":%q,"metadata":%s}}`, len(content), digest, metadata)
+		case "/internal/v1/artifacts/artifact-asr/content":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+			_, _ = w.Write(content)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	require.NoError(t, model.DB.Create(&model.WildFlowOperation{
+		OperationID: "op-asr-download", UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: "key-asr-download", RequestDigest: "request-asr-download",
+		RequestID: "request-asr-download", ProductModelRef: service.WildFlowModelExamDualASR,
+		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr", State: "succeeded",
+		BillingState: model.WildFlowBillingStatePending,
+	}).Error)
+
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
+	assert.Contains(t, response.Header().Get("Content-Disposition"), "artifact-asr.json")
+	assert.Equal(t, content, response.Body.Bytes())
 }
 
 func validVoxArtifactJSON(artifactID string, jobID string, characters int) string {

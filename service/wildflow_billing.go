@@ -92,6 +92,20 @@ func ReserveWildFlowOperationBilling(operation *model.WildFlowOperation, request
 	if operation == nil {
 		return nil, fmt.Errorf("nil WildFlow operation")
 	}
+	request, err := NormalizeWildFlowJobRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	if request.Model == WildFlowModelExamDualASR {
+		if err := validateWildFlowRequest("internal_asr", request); err != nil {
+			return nil, err
+		}
+		if operation.ProductModelRef != WildFlowModelExamDualASR ||
+			(operation.BillingState != "" && operation.BillingState != model.WildFlowBillingStatePending) {
+			return nil, model.ErrWildFlowBillingStateConflict
+		}
+		return operation, nil
+	}
 	if operation.BillingState == model.WildFlowBillingStateReserved || operation.BillingState == model.WildFlowBillingStateSettled {
 		return operation, nil
 	}
@@ -166,7 +180,13 @@ func ValidateWildFlowCompletedArtifacts(operation *model.WildFlowOperation, arti
 	if len(artifacts) == 0 {
 		return ErrWildFlowMissingArtifact
 	}
-	if operation == nil || operation.ProductModelRef != WildFlowModelVoxCPM2 {
+	if operation == nil {
+		return nil
+	}
+	if operation.ProductModelRef == WildFlowModelExamDualASR {
+		return validateWildFlowExamDualASRArtifact(artifacts)
+	}
+	if operation.ProductModelRef != WildFlowModelVoxCPM2 {
 		return nil
 	}
 	if len(artifacts) != 1 || operation.BillingBillableUnits <= 0 {
@@ -206,6 +226,33 @@ func ValidateWildFlowCompletedArtifacts(operation *model.WildFlowOperation, arti
 		!completedSegmentOK || completedSegmentCount != segmentCount ||
 		!sizeOK || metadataSize != artifact.SizeBytes ||
 		!shaOK || !validWildFlowSHA256(metadataSHA256) || !strings.EqualFold(metadataSHA256, artifact.SHA256) {
+		return ErrWildFlowInvalidArtifact
+	}
+	return nil
+}
+
+func validateWildFlowExamDualASRArtifact(artifacts []inferenceclient.Artifact) error {
+	if len(artifacts) != 1 {
+		return ErrWildFlowInvalidArtifact
+	}
+	artifact := artifacts[0]
+	if artifact.MediaType != "application/json" || artifact.SizeBytes <= 0 || !validWildFlowSHA256(artifact.SHA256) {
+		return ErrWildFlowInvalidArtifact
+	}
+	schemaVersion, schemaOK := wildFlowArtifactInteger(artifact.Metadata["schema_version"])
+	duration, durationOK := finiteNumber(artifact.Metadata["duration_seconds"])
+	modelVersion, versionOK := artifact.Metadata["model_version_ref"].(string)
+	modelRevision, revisionOK := artifact.Metadata["model_revision"].(string)
+	vibeVoiceRevision, vibeVoiceOK := artifact.Metadata["vibevoice_model_revision"].(string)
+	whisperRevision, whisperOK := artifact.Metadata["faster_whisper_model_revision"].(string)
+	sourceArtifactID, sourceOK := artifact.Metadata["source_artifact_id"].(string)
+	const vibeVoice = "d0c9efdb8d614685062c04425d91e01b6f37d944"
+	const whisper = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
+	if !schemaOK || schemaVersion != 1 || !durationOK || duration <= 0 || duration > 7_200 ||
+		!versionOK || modelVersion != WildFlowModelExamDualASR ||
+		!revisionOK || modelRevision != vibeVoice+"_"+whisper ||
+		!vibeVoiceOK || vibeVoiceRevision != vibeVoice || !whisperOK || whisperRevision != whisper ||
+		!sourceOK || !validWildFlowResourceID(sourceArtifactID) {
 		return ErrWildFlowInvalidArtifact
 	}
 	return nil
