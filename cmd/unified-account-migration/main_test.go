@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -191,4 +192,77 @@ func TestDecodeManifestRejectsUnknownFields(t *testing.T) {
 	assert.ErrorIs(t, err, errUnexpectedManifestField)
 	_, err = decodeManifest([]byte(`{"migration_id":"id","accounts":[{"subject":"sub","unexpected":true}]}`))
 	assert.ErrorIs(t, err, errUnexpectedManifestField)
+}
+
+func TestRunRejectsInvalidModesFlagsAndRollbackConfirmation(t *testing.T) {
+	initialize := func() error { return nil }
+	assert.Error(t, run(nil, bytes.NewBuffer(nil), &bytes.Buffer{}, initialize))
+	assert.Error(t, run([]string{"unknown"}, bytes.NewBuffer(nil), &bytes.Buffer{}, initialize))
+	assert.ErrorIs(t, run(
+		[]string{"plan", "--unknown"}, bytes.NewBufferString(testManifestJSON), &bytes.Buffer{}, initialize,
+	), model.ErrUnifiedAccountMigrationInvalidManifest)
+	assert.ErrorIs(t, run(
+		[]string{"rollback", "--migration-id", "migration", "--confirm", "wrong"},
+		bytes.NewBuffer(nil), &bytes.Buffer{}, initialize,
+	), errRollbackConfirmationRequired)
+}
+
+func TestRunPlanPropagatesInitializationAndRuntimeDrift(t *testing.T) {
+	expected := errors.New("initialization failed")
+	err := run(
+		[]string{"plan"}, bytes.NewBufferString(testManifestJSON), &bytes.Buffer{},
+		func() error { return expected },
+	)
+	assert.ErrorIs(t, err, expected)
+
+	setupCommandTestDatabase(t)
+	operation_setting.USDExchangeRate = 7.31
+	err = run(
+		[]string{"plan"}, bytes.NewBufferString(testManifestJSON), &bytes.Buffer{},
+		func() error { return nil },
+	)
+	assert.ErrorIs(t, err, errRuntimeDrift)
+}
+
+func TestDecodeManifestRejectsEmptyOversizedAndMalformedInput(t *testing.T) {
+	_, err := decodeManifest(nil)
+	assert.ErrorIs(t, err, model.ErrUnifiedAccountMigrationInvalidManifest)
+	_, err = decodeManifest(bytes.Repeat([]byte{'x'}, maxManifestBytes+1))
+	assert.ErrorIs(t, err, model.ErrUnifiedAccountMigrationInvalidManifest)
+	_, err = decodeManifest([]byte(`{"migration_id":`))
+	assert.Error(t, err)
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func TestWriteOutputPropagatesWriterFailure(t *testing.T) {
+	err := writeOutput(failingWriter{}, commandOutput{Mode: "plan"})
+	assert.ErrorIs(t, err, io.ErrClosedPipe)
+}
+
+func TestInitializeRuntimeStepsStayFailClosed(t *testing.T) {
+	var steps []string
+	err := initializeRuntimeWith(
+		func() { steps = append(steps, "env") },
+		func() error { steps = append(steps, "db"); return nil },
+		func() { steps = append(steps, "options") },
+		func() error { steps = append(steps, "redis"); return nil },
+	)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"env", "db", "options", "redis"}, steps)
+
+	expected := errors.New("db failed")
+	steps = nil
+	err = initializeRuntimeWith(
+		func() { steps = append(steps, "env") },
+		func() error { steps = append(steps, "db"); return expected },
+		func() { steps = append(steps, "options") },
+		func() error { steps = append(steps, "redis"); return nil },
+	)
+	assert.ErrorIs(t, err, expected)
+	assert.Equal(t, []string{"env", "db"}, steps)
 }
