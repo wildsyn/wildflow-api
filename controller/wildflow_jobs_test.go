@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
@@ -93,6 +95,7 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 		c.Next()
 	})
 	engine.POST("/v1/jobs", CreateWildFlowJob)
+	engine.POST("/v1/input-artifacts", CreateWildFlowInputArtifact)
 	engine.POST("/api/v1/audio/speech", CreateWildFlowLegacySpeechJob)
 	engine.POST("/api/v1/images/generations", CreateWildFlowLegacyImageJob)
 	engine.GET("/v1/jobs/:operation_id", GetWildFlowJob)
@@ -100,6 +103,160 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	engine.GET("/v1/artifacts/:artifact_id", GetWildFlowArtifact)
 	engine.GET("/v1/artifacts/:artifact_id/content", DownloadWildFlowArtifact)
 	return engine, server
+}
+
+func TestCreateWildFlowInputArtifactRequiresExplicitExamModelAllowlistAndStreamsFLAC(t *testing.T) {
+	requests := 0
+	payload := []byte("fLaCcontrolled-audio")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		require.Equal(t, "/internal/v1/input-artifacts", r.URL.Path)
+		require.Equal(t, "Bearer internal-token", r.Header.Get("Authorization"))
+		require.Equal(t, "user:42", r.Header.Get("X-WildFlow-Tenant-Ref"))
+		require.Equal(t, "audio/flac", r.Header.Get("Content-Type"))
+		require.Equal(t, digest, r.Header.Get("X-WildFlow-Content-SHA256"))
+		actual, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.Equal(t, payload, actual)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"artifact":{"id":"input-1","media_type":"audio/flac","size_bytes":20,"sha256":"` + digest + `","retention_state":"active"}}`))
+	}))
+
+	denied := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", payload, map[string]string{
+		"Content-Type": "audio/flac", "X-WildFlow-Content-SHA256": digest,
+	})
+	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
+	assert.Zero(t, requests)
+
+	allowed := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", payload, map[string]string{
+		"Content-Type": "audio/flac", "X-WildFlow-Content-SHA256": digest,
+		"X-Test-Model-Limits": service.WildFlowModelExamDualASR,
+	})
+	require.Equal(t, http.StatusCreated, allowed.Code, allowed.Body.String())
+	assert.Equal(t, 1, requests)
+	assert.NotContains(t, allowed.Body.String(), "object_key")
+}
+
+func TestCreateWildFlowInputArtifactRejectsInvalidHeadersBeforeInference(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	headers := map[string]string{"X-Test-Model-Limits": service.WildFlowModelExamDualASR}
+
+	wrongType := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", []byte("fLaCdata"), headers)
+	require.Equal(t, http.StatusUnsupportedMediaType, wrongType.Code, wrongType.Body.String())
+
+	headers["Content-Type"] = "audio/flac"
+	headers["X-WildFlow-Content-SHA256"] = "not-a-digest"
+	wrongDigest := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", []byte("fLaCdata"), headers)
+	require.Equal(t, http.StatusBadRequest, wrongDigest.Code, wrongDigest.Body.String())
+	assert.Zero(t, requests)
+}
+
+func TestCreateInternalExamDualASRJobIsExplicitlyAllowlistedHiddenAndUnbilled(t *testing.T) {
+	submissions := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/internal/v1/jobs", r.URL.Path)
+		submissions++
+		var body map[string]any
+		require.NoError(t, common.DecodeJson(r.Body, &body))
+		assert.Equal(t, service.WildFlowModelExamDualASR, body["product_model_ref"])
+		assert.Equal(t, service.WildFlowModelExamDualASR, body["model_version_ref"])
+		assert.Equal(t, []any{"input-1"}, body["input_artifact_ids"])
+		deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, time.Until(deadline), 5*time.Hour)
+		assert.LessOrEqual(t, time.Until(deadline), 6*time.Hour+time.Minute)
+		_, hasDescriptors := body["inputs"]
+		assert.False(t, hasDescriptors)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-asr-1","state":"queued"}}`))
+	}))
+	body := `{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"申论课程","hotwords":["青蜂六边形"]}}`
+
+	denied := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "asr-denied"})
+	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
+	assert.Zero(t, submissions)
+
+	allowed := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{
+		"Idempotency-Key": "asr-allowed", "X-Test-Model-Limits": service.WildFlowModelExamDualASR,
+	})
+	require.Equal(t, http.StatusAccepted, allowed.Code, allowed.Body.String())
+	assert.Equal(t, 1, submissions)
+	var user model.User
+	var token model.Token
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(&token, 7).Error)
+	require.NoError(t, model.DB.Where("operation_id = ?", allowed.Header().Get("Location")[len("/v1/jobs/"):]).First(&operation).Error)
+	assert.Equal(t, 1_000_000, user.Quota)
+	assert.Equal(t, 1_000_000, token.RemainQuota)
+	assert.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
+}
+
+func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T) {
+	content := []byte(`{"schema_version":1}`)
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
+	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, service.WildFlowModelExamDualASR)
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/artifacts/artifact-asr":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"artifact":{"id":"artifact-asr","job_id":"job-asr","media_type":"application/json","size_bytes":%d,"sha256":%q,"metadata":%s}}`, len(content), digest, metadata)
+		case "/internal/v1/artifacts/artifact-asr/content":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+			_, _ = w.Write(content)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	require.NoError(t, model.DB.Create(&model.WildFlowOperation{
+		OperationID: "op-asr-download", UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: "key-asr-download", RequestDigest: "request-asr-download",
+		RequestID: "request-asr-download", ProductModelRef: service.WildFlowModelExamDualASR,
+		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr", State: "succeeded",
+		BillingState: model.WildFlowBillingStatePending,
+	}).Error)
+
+	denied := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", nil)
+	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
+
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", map[string]string{
+		"X-Test-Model-Limits": service.WildFlowModelExamDualASR,
+	})
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
+	assert.Contains(t, response.Header().Get("Content-Disposition"), "artifact-asr.json")
+	assert.Equal(t, content, response.Body.Bytes())
+}
+
+func TestInternalExamDualASROperationReadRequiresCurrentTokenAllowlist(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	require.NoError(t, model.DB.Create(&model.WildFlowOperation{
+		OperationID: "op-asr-read", UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: "key-asr-read", RequestDigest: "request-asr-read",
+		RequestID: "request-asr-read", ProductModelRef: service.WildFlowModelExamDualASR,
+		ModelVersionRef: service.WildFlowModelExamDualASR, State: "recovery_required",
+		BillingState: model.WildFlowBillingStatePending,
+	}).Error)
+
+	denied := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/op-asr-read", "", nil)
+	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
+	assert.Zero(t, requests)
+
+	allowed := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/op-asr-read", "", map[string]string{
+		"X-Test-Model-Limits": service.WildFlowModelExamDualASR,
+	})
+	require.Equal(t, http.StatusOK, allowed.Code, allowed.Body.String())
+	assert.Zero(t, requests)
 }
 
 func validVoxArtifactJSON(artifactID string, jobID string, characters int) string {
@@ -617,6 +774,24 @@ func performWildFlowRequest(
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	return response
+}
+
+func performWildFlowBytesRequest(
+	t *testing.T,
+	engine *gin.Engine,
+	method string,
+	path string,
+	body []byte,
+	headers map[string]string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, bytes.NewReader(body))
 	for key, value := range headers {
 		request.Header.Set(key, value)
 	}

@@ -22,14 +22,24 @@ var (
 )
 
 type WildFlowJobRequest struct {
-	Model      string         `json:"model"`
-	Parameters map[string]any `json:"parameters"`
+	Model            string         `json:"model"`
+	InputArtifactIDs []string       `json:"input_artifact_ids,omitempty"`
+	Parameters       map[string]any `json:"parameters"`
 }
 
 const (
-	WildFlowModelVoxCPM2 = "VoxCPM2"
-	WildFlowModelFlux2   = "FLUX.2 [klein] 4B"
+	WildFlowModelVoxCPM2     = "VoxCPM2"
+	WildFlowModelFlux2       = "FLUX.2 [klein] 4B"
+	WildFlowModelExamDualASR = "wildflow/exam-replay-dual-asr-v1"
 )
+
+var internalWildFlowJobOfferings = map[string]WildFlowOffering{
+	WildFlowModelExamDualASR: {
+		ID: WildFlowModelExamDualASR, DisplayName: "考公直播回放双 ASR 内部验收",
+		Kind: "internal_asr", Vendor: "WildFlow", ModelVersionRef: WildFlowModelExamDualASR,
+		Description: "内部验收工作流，不进入公开模型目录，不提供零售定价。",
+	},
+}
 
 var wildFlowTTSVoices = map[string]struct{}{
 	"shuoshuren": {},
@@ -46,6 +56,7 @@ func NormalizeWildFlowJobRequest(request WildFlowJobRequest) (WildFlowJobRequest
 		parameters[key] = value
 	}
 	request.Parameters = parameters
+	request.InputArtifactIDs = append([]string{}, request.InputArtifactIDs...)
 
 	switch request.Model {
 	case WildFlowModelVoxCPM2:
@@ -60,6 +71,7 @@ func NormalizeWildFlowJobRequest(request WildFlowJobRequest) (WildFlowJobRequest
 	case WildFlowModelFlux2:
 	case "flux2-klein-4b", "flux2", "black-forest-labs/FLUX.2-klein-4B":
 		request.Model = WildFlowModelFlux2
+	case WildFlowModelExamDualASR:
 	default:
 		return WildFlowJobRequest{}, ErrWildFlowUnsupportedModel
 	}
@@ -82,11 +94,11 @@ func PrepareWildFlowOperation(
 	if err != nil {
 		return nil, false, err
 	}
-	offering, ok := FindWildFlowOffering(request.Model)
+	offering, ok := findWildFlowJobOffering(request.Model)
 	if !ok {
 		return nil, false, ErrWildFlowUnsupportedModel
 	}
-	if err := validateWildFlowParameters(offering.Kind, request.Parameters); err != nil {
+	if err := validateWildFlowRequest(offering.Kind, request); err != nil {
 		return nil, false, err
 	}
 	canonical, err := common.Marshal(request)
@@ -133,6 +145,14 @@ func PrepareWildFlowOperation(
 	return operation, true, nil
 }
 
+func findWildFlowJobOffering(id string) (WildFlowOffering, bool) {
+	if offering, ok := FindWildFlowOffering(id); ok {
+		return offering, true
+	}
+	offering, ok := internalWildFlowJobOfferings[id]
+	return offering, ok
+}
+
 func FindWildFlowOffering(id string) (WildFlowOffering, bool) {
 	for _, offering := range canonicalWildFlowCatalog {
 		if offering.ID == id {
@@ -158,6 +178,76 @@ func validateWildFlowParameters(kind string, parameters map[string]any) error {
 		return validateWildFlowImageParameters(parameters)
 	}
 	return ErrWildFlowUnsupportedModel
+}
+
+func validateWildFlowRequest(kind string, request WildFlowJobRequest) error {
+	if kind == "internal_asr" {
+		return validateWildFlowASRRequest(request)
+	}
+	if len(request.InputArtifactIDs) != 0 {
+		return ErrWildFlowInvalidParameters
+	}
+	return validateWildFlowParameters(kind, request.Parameters)
+}
+
+func validateWildFlowASRRequest(request WildFlowJobRequest) error {
+	if len(request.InputArtifactIDs) != 1 || !validWildFlowResourceID(request.InputArtifactIDs[0]) ||
+		request.Parameters == nil || len(request.Parameters) > 4 {
+		return ErrWildFlowInvalidParameters
+	}
+	allowed := map[string]bool{
+		"language": true, "context": true, "hotwords": true, "source_offset_seconds": true,
+	}
+	for key := range request.Parameters {
+		if !allowed[key] {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	if raw, exists := request.Parameters["language"]; exists {
+		language, ok := raw.(string)
+		if !ok || utf8.RuneCountInString(language) < 1 || utf8.RuneCountInString(language) > 16 || strings.TrimSpace(language) != language {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	if raw, exists := request.Parameters["context"]; exists {
+		context, ok := raw.(string)
+		if !ok || utf8.RuneCountInString(context) > 20_000 {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	if raw, exists := request.Parameters["hotwords"]; exists {
+		hotwords, ok := raw.([]any)
+		if !ok || len(hotwords) > 200 {
+			return ErrWildFlowInvalidParameters
+		}
+		for _, rawHotword := range hotwords {
+			hotword, ok := rawHotword.(string)
+			if !ok || utf8.RuneCountInString(hotword) < 1 || utf8.RuneCountInString(hotword) > 100 || strings.TrimSpace(hotword) != hotword {
+				return ErrWildFlowInvalidParameters
+			}
+		}
+	}
+	if raw, exists := request.Parameters["source_offset_seconds"]; exists {
+		offset, ok := finiteNumber(raw)
+		if !ok || offset < 0 || offset > 7_200 {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	return nil
+}
+
+func validWildFlowResourceID(value string) bool {
+	if len(value) < 1 || len(value) > 200 {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || (index > 0 && strings.ContainsRune("._-", character)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validateWildFlowTTSParameters(parameters map[string]any) error {

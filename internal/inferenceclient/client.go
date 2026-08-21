@@ -6,7 +6,6 @@ package inferenceclient
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,10 +16,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 const maxResponseBodyBytes = 1 << 20
 const maxArtifactBodyBytes = 320 << 20
+const maxInputArtifactBodyBytes = int64(2 << 30)
 
 var resourceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$`)
 var sha256Pattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -50,7 +52,7 @@ type JobCreateRequest struct {
 	TenantRef            string         `json:"tenant_ref"`
 	ProductModelRef      string         `json:"product_model_ref"`
 	ModelVersionRef      string         `json:"model_version_ref"`
-	InputArtifactRefs    []string       `json:"input_artifact_refs"`
+	InputArtifactIDs     []string       `json:"input_artifact_ids"`
 	Parameters           map[string]any `json:"parameters"`
 	DeadlineAt           time.Time      `json:"deadline_at"`
 	CallbackCapabilities []string       `json:"callback_capabilities"`
@@ -72,6 +74,14 @@ type Artifact struct {
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
+type InputArtifact struct {
+	ID             string `json:"id"`
+	MediaType      string `json:"media_type"`
+	SizeBytes      int64  `json:"size_bytes"`
+	SHA256         string `json:"sha256"`
+	RetentionState string `json:"retention_state"`
+}
+
 type ArtifactContent struct {
 	Body          io.ReadCloser
 	MediaType     string
@@ -85,6 +95,10 @@ type jobResponse struct {
 
 type artifactResponse struct {
 	Artifact Artifact `json:"artifact"`
+}
+
+type inputArtifactResponse struct {
+	Artifact InputArtifact `json:"artifact"`
 }
 
 type errorResponse struct {
@@ -194,7 +208,7 @@ func (client *Client) SubmitJob(ctx context.Context, request JobCreateRequest) (
 		return Job{}, err
 	}
 
-	body, err := json.Marshal(request)
+	body, err := common.Marshal(request)
 	if err != nil {
 		return Job{}, fmt.Errorf("encode inference job request: %w", err)
 	}
@@ -227,13 +241,64 @@ func (client *Client) SubmitJob(ctx context.Context, request JobCreateRequest) (
 	}
 
 	var accepted jobResponse
-	if err := json.Unmarshal(responseBody, &accepted); err != nil {
+	if err := common.Unmarshal(responseBody, &accepted); err != nil {
 		return Job{}, fmt.Errorf("decode inference job response: %w", err)
 	}
 	if err := validateJob(accepted.Job); err != nil {
 		return Job{}, err
 	}
 	return accepted.Job, nil
+}
+
+func (client *Client) UploadInputArtifact(
+	ctx context.Context,
+	source io.Reader,
+	sizeBytes int64,
+	digest string,
+	tenantRef string,
+) (InputArtifact, error) {
+	if source == nil || sizeBytes < 4 || sizeBytes > maxInputArtifactBodyBytes ||
+		!sha256Pattern.MatchString(digest) || strings.TrimSpace(tenantRef) == "" || len(tenantRef) > 200 {
+		return InputArtifact{}, errors.New("invalid inference input artifact upload")
+	}
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		client.baseURL+"/internal/v1/input-artifacts",
+		io.LimitReader(source, sizeBytes+1),
+	)
+	if err != nil {
+		return InputArtifact{}, fmt.Errorf("create inference input artifact request: %w", err)
+	}
+	request.ContentLength = sizeBytes
+	request.Header.Set("Authorization", "Bearer "+client.token)
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "audio/flac")
+	request.Header.Set("X-WildFlow-Content-SHA256", strings.ToLower(digest))
+	request.Header.Set("X-WildFlow-Tenant-Ref", tenantRef)
+	response, err := client.streamHTTP.Do(request)
+	if err != nil {
+		return InputArtifact{}, fmt.Errorf("upload inference input artifact: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := readBounded(response.Body)
+	if err != nil {
+		return InputArtifact{}, fmt.Errorf("read inference input artifact response: %w", err)
+	}
+	if response.StatusCode != http.StatusCreated {
+		return InputArtifact{}, responseError(response, body)
+	}
+	var payload inputArtifactResponse
+	if err := common.Unmarshal(body, &payload); err != nil {
+		return InputArtifact{}, fmt.Errorf("decode inference input artifact response: %w", err)
+	}
+	artifact := payload.Artifact
+	if !resourceIDPattern.MatchString(artifact.ID) || artifact.MediaType != "audio/flac" ||
+		artifact.SizeBytes != sizeBytes || artifact.SizeBytes > maxInputArtifactBodyBytes ||
+		!strings.EqualFold(artifact.SHA256, digest) || artifact.RetentionState != "active" {
+		return InputArtifact{}, errors.New("inference input artifact response is invalid")
+	}
+	return artifact, nil
 }
 
 func (client *Client) GetJob(ctx context.Context, jobID, tenantRef string) (Job, error) {
@@ -262,7 +327,7 @@ func (client *Client) GetJob(ctx context.Context, jobID, tenantRef string) (Job,
 		return Job{}, responseError(response, body)
 	}
 	var payload jobResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := common.Unmarshal(body, &payload); err != nil {
 		return Job{}, fmt.Errorf("decode inference job response: %w", err)
 	}
 	if err := validateJob(payload.Job); err != nil {
@@ -300,7 +365,7 @@ func (client *Client) CancelJob(ctx context.Context, jobID, tenantRef string) (J
 		return Job{}, responseError(response, body)
 	}
 	var payload jobResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := common.Unmarshal(body, &payload); err != nil {
 		return Job{}, fmt.Errorf("decode inference cancel response: %w", err)
 	}
 	if err := validateJob(payload.Job); err != nil {
@@ -338,7 +403,7 @@ func (client *Client) GetArtifact(ctx context.Context, artifactID, tenantRef str
 		return Artifact{}, responseError(response, body)
 	}
 	var payload artifactResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := common.Unmarshal(body, &payload); err != nil {
 		return Artifact{}, fmt.Errorf("decode inference artifact response: %w", err)
 	}
 	if err := validateArtifact(payload.Artifact); err != nil {
@@ -385,7 +450,7 @@ func (client *Client) OpenArtifactContent(
 		return nil, errors.New("inference artifact content exceeds 320 MiB limit")
 	}
 	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if err != nil || (!strings.HasPrefix(mediaType, "audio/") && !strings.HasPrefix(mediaType, "image/")) {
+	if err != nil || (!strings.HasPrefix(mediaType, "audio/") && !strings.HasPrefix(mediaType, "image/") && mediaType != "application/json") {
 		response.Body.Close()
 		return nil, errors.New("inference artifact content has invalid media type")
 	}
@@ -434,7 +499,7 @@ func validateArtifact(artifact Artifact) error {
 		return errors.New("inference artifact response has invalid identity")
 	}
 	mediaType, _, err := mime.ParseMediaType(artifact.MediaType)
-	if err != nil || (!strings.HasPrefix(mediaType, "audio/") && !strings.HasPrefix(mediaType, "image/")) {
+	if err != nil || (!strings.HasPrefix(mediaType, "audio/") && !strings.HasPrefix(mediaType, "image/") && mediaType != "application/json") {
 		return errors.New("inference artifact response has invalid media type")
 	}
 	if artifact.SizeBytes < 0 || artifact.SizeBytes > maxArtifactBodyBytes || !sha256Pattern.MatchString(artifact.SHA256) {
@@ -475,8 +540,13 @@ func (request JobCreateRequest) validate() error {
 			return fmt.Errorf("inference job %s is required", field)
 		}
 	}
-	if request.InputArtifactRefs == nil {
-		return errors.New("inference job input_artifact_refs is required")
+	if request.InputArtifactIDs == nil || len(request.InputArtifactIDs) > 64 {
+		return errors.New("inference job input_artifact_ids is required")
+	}
+	for _, artifactID := range request.InputArtifactIDs {
+		if !resourceIDPattern.MatchString(artifactID) {
+			return errors.New("inference job input_artifact_ids is invalid")
+		}
 	}
 	if request.Parameters == nil {
 		return errors.New("inference job parameters is required")
@@ -504,7 +574,7 @@ func readBounded(reader io.Reader) ([]byte, error) {
 func responseError(response *http.Response, body []byte) error {
 	message := strings.TrimSpace(http.StatusText(response.StatusCode))
 	var apiError errorResponse
-	if json.Unmarshal(body, &apiError) == nil && strings.TrimSpace(apiError.Detail) != "" {
+	if common.Unmarshal(body, &apiError) == nil && strings.TrimSpace(apiError.Detail) != "" {
 		message = apiError.Detail
 	}
 

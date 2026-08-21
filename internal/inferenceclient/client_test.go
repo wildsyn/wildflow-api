@@ -1,7 +1,9 @@
 package inferenceclient
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +25,7 @@ func validRequest() JobCreateRequest {
 		TenantRef:            "tenant-a",
 		ProductModelRef:      "tts-standard",
 		ModelVersionRef:      "openbmb/VoxCPM2",
-		InputArtifactRefs:    []string{"input://script-1"},
+		InputArtifactIDs:     []string{},
 		Parameters:           map[string]any{"speed": 1.0},
 		DeadlineAt:           time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC),
 		CallbackCapabilities: []string{},
@@ -50,7 +52,7 @@ func TestSubmitJobSendsInternalContractAndParsesAcceptedJob(t *testing.T) {
 		}
 		for _, field := range []string{
 			"operation_id", "request_digest", "request_id", "tenant_ref",
-			"product_model_ref", "model_version_ref", "input_artifact_refs",
+			"product_model_ref", "model_version_ref", "input_artifact_ids",
 			"parameters", "deadline_at", "callback_capabilities",
 		} {
 			if _, ok := body[field]; !ok {
@@ -80,6 +82,58 @@ func TestSubmitJobSendsInternalContractAndParsesAcceptedJob(t *testing.T) {
 	if job.ID != "job-1" || job.State != "queued" {
 		t.Fatalf("unexpected job: %#v", job)
 	}
+}
+
+func TestUploadInputArtifactStreamsTenantScopedFLACAndValidatesResponse(t *testing.T) {
+	t.Parallel()
+	payload := []byte("fLaCcontrolled-audio")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/internal/v1/input-artifacts", r.URL.Path)
+		require.Equal(t, "Bearer internal-token", r.Header.Get("Authorization"))
+		require.Equal(t, "user:42", r.Header.Get("X-WildFlow-Tenant-Ref"))
+		require.Equal(t, "audio/flac", r.Header.Get("Content-Type"))
+		require.Equal(t, digest, r.Header.Get("X-WildFlow-Content-SHA256"))
+		require.Equal(t, int64(len(payload)), r.ContentLength)
+		actual, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.Equal(t, payload, actual)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"artifact":{"id":"input-1","media_type":"audio/flac","size_bytes":20,"sha256":"` + digest + `","retention_state":"active"}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL, Token: "internal-token", Timeout: time.Second})
+	require.NoError(t, err)
+	artifact, err := client.UploadInputArtifact(context.Background(), bytes.NewReader(payload), int64(len(payload)), digest, "user:42")
+	require.NoError(t, err)
+	assert.Equal(t, "input-1", artifact.ID)
+	assert.Equal(t, "audio/flac", artifact.MediaType)
+	assert.Equal(t, int64(len(payload)), artifact.SizeBytes)
+}
+
+func TestUploadInputArtifactDoesNotForwardTokenAcrossRedirect(t *testing.T) {
+	t.Parallel()
+	receiverRequests := 0
+	receiver := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { receiverRequests++ }))
+	defer receiver.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", receiver.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+	payload := []byte("fLaCdata")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	client, err := New(Config{BaseURL: server.URL, Token: "sensitive-token", Timeout: time.Second})
+	require.NoError(t, err)
+
+	_, err = client.UploadInputArtifact(context.Background(), bytes.NewReader(payload), int64(len(payload)), digest, "user:42")
+	var apiError *APIError
+	require.ErrorAs(t, err, &apiError)
+	assert.Equal(t, http.StatusTemporaryRedirect, apiError.StatusCode)
+	assert.Zero(t, receiverRequests)
 }
 
 func TestSubmitJobReturnsTypedConflictWithoutRetry(t *testing.T) {
