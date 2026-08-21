@@ -146,6 +146,44 @@ func TestApplyUnifiedAccountMigrationCreditsExistingBindingExactlyOnce(t *testin
 	assert.Equal(t, int64(1), records)
 }
 
+func TestPlanUnifiedAccountMigrationRejectsTamperedAppliedBinding(t *testing.T) {
+	truncateTables(t)
+	manifest := migrationManifest(UnifiedAccountMigrationAccount{
+		Subject:            "authentik-tampered",
+		PreferredUsername:  "tampered-user",
+		DisplayName:        "Tampered User",
+		Email:              "tampered@example.com",
+		SourceBalanceCents: 730,
+	})
+	_, err := ApplyUnifiedAccountMigration(manifest)
+	require.NoError(t, err)
+	require.NoError(t, DB.Model(&User{}).Where("oidc_id = ?", "authentik-tampered").Update("oidc_id", "different-subject").Error)
+
+	_, err = PlanUnifiedAccountMigration(manifest)
+	assert.ErrorIs(t, err, ErrUnifiedAccountMigrationConflict)
+}
+
+func TestApplyUnifiedAccountMigrationUsesDeterministicUsernameOnCollision(t *testing.T) {
+	truncateTables(t)
+	existing := User{Username: "same-user", Email: "other@example.com", Status: common.UserStatusEnabled, AffCode: "same-user"}
+	require.NoError(t, DB.Create(&existing).Error)
+	manifest := migrationManifest(UnifiedAccountMigrationAccount{
+		Subject:            "authentik-username-collision",
+		PreferredUsername:  "same-user",
+		DisplayName:        "A display name that is intentionally longer than twenty characters",
+		Email:              "new@example.com",
+		SourceBalanceCents: 0,
+	})
+
+	_, err := ApplyUnifiedAccountMigration(manifest)
+	require.NoError(t, err)
+	var created User
+	require.NoError(t, DB.Where("oidc_id = ?", "authentik-username-collision").First(&created).Error)
+	assert.NotEqual(t, existing.Username, created.Username)
+	assert.LessOrEqual(t, len([]rune(created.Username)), UserNameMaxLength)
+	assert.LessOrEqual(t, len([]rune(created.DisplayName)), 20)
+}
+
 func TestApplyUnifiedAccountMigrationFailsClosedOnEmailCollision(t *testing.T) {
 	truncateTables(t)
 	existing := User{
@@ -240,4 +278,56 @@ func TestRollbackUnifiedAccountMigrationRefusesSpentCredit(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnifiedAccountMigrationRollbackUnsafe)
 	require.NoError(t, DB.First(&user, user.Id).Error)
 	assert.Equal(t, 499_999, user.Quota)
+}
+
+func TestRollbackUnifiedAccountMigrationKeepsExistingUserEnabled(t *testing.T) {
+	truncateTables(t)
+	user := User{
+		Username: "existing-rollback", Email: "existing-rollback@example.com",
+		OidcId: "authentik-existing-rollback", Status: common.UserStatusEnabled,
+		Role: common.RoleCommonUser, Quota: 123, AffCode: "existing-rollback",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		return ClaimExternalIdentityWithTx(tx, ExternalIdentityProviderOIDC, user.OidcId, user.Id)
+	}))
+	manifest := migrationManifest(UnifiedAccountMigrationAccount{
+		Subject: user.OidcId, PreferredUsername: user.Username, DisplayName: "Existing Rollback",
+		Email: user.Email, SourceBalanceCents: 730,
+	})
+	_, err := ApplyUnifiedAccountMigration(manifest)
+	require.NoError(t, err)
+	_, err = RollbackUnifiedAccountMigration(manifest.MigrationID)
+	require.NoError(t, err)
+
+	require.NoError(t, DB.First(&user, user.Id).Error)
+	assert.Equal(t, 123, user.Quota)
+	assert.Equal(t, common.UserStatusEnabled, user.Status)
+}
+
+func TestPlanUnifiedAccountMigrationRejectsInvalidAccountFieldsAndOverflow(t *testing.T) {
+	truncateTables(t)
+	base := UnifiedAccountMigrationAccount{
+		Subject: "authentik-invalid", PreferredUsername: "invalid", DisplayName: "Invalid",
+		Email: "invalid@example.com", SourceBalanceCents: 1,
+	}
+	cases := []UnifiedAccountMigrationManifest{
+		migrationManifest(UnifiedAccountMigrationAccount{
+			Subject: base.Subject, Email: "not-an-email", SourceBalanceCents: 1,
+		}),
+		migrationManifest(UnifiedAccountMigrationAccount{
+			Subject: base.Subject, Email: base.Email, SourceBalanceCents: -1,
+		}),
+		migrationManifest(base, UnifiedAccountMigrationAccount{
+			Subject: "another-subject", Email: base.Email, SourceBalanceCents: 1,
+		}),
+	}
+	overflow := migrationManifest(base)
+	overflow.QuotaPerUnit = int64(^uint64(0) >> 1)
+	cases = append(cases, overflow)
+
+	for _, manifest := range cases {
+		_, err := PlanUnifiedAccountMigration(manifest)
+		assert.ErrorIs(t, err, ErrUnifiedAccountMigrationInvalidManifest)
+	}
 }
