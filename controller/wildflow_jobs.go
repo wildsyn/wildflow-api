@@ -497,7 +497,7 @@ func publicWildFlowArtifactMetadata(metadata map[string]any) map[string]any {
 		"input_characters", "completed_characters", "segment_count", "completed_segment_count",
 		"size_bytes", "sha256", "voice", "width", "height", "prompt_length",
 		"schema_version", "model_version_ref", "model_revision", "vibevoice_model_revision",
-		"faster_whisper_model_revision", "duration_seconds", "source_artifact_id",
+		"faster_whisper_model_revision", "runtime_version_ref", "duration_seconds", "source_artifact_id",
 	} {
 		if value, ok := metadata[key]; ok {
 			public[key] = value

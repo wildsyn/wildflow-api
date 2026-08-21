@@ -201,7 +201,7 @@ func TestCreateInternalExamDualASRJobIsExplicitlyAllowlistedHiddenAndUnbilled(t 
 func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T) {
 	content := []byte(`{"schema_version":1}`)
 	digest := fmt.Sprintf("%x", sha256.Sum256(content))
-	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","duration_seconds":120,"source_artifact_id":"input-1"}`, service.WildFlowModelExamDualASR)
+	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, service.WildFlowModelExamDualASR)
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/internal/v1/artifacts/artifact-asr":
