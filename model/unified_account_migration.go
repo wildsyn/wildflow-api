@@ -143,21 +143,27 @@ func validateUnifiedAccountMigrationManifest(manifest UnifiedAccountMigrationMan
 		raw.PreferredUsername = strings.TrimSpace(raw.PreferredUsername)
 		raw.DisplayName = strings.TrimSpace(raw.DisplayName)
 		raw.Email = NormalizeEmail(raw.Email)
-		parsedEmail, err := mail.ParseAddress(raw.Email)
-		if raw.Subject == "" || len(raw.Subject) > 128 || raw.Email == "" || len(raw.Email) > 50 ||
-			strings.ContainsAny(raw.Email, "\r\n") || err != nil || parsedEmail.Address != raw.Email ||
-			raw.SourceBalanceCents < 0 {
+		if raw.Subject == "" || len(raw.Subject) > 128 || len(raw.Email) > 50 ||
+			strings.ContainsAny(raw.Email, "\r\n") || raw.SourceBalanceCents < 0 {
 			return nil, ErrUnifiedAccountMigrationInvalidManifest
+		}
+		if raw.Email != "" {
+			parsedEmail, err := mail.ParseAddress(raw.Email)
+			if err != nil || parsedEmail.Address != raw.Email {
+				return nil, ErrUnifiedAccountMigrationInvalidManifest
+			}
 		}
 		hash := unifiedAccountSubjectHash(raw.Subject)
 		if _, exists := seenSubjects[hash]; exists {
 			return nil, ErrUnifiedAccountMigrationInvalidManifest
 		}
-		if _, exists := seenEmails[raw.Email]; exists {
-			return nil, ErrUnifiedAccountMigrationInvalidManifest
+		if raw.Email != "" {
+			if _, exists := seenEmails[raw.Email]; exists {
+				return nil, ErrUnifiedAccountMigrationInvalidManifest
+			}
+			seenEmails[raw.Email] = struct{}{}
 		}
 		seenSubjects[hash] = struct{}{}
-		seenEmails[raw.Email] = struct{}{}
 
 		delta, err := quotaDeltaFromCNYCents(raw.SourceBalanceCents, manifest.QuotaPerUnit, manifest.USDToCNYCents)
 		if err != nil || delta > int64(^uint(0)>>1) {
@@ -245,12 +251,14 @@ func PlanUnifiedAccountMigration(manifest UnifiedAccountMigrationManifest) (*Uni
 			plan.ExistingCount++
 			continue
 		}
-		var emailCount int64
-		if err := emailQuery(DB.Unscoped().Model(&User{}), item.account.Email).Count(&emailCount).Error; err != nil {
-			return nil, err
-		}
-		if emailCount != 0 {
-			return nil, fmt.Errorf("%w: identity %s", ErrUnifiedAccountMigrationConflict, item.subjectHash[:12])
+		if item.account.Email != "" {
+			var emailCount int64
+			if err := emailQuery(DB.Unscoped().Model(&User{}), item.account.Email).Count(&emailCount).Error; err != nil {
+				return nil, err
+			}
+			if emailCount != 0 {
+				return nil, fmt.Errorf("%w: identity %s", ErrUnifiedAccountMigrationConflict, item.subjectHash[:12])
+			}
 		}
 		plan.CreateCount++
 	}
@@ -363,8 +371,10 @@ func ApplyUnifiedAccountMigration(manifest UnifiedAccountMigrationManifest) (*Un
 				return err
 			}
 			if user == nil {
-				if err := ensureEmailAvailableWithTx(tx, item.account.Email, 0); err != nil {
-					return ErrUnifiedAccountMigrationConflict
+				if item.account.Email != "" {
+					if err := ensureEmailAvailableWithTx(tx, item.account.Email, 0); err != nil {
+						return ErrUnifiedAccountMigrationConflict
+					}
 				}
 				username, err := uniqueUnifiedAccountMigrationUsername(tx, item.account.PreferredUsername, item.subjectHash)
 				if err != nil {

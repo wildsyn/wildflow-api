@@ -32,6 +32,12 @@
 - GREEN, command safety: the command now rejects unknown JSON fields, runtime
   currency drift, incorrect manifest hashes, stale counts/totals, and incorrect
   apply or rollback confirmation phrases.
+- RED, OIDC identity without email:
+  `go test ./model -run TestPlanUnifiedAccountMigrationAllowsOIDCSubjectWithoutEmail -count=1`
+  failed because the manifest validator required an email address.
+- GREEN, OIDC identity without email: the same test passed after making email
+  optional for subject-bound OIDC provisioning while retaining validation and
+  collision checks for every non-empty email.
 
 ## Test specification
 
@@ -39,6 +45,7 @@
 |---|---|---|
 | Large CNY balances convert without floating-point loss | `model/unified_account_migration_test.go` | PASS |
 | Existing OIDC users are reused; new users are OIDC-only | `model/unified_account_migration_test.go` | PASS |
+| A stable OIDC subject can be provisioned without inventing an email | `model/unified_account_migration_test.go` | PASS |
 | Duplicate subjects, emails, and identity conflicts fail closed | `model/unified_account_migration_test.go` | PASS |
 | Apply and rollback are transactional and idempotent | `model/unified_account_migration_test.go` | PASS |
 | Unsafe rollback and replay drift are rejected | `model/unified_account_migration_test.go` | PASS |

@@ -102,6 +102,16 @@ func TestPlanUnifiedAccountMigrationAllowsOIDCSubjectWithoutEmail(t *testing.T) 
 	plan, err := PlanUnifiedAccountMigration(manifest)
 	require.NoError(t, err)
 	assert.Equal(t, 1, plan.CreateCount)
+
+	result, err := ApplyUnifiedAccountMigration(manifest)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.CreatedCount)
+
+	var user User
+	require.NoError(t, DB.Where("oidc_id = ?", "authentik-no-email").First(&user).Error)
+	assert.Empty(t, user.Email)
+	assert.Empty(t, user.Password)
+	assert.Equal(t, common.UserStatusEnabled, user.Status)
 }
 
 func TestApplyUnifiedAccountMigrationStoresConfirmedLargeBalance(t *testing.T) {
