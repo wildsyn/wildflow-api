@@ -66,6 +66,7 @@ func TestWildFlowDurableJobRoutesRequireAnAPIKey(t *testing.T) {
 
 	for _, request := range []*http.Request{
 		httptest.NewRequest(http.MethodPost, "/v1/jobs", nil),
+		httptest.NewRequest(http.MethodPost, "/v1/input-artifacts", nil),
 		httptest.NewRequest(http.MethodPost, "/api/v1/audio/speech", nil),
 		httptest.NewRequest(http.MethodPost, "/api/v1/images/generations", nil),
 		httptest.NewRequest(http.MethodGet, "/v1/jobs/op-1", nil),

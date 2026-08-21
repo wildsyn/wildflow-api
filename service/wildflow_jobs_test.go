@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -69,4 +70,50 @@ func TestValidateWildFlowParametersAcceptsEveryDocumentedVoice(t *testing.T) {
 			}))
 		})
 	}
+}
+
+func TestNormalizeAndValidateInternalExamDualASRRequest(t *testing.T) {
+	t.Parallel()
+
+	request, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
+		Model:            WildFlowModelExamDualASR,
+		InputArtifactIDs: []string{"input-artifact-1"},
+		Parameters: map[string]any{
+			"language": "zh", "context": "申论课程",
+			"hotwords": []any{"青蜂六边形", "归纳概括"}, "source_offset_seconds": float64(0),
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, WildFlowModelExamDualASR, request.Model)
+	offering, ok := findWildFlowJobOffering(request.Model)
+	require.True(t, ok)
+	require.Equal(t, "internal_asr", offering.Kind)
+	require.NoError(t, validateWildFlowRequest(offering.Kind, request))
+
+	invalid := []WildFlowJobRequest{
+		{Model: WildFlowModelExamDualASR, Parameters: map[string]any{}},
+		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1", "input-2"}, Parameters: map[string]any{}},
+		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"../private"}, Parameters: map[string]any{}},
+		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{"context": strings.Repeat("x", 20_001)}},
+		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{"hotwords": []any{strings.Repeat("x", 101)}}},
+		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{"source_offset_seconds": float64(7201)}},
+	}
+	for _, candidate := range invalid {
+		candidate, err = NormalizeWildFlowJobRequest(candidate)
+		require.NoError(t, err)
+		require.ErrorIs(t, validateWildFlowRequest("internal_asr", candidate), ErrWildFlowInvalidParameters)
+	}
+}
+
+func TestPublicWildFlowCatalogDoesNotExposeInternalExamDualASR(t *testing.T) {
+	t.Parallel()
+
+	for _, offering := range ListCanonicalWildFlowOfferings() {
+		require.NotEqual(t, WildFlowModelExamDualASR, offering.ID)
+	}
+	_, public := FindWildFlowOffering(WildFlowModelExamDualASR)
+	require.False(t, public)
+	internal, callable := findWildFlowJobOffering(WildFlowModelExamDualASR)
+	require.True(t, callable)
+	require.Equal(t, WildFlowModelExamDualASR, internal.ModelVersionRef)
 }

@@ -224,6 +224,23 @@ func TestQuoteWildFlowBillingRejectsUnsupportedModel(t *testing.T) {
 	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
 }
 
+func TestInternalExamDualASRTrialDoesNotCreateRetailBilling(t *testing.T) {
+	operation := &model.WildFlowOperation{
+		OperationID: "op-internal-asr", ProductModelRef: WildFlowModelExamDualASR,
+		ModelVersionRef: WildFlowModelExamDualASR, BillingState: model.WildFlowBillingStatePending,
+	}
+	request := WildFlowJobRequest{
+		Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
+	}
+
+	reserved, err := ReserveWildFlowOperationBilling(operation, request)
+	require.NoError(t, err)
+	assert.Same(t, operation, reserved)
+	assert.Equal(t, model.WildFlowBillingStatePending, reserved.BillingState)
+	_, err = QuoteWildFlowBilling(request)
+	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
+}
+
 func TestWildFlowBillingServiceIgnoresUnbilledAndNonTerminalOperations(t *testing.T) {
 	_, err := ReserveWildFlowOperationBilling(nil, WildFlowJobRequest{})
 	require.Error(t, err)
@@ -291,6 +308,29 @@ func TestValidateWildFlowCompletedArtifactsRequiresCanonicalVoxMP3Evidence(t *te
 			require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
 		})
 	}
+}
+
+func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *testing.T) {
+	artifact := inferenceclient.Artifact{
+		ID: "artifact-asr", JobID: "job-asr", MediaType: "application/json", SizeBytes: 128,
+		SHA256: strings.Repeat("a", 64),
+		Metadata: map[string]any{
+			"schema_version":                float64(1),
+			"model_version_ref":             WildFlowModelExamDualASR,
+			"vibevoice_model_revision":      "d0c9efdb8d614685062c04425d91e01b6f37d944",
+			"faster_whisper_model_revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
+			"duration_seconds":              float64(120),
+			"source_artifact_id":            "input-1",
+		},
+	}
+	operation := &model.WildFlowOperation{ProductModelRef: WildFlowModelExamDualASR}
+	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
+	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), &model.WildFlowOperation{
+		ProductModelRef: WildFlowModelExamDualASR, State: "succeeded", BillingState: model.WildFlowBillingStatePending,
+	}, []inferenceclient.Artifact{artifact}))
+
+	artifact.Metadata["faster_whisper_model_revision"] = "mutable-latest"
+	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
 }
 
 func TestValidateWildFlowCompletedArtifactsPreservesFluxArtifactContract(t *testing.T) {
