@@ -143,6 +143,10 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		writeWildFlowBillingError(c, err)
 		return
 	}
+	deadlineAfter := 30 * time.Minute
+	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
+		deadlineAfter = 6 * time.Hour
+	}
 	job, err := client.SubmitJob(c.Request.Context(), inferenceclient.JobCreateRequest{
 		OperationID:          operation.OperationID,
 		RequestDigest:        operation.RequestDigest,
@@ -152,7 +156,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		ModelVersionRef:      operation.ModelVersionRef,
 		InputArtifactIDs:     request.InputArtifactIDs,
 		Parameters:           request.Parameters,
-		DeadlineAt:           time.Now().UTC().Add(30 * time.Minute),
+		DeadlineAt:           time.Now().UTC().Add(deadlineAfter),
 		CallbackCapabilities: []string{},
 	})
 	if err != nil {
@@ -366,6 +370,9 @@ func loadWildFlowOperation(c *gin.Context) (*model.WildFlowOperation, bool) {
 		wildFlowJobError(c, http.StatusNotFound, "operation_not_found", "operation not found")
 		return nil, false
 	}
+	if !authorizeWildFlowOperationModel(c, operation) {
+		return nil, false
+	}
 	return operation, true
 }
 
@@ -390,6 +397,9 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model
 		wildFlowJobError(c, http.StatusNotFound, "artifact_not_found", "artifact not found")
 		return inferenceclient.Artifact{}, nil, false
 	}
+	if !authorizeWildFlowOperationModel(c, operation) {
+		return inferenceclient.Artifact{}, nil, false
+	}
 	internalTrialReady := operation.ProductModelRef == service.WildFlowModelExamDualASR &&
 		operation.BillingState == model.WildFlowBillingStatePending
 	if operation.State != "succeeded" || (operation.BillingState != model.WildFlowBillingStateSettled && !internalTrialReady) {
@@ -410,6 +420,15 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model
 		return inferenceclient.Artifact{}, nil, false
 	}
 	return artifact, operation, true
+}
+
+func authorizeWildFlowOperationModel(c *gin.Context, operation *model.WildFlowOperation) bool {
+	if operation.ProductModelRef != service.WildFlowModelExamDualASR ||
+		wildFlowTokenAllowsModel(c, operation.ProductModelRef) {
+		return true
+	}
+	wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token is not allowed to use this internal workflow")
+	return false
 }
 
 func newWildFlowInferenceClient() (*inferenceclient.Client, error) {
