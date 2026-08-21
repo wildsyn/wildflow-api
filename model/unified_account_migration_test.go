@@ -305,6 +305,31 @@ func TestRollbackUnifiedAccountMigrationKeepsExistingUserEnabled(t *testing.T) {
 	assert.Equal(t, common.UserStatusEnabled, user.Status)
 }
 
+func TestRollbackUnifiedAccountMigrationRefusesToClawBackExistingQuotaAfterSpend(t *testing.T) {
+	truncateTables(t)
+	user := User{
+		Username: "existing-spend", Email: "existing-spend@example.com",
+		OidcId: "authentik-existing-spend", Status: common.UserStatusEnabled,
+		Role: common.RoleCommonUser, Quota: 750_000, AffCode: "existing-spend",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		return ClaimExternalIdentityWithTx(tx, ExternalIdentityProviderOIDC, user.OidcId, user.Id)
+	}))
+	manifest := migrationManifest(UnifiedAccountMigrationAccount{
+		Subject: user.OidcId, PreferredUsername: user.Username, DisplayName: "Existing Spend",
+		Email: user.Email, SourceBalanceCents: 730,
+	})
+	_, err := ApplyUnifiedAccountMigration(manifest)
+	require.NoError(t, err)
+	require.NoError(t, DB.Model(&user).Update("quota", 1_249_999).Error)
+
+	_, err = RollbackUnifiedAccountMigration(manifest.MigrationID)
+	assert.ErrorIs(t, err, ErrUnifiedAccountMigrationRollbackUnsafe)
+	require.NoError(t, DB.First(&user, user.Id).Error)
+	assert.Equal(t, 1_249_999, user.Quota)
+}
+
 func TestPlanUnifiedAccountMigrationRejectsInvalidAccountFieldsAndOverflow(t *testing.T) {
 	truncateTables(t)
 	base := UnifiedAccountMigrationAccount{

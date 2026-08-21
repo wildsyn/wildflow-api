@@ -183,10 +183,12 @@ func validateUnifiedAccountMigrationManifest(manifest UnifiedAccountMigrationMan
 
 func findUnifiedAccountMigrationUser(tx *gorm.DB, subject string) (*User, error) {
 	var claim ExternalIdentityClaim
-	err := tx.Where("provider = ? AND subject = ?", ExternalIdentityProviderOIDC, subject).First(&claim).Error
+	err := lockForUpdate(tx).Where(
+		"provider = ? AND subject = ?", ExternalIdentityProviderOIDC, subject,
+	).First(&claim).Error
 	if err == nil {
 		var user User
-		if err := tx.Unscoped().First(&user, claim.UserId).Error; err != nil {
+		if err := lockForUpdate(tx).Unscoped().First(&user, claim.UserId).Error; err != nil {
 			return nil, ErrUnifiedAccountMigrationConflict
 		}
 		if user.DeletedAt.Valid || user.Status != common.UserStatusEnabled || user.OidcId != subject {
@@ -465,7 +467,8 @@ func RollbackUnifiedAccountMigration(migrationID string) (*UnifiedAccountMigrati
 			if err := lockForUpdate(tx).Unscoped().First(&user, record.UserId).Error; err != nil {
 				return ErrUnifiedAccountMigrationRollbackUnsafe
 			}
-			if int64(user.Quota) < record.QuotaDelta {
+			if record.BaselineQuota > math.MaxInt64-record.QuotaDelta ||
+				int64(user.Quota) != record.BaselineQuota+record.QuotaDelta {
 				return ErrUnifiedAccountMigrationRollbackUnsafe
 			}
 			updates := map[string]any{"quota": gorm.Expr("quota - ?", record.QuotaDelta)}
