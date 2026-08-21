@@ -166,6 +166,10 @@ func TestCreateInternalExamDualASRJobIsExplicitlyAllowlistedHiddenAndUnbilled(t 
 		assert.Equal(t, service.WildFlowModelExamDualASR, body["product_model_ref"])
 		assert.Equal(t, service.WildFlowModelExamDualASR, body["model_version_ref"])
 		assert.Equal(t, []any{"input-1"}, body["input_artifact_ids"])
+		deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
+		require.NoError(t, err)
+		assert.GreaterOrEqual(t, time.Until(deadline), 5*time.Hour)
+		assert.LessOrEqual(t, time.Until(deadline), 6*time.Hour+time.Minute)
 		_, hasDescriptors := body["inputs"]
 		assert.False(t, hasDescriptors)
 		w.Header().Set("Content-Type", "application/json")
@@ -219,11 +223,40 @@ func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T
 		BillingState: model.WildFlowBillingStatePending,
 	}).Error)
 
-	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", nil)
+	denied := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", nil)
+	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
+
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", map[string]string{
+		"X-Test-Model-Limits": service.WildFlowModelExamDualASR,
+	})
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
 	assert.Contains(t, response.Header().Get("Content-Disposition"), "artifact-asr.json")
 	assert.Equal(t, content, response.Body.Bytes())
+}
+
+func TestInternalExamDualASROperationReadRequiresCurrentTokenAllowlist(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	require.NoError(t, model.DB.Create(&model.WildFlowOperation{
+		OperationID: "op-asr-read", UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: "key-asr-read", RequestDigest: "request-asr-read",
+		RequestID: "request-asr-read", ProductModelRef: service.WildFlowModelExamDualASR,
+		ModelVersionRef: service.WildFlowModelExamDualASR, State: "recovery_required",
+		BillingState: model.WildFlowBillingStatePending,
+	}).Error)
+
+	denied := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/op-asr-read", "", nil)
+	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
+	assert.Zero(t, requests)
+
+	allowed := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/op-asr-read", "", map[string]string{
+		"X-Test-Model-Limits": service.WildFlowModelExamDualASR,
+	})
+	require.Equal(t, http.StatusOK, allowed.Code, allowed.Body.String())
+	assert.Zero(t, requests)
 }
 
 func validVoxArtifactJSON(artifactID string, jobID string, characters int) string {
