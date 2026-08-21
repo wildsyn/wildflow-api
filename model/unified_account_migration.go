@@ -225,6 +225,9 @@ func PlanUnifiedAccountMigration(manifest UnifiedAccountMigrationManifest) (*Uni
 					record.State != UnifiedAccountMigrationStateApplied {
 					return nil, ErrUnifiedAccountMigrationSnapshotDrift
 				}
+				if err := validateUnifiedAccountMigrationReplay(DB, &record, item); err != nil {
+					return nil, fmt.Errorf("%w: identity %s", err, item.subjectHash[:12])
+				}
 				plan.AlreadyAppliedCount++
 				continue
 			}

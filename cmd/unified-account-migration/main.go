@@ -105,16 +105,30 @@ func validateRuntime(manifest model.UnifiedAccountMigrationManifest) error {
 	return nil
 }
 
-func initializeRuntime() error {
-	common.InitEnv()
+func initializeRuntimeWith(
+	initEnv func(),
+	initDB func() error,
+	initOptions func(),
+	initRedis func() error,
+) error {
+	initEnv()
 	// A one-off migration command must never run the service startup migration
 	// set or create bootstrap users. Its own ledger is migrated only by apply.
 	common.IsMasterNode = false
-	if err := model.InitDB(); err != nil {
+	if err := initDB(); err != nil {
 		return err
 	}
-	model.InitOptionMap()
-	return common.InitRedisClient()
+	initOptions()
+	return initRedis()
+}
+
+func initializeRuntime() error {
+	return initializeRuntimeWith(
+		common.InitEnv,
+		model.InitDB,
+		model.InitOptionMap,
+		common.InitRedisClient,
+	)
 }
 
 func writeOutput(output io.Writer, value commandOutput) error {
