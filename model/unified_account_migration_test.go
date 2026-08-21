@@ -90,6 +90,25 @@ func TestApplyUnifiedAccountMigrationCreatesOIDCOnlyUserAndLedger(t *testing.T) 
 	assert.Equal(t, UnifiedAccountMigrationStateApplied, record.State)
 }
 
+func TestApplyUnifiedAccountMigrationStoresConfirmedLargeBalance(t *testing.T) {
+	truncateTables(t)
+	manifest := migrationManifest(UnifiedAccountMigrationAccount{
+		Subject:            "authentik-confirmed-large-balance",
+		PreferredUsername:  "large-balance",
+		DisplayName:        "Large Balance",
+		Email:              "large-balance@example.com",
+		SourceBalanceCents: 1_120_006_920,
+	})
+
+	result, err := ApplyUnifiedAccountMigration(manifest)
+	require.NoError(t, err)
+	assert.Equal(t, int64(767_128_027_397), result.QuotaDelta)
+
+	var quota int64
+	require.NoError(t, DB.Model(&User{}).Where("oidc_id = ?", "authentik-confirmed-large-balance").Select("quota").Scan(&quota).Error)
+	assert.Equal(t, result.QuotaDelta, quota)
+}
+
 func TestApplyUnifiedAccountMigrationCreditsExistingBindingExactlyOnce(t *testing.T) {
 	truncateTables(t)
 	user := User{
