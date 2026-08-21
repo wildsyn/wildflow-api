@@ -90,6 +90,20 @@ func TestApplyUnifiedAccountMigrationCreatesOIDCOnlyUserAndLedger(t *testing.T) 
 	assert.Equal(t, UnifiedAccountMigrationStateApplied, record.State)
 }
 
+func TestPlanUnifiedAccountMigrationAllowsOIDCSubjectWithoutEmail(t *testing.T) {
+	manifest := migrationManifest(UnifiedAccountMigrationAccount{
+		Subject:            "authentik-no-email",
+		PreferredUsername:  "no-email",
+		DisplayName:        "No Email",
+		Email:              "",
+		SourceBalanceCents: 0,
+	})
+
+	plan, err := PlanUnifiedAccountMigration(manifest)
+	require.NoError(t, err)
+	assert.Equal(t, 1, plan.CreateCount)
+}
+
 func TestApplyUnifiedAccountMigrationStoresConfirmedLargeBalance(t *testing.T) {
 	truncateTables(t)
 	manifest := migrationManifest(UnifiedAccountMigrationAccount{
