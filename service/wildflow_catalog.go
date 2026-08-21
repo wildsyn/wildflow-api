@@ -87,9 +87,14 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 	},
 }
 
+func ListCanonicalWildFlowOfferings() []WildFlowOffering {
+	offerings := make([]WildFlowOffering, len(canonicalWildFlowCatalog))
+	copy(offerings, canonicalWildFlowCatalog)
+	return offerings
+}
+
 func GetWildFlowCatalog(ctx context.Context) []WildFlowOffering {
-	catalog := make([]WildFlowOffering, len(canonicalWildFlowCatalog))
-	copy(catalog, canonicalWildFlowCatalog)
+	catalog := ListCanonicalWildFlowOfferings()
 	for index := range catalog {
 		catalog[index].Status = "unavailable"
 	}
