@@ -15,7 +15,7 @@ func migrationManifest(accounts ...UnifiedAccountMigrationAccount) UnifiedAccoun
 		total += account.SourceBalanceCents
 	}
 	return UnifiedAccountMigrationManifest{
-		MigrationID:                "wildcloud-balance-copy-2026-08-21-v1",
+		MigrationID:                "test-wildcloud-balance-copy-v1",
 		QuotaPerUnit:               500_000,
 		USDToCNYCents:              730,
 		ExpectedAccountCount:       len(accounts),
@@ -32,22 +32,22 @@ func TestPlanUnifiedAccountMigrationPreservesLargeCNYBalance(t *testing.T) {
 			PreferredUsername:  "large-owner",
 			DisplayName:        "Large Owner",
 			Email:              "large@example.com",
-			SourceBalanceCents: 1_120_006_920,
+			SourceBalanceCents: 1_234_567_890,
 		},
 		UnifiedAccountMigrationAccount{
 			Subject:            "authentik-normal-balance",
 			PreferredUsername:  "normal-owner",
 			DisplayName:        "Normal Owner",
 			Email:              "normal@example.com",
-			SourceBalanceCents: 92_535,
+			SourceBalanceCents: 54_321,
 		},
 	)
 
 	plan, err := PlanUnifiedAccountMigration(manifest)
 	require.NoError(t, err)
 	assert.Equal(t, 2, plan.AccountCount)
-	assert.Equal(t, int64(1_120_099_455), plan.SourceBalanceCents)
-	assert.Equal(t, int64(767_191_407_534), plan.QuotaDelta)
+	assert.Equal(t, int64(1_234_622_211), plan.SourceBalanceCents)
+	assert.Equal(t, int64(845_631_651_369), plan.QuotaDelta)
 	assert.Equal(t, 2, plan.CreateCount)
 	assert.Zero(t, plan.ExistingCount)
 }
@@ -97,12 +97,12 @@ func TestApplyUnifiedAccountMigrationStoresConfirmedLargeBalance(t *testing.T) {
 		PreferredUsername:  "large-balance",
 		DisplayName:        "Large Balance",
 		Email:              "large-balance@example.com",
-		SourceBalanceCents: 1_120_006_920,
+		SourceBalanceCents: 1_234_567_890,
 	})
 
 	result, err := ApplyUnifiedAccountMigration(manifest)
 	require.NoError(t, err)
-	assert.Equal(t, int64(767_128_027_397), result.QuotaDelta)
+	assert.Equal(t, int64(845_594_445_205), result.QuotaDelta)
 
 	var quota int64
 	require.NoError(t, DB.Model(&User{}).Where("oidc_id = ?", "authentik-confirmed-large-balance").Select("quota").Scan(&quota).Error)

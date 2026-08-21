@@ -16,7 +16,7 @@ import (
 )
 
 const testManifestJSON = `{
-  "migration_id":"wildcloud-balance-copy-2026-08-21-v1",
+  "migration_id":"test-wildcloud-balance-copy-v1",
   "quota_per_unit":500000,
   "usd_to_cny_cents":730,
   "expected_account_count":1,
@@ -33,7 +33,7 @@ const testManifestJSON = `{
 func TestManifestDigestIsStableAcrossJSONWhitespace(t *testing.T) {
 	first, err := decodeManifest([]byte(testManifestJSON))
 	require.NoError(t, err)
-	second, err := decodeManifest([]byte(`{"migration_id":"wildcloud-balance-copy-2026-08-21-v1","quota_per_unit":500000,"usd_to_cny_cents":730,"expected_account_count":1,"expected_source_balance_cents":730,"accounts":[{"subject":"authentik-user","preferred_username":"user","display_name":"User","email":"user@example.com","source_balance_cents":730}]}`))
+	second, err := decodeManifest([]byte(`{"migration_id":"test-wildcloud-balance-copy-v1","quota_per_unit":500000,"usd_to_cny_cents":730,"expected_account_count":1,"expected_source_balance_cents":730,"accounts":[{"subject":"authentik-user","preferred_username":"user","display_name":"User","email":"user@example.com","source_balance_cents":730}]}`))
 	require.NoError(t, err)
 
 	firstDigest, err := manifestDigest(first)
@@ -105,13 +105,13 @@ func TestValidateRuntimeMatchesManifestCurrencyContract(t *testing.T) {
 
 func TestApplyConfirmationPhraseIncludesFrozenScope(t *testing.T) {
 	manifest := model.UnifiedAccountMigrationManifest{
-		MigrationID:                "wildcloud-balance-copy-2026-08-21-v1",
-		ExpectedAccountCount:       19,
-		ExpectedSourceBalanceCents: 1_120_099_455,
+		MigrationID:                "test-wildcloud-balance-copy-v1",
+		ExpectedAccountCount:       3,
+		ExpectedSourceBalanceCents: 12_345,
 	}
 	assert.Equal(
 		t,
-		"APPLY wildcloud-balance-copy-2026-08-21-v1 19 1120099455",
+		"APPLY test-wildcloud-balance-copy-v1 3 12345",
 		applyConfirmationPhrase(manifest),
 	)
 }
