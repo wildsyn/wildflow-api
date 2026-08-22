@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWildFlowCatalogIsPublicAndDisplaysTwoPricedModels(t *testing.T) {
+func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("WILDFLOW_INFERENCE_URL", "")
 	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "")
@@ -52,6 +52,18 @@ func TestWildFlowCatalogIsPublicAndDisplaysTwoPricedModels(t *testing.T) {
 				"model_version_ref":"black-forest-labs/FLUX.2-klein-4B",
 				"description":"支持中英文提示词的开源图片生成模型。",
 				"pricing":{"currency":"CNY","amount":0.05,"unit":"image","display":"¥0.05 / 张"},
+				"callable":false,
+				"status":"unavailable"
+			},
+			{
+				"id":"wildflow/exam-replay-dual-asr-v1",
+				"display_name":"直播回放双 ASR",
+				"kind":"asr",
+				"vendor":"WildFlow",
+				"model_version_ref":"wildflow/exam-replay-dual-asr-v1",
+				"description":"同时输出分段转写与逐词时间戳，适用于直播回放、课程和访谈素材；当前为团队内测。",
+				"required_parameters":["input_artifact_ids"],
+				"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内测 · 暂不扣零售余额"},
 				"callable":false,
 				"status":"unavailable"
 			}

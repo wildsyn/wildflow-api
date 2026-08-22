@@ -26,6 +26,7 @@ type WildFlowOffering struct {
 	Pricing            WildFlowCatalogPricing `json:"pricing"`
 	Callable           bool                   `json:"callable"`
 	Status             string                 `json:"status"`
+	RuntimeOfferingID  string                 `json:"-"`
 }
 
 type WildFlowVoice struct {
@@ -85,6 +86,19 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 			Currency: "CNY", Amount: 0.05, Unit: "image", Display: "¥0.05 / 张",
 		},
 	},
+	{
+		ID:                 WildFlowModelExamDualASR,
+		DisplayName:        "直播回放双 ASR",
+		Kind:               "asr",
+		Vendor:             "WildFlow",
+		ModelVersionRef:    WildFlowModelExamDualASR,
+		RuntimeOfferingID:  "exam-replay-dual-asr",
+		Description:        "同时输出分段转写与逐词时间戳，适用于直播回放、课程和访谈素材；当前为团队内测。",
+		RequiredParameters: []string{"input_artifact_ids"},
+		Pricing: WildFlowCatalogPricing{
+			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内测 · 暂不扣零售余额",
+		},
+	},
 }
 
 func ListCanonicalWildFlowOfferings() []WildFlowOffering {
@@ -108,7 +122,11 @@ func GetWildFlowCatalog(ctx context.Context) []WildFlowOffering {
 		availability[item.ID+"\x00"+item.ModelVersionRef] = item.Callable
 	}
 	for index := range catalog {
-		key := catalog[index].ID + "\x00" + catalog[index].ModelVersionRef
+		runtimeOfferingID := catalog[index].RuntimeOfferingID
+		if runtimeOfferingID == "" {
+			runtimeOfferingID = catalog[index].ID
+		}
+		key := runtimeOfferingID + "\x00" + catalog[index].ModelVersionRef
 		catalog[index].Callable = availability[key]
 		if catalog[index].Callable {
 			catalog[index].Status = "available"

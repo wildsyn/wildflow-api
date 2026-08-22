@@ -87,7 +87,7 @@ func TestNormalizeAndValidateInternalExamDualASRRequest(t *testing.T) {
 	require.Equal(t, WildFlowModelExamDualASR, request.Model)
 	offering, ok := findWildFlowJobOffering(request.Model)
 	require.True(t, ok)
-	require.Equal(t, "internal_asr", offering.Kind)
+	require.Equal(t, "asr", offering.Kind)
 	require.NoError(t, validateWildFlowRequest(offering.Kind, request))
 
 	invalid := []WildFlowJobRequest{
@@ -101,19 +101,15 @@ func TestNormalizeAndValidateInternalExamDualASRRequest(t *testing.T) {
 	for _, candidate := range invalid {
 		candidate, err = NormalizeWildFlowJobRequest(candidate)
 		require.NoError(t, err)
-		require.ErrorIs(t, validateWildFlowRequest("internal_asr", candidate), ErrWildFlowInvalidParameters)
+		require.ErrorIs(t, validateWildFlowRequest("asr", candidate), ErrWildFlowInvalidParameters)
 	}
 }
 
-func TestPublicWildFlowCatalogDoesNotExposeInternalExamDualASR(t *testing.T) {
+func TestPublicWildFlowCatalogExposesTeamDualASR(t *testing.T) {
 	t.Parallel()
 
-	for _, offering := range ListCanonicalWildFlowOfferings() {
-		require.NotEqual(t, WildFlowModelExamDualASR, offering.ID)
-	}
-	_, public := FindWildFlowOffering(WildFlowModelExamDualASR)
-	require.False(t, public)
-	internal, callable := findWildFlowJobOffering(WildFlowModelExamDualASR)
-	require.True(t, callable)
-	require.Equal(t, WildFlowModelExamDualASR, internal.ModelVersionRef)
+	public, visible := FindWildFlowOffering(WildFlowModelExamDualASR)
+	require.True(t, visible)
+	require.Equal(t, WildFlowModelExamDualASR, public.ModelVersionRef)
+	require.Equal(t, "直播回放双 ASR", public.DisplayName)
 }
