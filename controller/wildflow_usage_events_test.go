@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,37 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestValidUsageEventAcceptsPositiveAudioDuration(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 22, 0, 0, 0, 0, time.UTC)
+	event := wildFlowUsageEventEnvelope{
+		EventID:       "usage-asr-1",
+		AggregateType: "job",
+		AggregateID:   "job-asr-1",
+		EventType:     "usage.recorded.v1",
+		Payload: wildFlowUsageEventPayload{
+			UsageEventID:    "usage-asr-1",
+			OperationID:     "operation-asr-1",
+			JobID:           "job-asr-1",
+			AttemptID:       "attempt-asr-1",
+			ModelVersionRef: "wildflow/exam-replay-dual-asr-v1",
+			ChannelType:     "gpu_agent",
+			Kind:            "audio_duration",
+			Quantity:        7_376,
+			Unit:            "millisecond",
+			StartedAt:       startedAt,
+			EndedAt:         startedAt.Add(90 * time.Second),
+			EvidenceRef:     "artifact:artifact-asr-1",
+		},
+	}
+
+	assert.True(t, validUsageEvent(event))
+	event.Payload.Quantity = 0
+	assert.False(t, validUsageEvent(event))
+	event.Payload.Quantity = 7_376
+	event.Payload.Unit = "second"
+	assert.False(t, validUsageEvent(event))
+}
 
 func TestReceiveWildFlowUsageEventIsAuthenticatedImmutableAndIdempotent(t *testing.T) {
 	gin.SetMode(gin.TestMode)

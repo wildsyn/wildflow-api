@@ -145,7 +145,8 @@ func validUsageEvent(event wildFlowUsageEventEnvelope) bool {
 	}
 	return (payload.Kind == "provider_tokens" && payload.Unit == "token") ||
 		(payload.Kind == "characters" && payload.Unit == "character" && payload.Quantity > 0) ||
-		(payload.Kind == "images" && payload.Unit == "image" && payload.Quantity == 1)
+		(payload.Kind == "images" && payload.Unit == "image" && payload.Quantity == 1) ||
+		(payload.Kind == "audio_duration" && payload.Unit == "millisecond" && payload.Quantity > 0)
 }
 
 func safeUsageField(value string, maximum int) bool {
