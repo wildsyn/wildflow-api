@@ -33,14 +33,6 @@ const (
 	WildFlowModelExamDualASR = "wildflow/exam-replay-dual-asr-v1"
 )
 
-var internalWildFlowJobOfferings = map[string]WildFlowOffering{
-	WildFlowModelExamDualASR: {
-		ID: WildFlowModelExamDualASR, DisplayName: "考公直播回放双 ASR 内部验收",
-		Kind: "internal_asr", Vendor: "WildFlow", ModelVersionRef: WildFlowModelExamDualASR,
-		Description: "内部验收工作流，不进入公开模型目录，不提供零售定价。",
-	},
-}
-
 var wildFlowTTSVoices = map[string]struct{}{
 	"shuoshuren": {},
 	"dabin":      {},
@@ -146,11 +138,7 @@ func PrepareWildFlowOperation(
 }
 
 func findWildFlowJobOffering(id string) (WildFlowOffering, bool) {
-	if offering, ok := FindWildFlowOffering(id); ok {
-		return offering, true
-	}
-	offering, ok := internalWildFlowJobOfferings[id]
-	return offering, ok
+	return FindWildFlowOffering(id)
 }
 
 func FindWildFlowOffering(id string) (WildFlowOffering, bool) {
@@ -181,7 +169,7 @@ func validateWildFlowParameters(kind string, parameters map[string]any) error {
 }
 
 func validateWildFlowRequest(kind string, request WildFlowJobRequest) error {
-	if kind == "internal_asr" {
+	if kind == "asr" {
 		return validateWildFlowASRRequest(request)
 	}
 	if len(request.InputArtifactIDs) != 0 {

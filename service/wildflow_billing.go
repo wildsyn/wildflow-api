@@ -29,6 +29,9 @@ func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuot
 	if err != nil {
 		return model.WildFlowBillingQuote{}, err
 	}
+	if request.Model == WildFlowModelExamDualASR {
+		return model.WildFlowBillingQuote{}, ErrWildFlowUnsupportedModel
+	}
 	offering, ok := FindWildFlowOffering(request.Model)
 	if !ok {
 		return model.WildFlowBillingQuote{}, ErrWildFlowUnsupportedModel
@@ -97,7 +100,7 @@ func ReserveWildFlowOperationBilling(operation *model.WildFlowOperation, request
 		return nil, err
 	}
 	if request.Model == WildFlowModelExamDualASR {
-		if err := validateWildFlowRequest("internal_asr", request); err != nil {
+		if err := validateWildFlowRequest("asr", request); err != nil {
 			return nil, err
 		}
 		if operation.ProductModelRef != WildFlowModelExamDualASR ||

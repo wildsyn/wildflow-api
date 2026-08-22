@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -510,12 +511,12 @@ func TestListModelsIncludesAuthorizedWildFlowJobModels(t *testing.T) {
 	ListModels(ctx, constant.ChannelTypeOpenAI)
 
 	payload := decodeListModelsPayload(t, recorder)
-	require.Len(t, payload.Data, 2)
+	require.Len(t, payload.Data, 3)
 	modelsByID := make(map[string]dto.OpenAIModels, len(payload.Data))
 	for _, item := range payload.Data {
 		modelsByID[item.Id] = item
 	}
-	for _, modelID := range []string{"VoxCPM2", "FLUX.2 [klein] 4B"} {
+	for _, modelID := range []string{"VoxCPM2", "FLUX.2 [klein] 4B", service.WildFlowModelExamDualASR} {
 		item, ok := modelsByID[modelID]
 		require.True(t, ok)
 		require.Equal(t, "wildflow", item.OwnedBy)
@@ -553,6 +554,21 @@ func TestRetrieveModelSupportsAuthorizedWildFlowJobModel(t *testing.T) {
 	var payload dto.OpenAIModels
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
 	require.Equal(t, "VoxCPM2", payload.Id)
+	require.Equal(t, "wildflow", payload.OwnedBy)
+	require.Equal(t, []constant.EndpointType{constant.EndpointTypeWildFlowJobs}, payload.SupportedEndpointTypes)
+}
+
+func TestRetrieveModelSupportsDualASRForRegisteredUsers(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "model", Value: service.WildFlowModelExamDualASR}}
+
+	RetrieveModel(ctx, constant.ChannelTypeOpenAI)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var payload dto.OpenAIModels
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	require.Equal(t, service.WildFlowModelExamDualASR, payload.Id)
 	require.Equal(t, "wildflow", payload.OwnedBy)
 	require.Equal(t, []constant.EndpointType{constant.EndpointTypeWildFlowJobs}, payload.SupportedEndpointTypes)
 }
