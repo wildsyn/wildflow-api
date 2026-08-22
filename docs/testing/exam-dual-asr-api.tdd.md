@@ -2,9 +2,10 @@
 
 ## User journey
 
-An explicitly allowlisted internal API token uploads one tenant-scoped FLAC Artifact, submits an idempotent
-`wildflow/exam-replay-dual-asr-v1` Job, and reads the verified JSON result without exposing the workflow in the public
-model catalog or charging retail quota.
+A registered WildFlow user with a standard valid API token uploads one tenant-scoped FLAC Artifact, submits an
+idempotent `wildflow/exam-replay-dual-asr-v1` Job, and reads the verified JSON result without a separate dual-ASR
+entitlement, without exposing the workflow in the public model catalog, and without charging retail quota. Tokens that
+the user deliberately restricts to selected models continue to honor that scope.
 
 ## Checkpoints
 
@@ -16,16 +17,18 @@ model catalog or charging retail quota.
 | Security GREEN | `a74ce865` | The same target passed after using a six-hour ASR deadline and enforcing current token model scope on operation and Artifact reads. |
 | Provenance RED | `7133b161` | Artifact validation accepted a changed RuntimeVersion reference. |
 | Provenance GREEN | `ee458254` | Artifact validation now requires the immutable dual-ASR RuntimeVersion attested by the Worker. |
+| Registered-user access RED | `95e9d904` | The upload, submit, read, and download controller tests all returned `403 model_forbidden` for a standard registered-user token. |
+| Registered-user access GREEN | `b39d4a92` | Removed the dual-ASR-only denial for unrestricted standard tokens; the same four paths pass while normal token scope enforcement remains intact. |
 
 ## Guarantees
 
 | # | Guarantee | Test scope | Result |
 |---|---|---|---|
-| 1 | Input upload requires API authentication, explicit model allowlisting, FLAC, bounded length, and SHA-256 | `controller`, `internal/inferenceclient`, `router` | PASS |
+| 1 | Input upload requires API authentication, FLAC, bounded length, and SHA-256; no separate dual-ASR entitlement is required for a standard token | `controller`, `internal/inferenceclient`, `router` | PASS |
 | 2 | Job submission is tenant scoped, idempotent, and forwards only input Artifact IDs | `controller`, `service`, `internal/inferenceclient` | PASS |
 | 3 | The internal workflow remains absent from the public catalog and creates no retail reserve or settlement | `service`, `router` | PASS |
 | 4 | Result download accepts only the exact dual-ASR model revisions and verified JSON Artifact metadata | `controller`, `service` | PASS |
-| 5 | Current token model scope is enforced when reading internal operations and Artifacts | `controller` | PASS |
+| 5 | Standard tokens can read owned internal operations and Artifacts; deliberately model-scoped tokens still honor their configured scope | `controller` | PASS |
 | 6 | The ASR deadline accommodates the documented two-hour input ceiling and long-running batch inference | `controller` | PASS |
 | 7 | A succeeded ASR Artifact must carry the exact controller-attested RuntimeVersion reference | `controller`, `service` | PASS |
 
