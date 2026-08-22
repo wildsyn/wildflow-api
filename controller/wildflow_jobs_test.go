@@ -105,7 +105,7 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	return engine, server
 }
 
-func TestCreateWildFlowInputArtifactRequiresExplicitExamModelAllowlistAndStreamsFLAC(t *testing.T) {
+func TestCreateWildFlowInputArtifactAllowsStandardRegisteredUserTokenAndStreamsFLAC(t *testing.T) {
 	requests := 0
 	payload := []byte("fLaCcontrolled-audio")
 	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
@@ -124,19 +124,12 @@ func TestCreateWildFlowInputArtifactRequiresExplicitExamModelAllowlistAndStreams
 		_, _ = w.Write([]byte(`{"artifact":{"id":"input-1","media_type":"audio/flac","size_bytes":20,"sha256":"` + digest + `","retention_state":"active"}}`))
 	}))
 
-	denied := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", payload, map[string]string{
+	response := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", payload, map[string]string{
 		"Content-Type": "audio/flac", "X-WildFlow-Content-SHA256": digest,
 	})
-	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
-	assert.Zero(t, requests)
-
-	allowed := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", payload, map[string]string{
-		"Content-Type": "audio/flac", "X-WildFlow-Content-SHA256": digest,
-		"X-Test-Model-Limits": service.WildFlowModelExamDualASR,
-	})
-	require.Equal(t, http.StatusCreated, allowed.Code, allowed.Body.String())
+	require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
 	assert.Equal(t, 1, requests)
-	assert.NotContains(t, allowed.Body.String(), "object_key")
+	assert.NotContains(t, response.Body.String(), "object_key")
 }
 
 func TestCreateWildFlowInputArtifactRejectsInvalidHeadersBeforeInference(t *testing.T) {
@@ -144,7 +137,7 @@ func TestCreateWildFlowInputArtifactRejectsInvalidHeadersBeforeInference(t *test
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		requests++
 	}))
-	headers := map[string]string{"X-Test-Model-Limits": service.WildFlowModelExamDualASR}
+	headers := map[string]string{}
 
 	wrongType := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", []byte("fLaCdata"), headers)
 	require.Equal(t, http.StatusUnsupportedMediaType, wrongType.Code, wrongType.Body.String())
@@ -156,7 +149,7 @@ func TestCreateWildFlowInputArtifactRejectsInvalidHeadersBeforeInference(t *test
 	assert.Zero(t, requests)
 }
 
-func TestCreateInternalExamDualASRJobIsExplicitlyAllowlistedHiddenAndUnbilled(t *testing.T) {
+func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemainsHiddenAndUnbilled(t *testing.T) {
 	submissions := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/internal/v1/jobs", r.URL.Path)
@@ -178,21 +171,17 @@ func TestCreateInternalExamDualASRJobIsExplicitlyAllowlistedHiddenAndUnbilled(t 
 	}))
 	body := `{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"申论课程","hotwords":["青蜂六边形"]}}`
 
-	denied := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "asr-denied"})
-	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
-	assert.Zero(t, submissions)
-
-	allowed := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{
-		"Idempotency-Key": "asr-allowed", "X-Test-Model-Limits": service.WildFlowModelExamDualASR,
+	response := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{
+		"Idempotency-Key": "asr-standard-token",
 	})
-	require.Equal(t, http.StatusAccepted, allowed.Code, allowed.Body.String())
+	require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
 	assert.Equal(t, 1, submissions)
 	var user model.User
 	var token model.Token
 	var operation model.WildFlowOperation
 	require.NoError(t, model.DB.First(&user, 42).Error)
 	require.NoError(t, model.DB.First(&token, 7).Error)
-	require.NoError(t, model.DB.Where("operation_id = ?", allowed.Header().Get("Location")[len("/v1/jobs/"):]).First(&operation).Error)
+	require.NoError(t, model.DB.Where("operation_id = ?", response.Header().Get("Location")[len("/v1/jobs/"):]).First(&operation).Error)
 	assert.Equal(t, 1_000_000, user.Quota)
 	assert.Equal(t, 1_000_000, token.RemainQuota)
 	assert.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
@@ -223,19 +212,14 @@ func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T
 		BillingState: model.WildFlowBillingStatePending,
 	}).Error)
 
-	denied := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", nil)
-	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
-
-	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", map[string]string{
-		"X-Test-Model-Limits": service.WildFlowModelExamDualASR,
-	})
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", nil)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
 	assert.Contains(t, response.Header().Get("Content-Disposition"), "artifact-asr.json")
 	assert.Equal(t, content, response.Body.Bytes())
 }
 
-func TestInternalExamDualASROperationReadRequiresCurrentTokenAllowlist(t *testing.T) {
+func TestInternalExamDualASROperationReadAllowsStandardRegisteredUserToken(t *testing.T) {
 	requests := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		requests++
@@ -248,14 +232,8 @@ func TestInternalExamDualASROperationReadRequiresCurrentTokenAllowlist(t *testin
 		BillingState: model.WildFlowBillingStatePending,
 	}).Error)
 
-	denied := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/op-asr-read", "", nil)
-	require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
-	assert.Zero(t, requests)
-
-	allowed := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/op-asr-read", "", map[string]string{
-		"X-Test-Model-Limits": service.WildFlowModelExamDualASR,
-	})
-	require.Equal(t, http.StatusOK, allowed.Code, allowed.Body.String())
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/op-asr-read", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	assert.Zero(t, requests)
 }
 

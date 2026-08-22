@@ -197,7 +197,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 
 func wildFlowTokenAllowsModel(c *gin.Context, modelName string) bool {
 	if !common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) {
-		return modelName != service.WildFlowModelExamDualASR
+		return true
 	}
 	rawLimits, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 	if !ok {
