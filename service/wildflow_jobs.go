@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -111,15 +112,18 @@ func PrepareWildFlowOperation(
 	}
 
 	operation := &model.WildFlowOperation{
-		OperationID:          "op-" + uuid.NewString(),
-		UserID:               userID,
-		TokenID:              tokenID,
-		IdempotencyKeyDigest: keyDigest,
-		RequestDigest:        requestDigest,
-		RequestID:            requestID,
-		ProductModelRef:      offering.ID,
-		ModelVersionRef:      offering.ModelVersionRef,
-		State:                "submitting",
+		OperationID:            "op-" + uuid.NewString(),
+		UserID:                 userID,
+		TokenID:                tokenID,
+		IdempotencyKeyDigest:   keyDigest,
+		RequestDigest:          requestDigest,
+		RequestID:              requestID,
+		ProductModelRef:        offering.ID,
+		ModelVersionRef:        offering.ModelVersionRef,
+		State:                  "submitting",
+		SubmissionPhase:        model.WildFlowSubmissionPhasePrepared,
+		SubmissionRetryUntil:   WildFlowSubmissionRetryDeadline(),
+		ResultRetentionSeconds: int64(wildFlowOperationResultRetention() / time.Second),
 	}
 	if err := model.CreateWildFlowOperation(operation); err != nil {
 		existing, lookupErr := model.GetWildFlowOperationByUserAndKey(userID, keyDigest)

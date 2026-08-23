@@ -8,33 +8,45 @@ import (
 )
 
 type WildFlowOperation struct {
-	ID                     int64  `json:"-" gorm:"primaryKey"`
-	OperationID            string `json:"id" gorm:"type:varchar(64);uniqueIndex"`
-	UserID                 int    `json:"-" gorm:"uniqueIndex:idx_wildflow_operation_user_key,priority:1;index"`
-	TokenID                int    `json:"-" gorm:"index"`
-	IdempotencyKeyDigest   string `json:"-" gorm:"type:char(64);uniqueIndex:idx_wildflow_operation_user_key,priority:2"`
-	RequestDigest          string `json:"-" gorm:"type:char(64)"`
-	RequestID              string `json:"request_id" gorm:"type:varchar(64);index"`
-	ProductModelRef        string `json:"model" gorm:"type:varchar(200);index"`
-	ModelVersionRef        string `json:"model_version_ref" gorm:"type:varchar(200)"`
-	JobID                  string `json:"job_id,omitempty" gorm:"type:varchar(200);index"`
-	State                  string `json:"state" gorm:"type:varchar(32);index"`
-	LastErrorCode          string `json:"error,omitempty" gorm:"type:varchar(64)"`
-	BillingState           string `json:"-" gorm:"type:varchar(32);index"`
-	BillingSource          string `json:"-" gorm:"type:varchar(32)"`
-	BillingSubscriptionID  int    `json:"-" gorm:"index"`
-	BillingQuota           int    `json:"-"`
-	BillingTokenQuota      int    `json:"-"`
-	BillingCurrency        string `json:"-" gorm:"type:varchar(8)"`
-	BillingAmountMicros    int64  `json:"-" gorm:"bigint"`
-	BillingUnit            string `json:"-" gorm:"type:varchar(32)"`
-	BillingBillableUnits   int64  `json:"-" gorm:"bigint"`
-	BillingQuotaPerUnit    string `json:"-" gorm:"type:varchar(64)"`
-	BillingUSDExchangeRate string `json:"-" gorm:"type:varchar(64)"`
-	BillingPriceVersion    string `json:"-" gorm:"type:varchar(64)"`
-	BillingSettledTime     int64  `json:"-" gorm:"bigint"`
-	CreatedTime            int64  `json:"created_at" gorm:"bigint"`
-	UpdatedTime            int64  `json:"updated_at" gorm:"bigint"`
+	ID                       int64  `json:"-" gorm:"primaryKey"`
+	OperationID              string `json:"id" gorm:"type:varchar(64);uniqueIndex"`
+	UserID                   int    `json:"-" gorm:"uniqueIndex:idx_wildflow_operation_user_key,priority:1;index"`
+	TokenID                  int    `json:"-" gorm:"index"`
+	IdempotencyKeyDigest     string `json:"-" gorm:"type:char(64);uniqueIndex:idx_wildflow_operation_user_key,priority:2"`
+	RequestDigest            string `json:"-" gorm:"type:char(64)"`
+	RequestID                string `json:"request_id" gorm:"type:varchar(64);index"`
+	ProductModelRef          string `json:"model" gorm:"type:varchar(200);index"`
+	ModelVersionRef          string `json:"model_version_ref" gorm:"type:varchar(200)"`
+	JobID                    string `json:"job_id,omitempty" gorm:"type:varchar(200);index"`
+	State                    string `json:"state" gorm:"type:varchar(32);index"`
+	LastErrorCode            string `json:"error,omitempty" gorm:"type:varchar(64)"`
+	BillingState             string `json:"-" gorm:"type:varchar(32);index"`
+	BillingSource            string `json:"-" gorm:"type:varchar(32)"`
+	BillingSubscriptionID    int    `json:"-" gorm:"index"`
+	BillingQuota             int    `json:"-"`
+	BillingTokenQuota        int    `json:"-"`
+	BillingCurrency          string `json:"-" gorm:"type:varchar(8)"`
+	BillingAmountMicros      int64  `json:"-" gorm:"bigint"`
+	BillingUnit              string `json:"-" gorm:"type:varchar(32)"`
+	BillingBillableUnits     int64  `json:"-" gorm:"bigint"`
+	BillingQuotaPerUnit      string `json:"-" gorm:"type:varchar(64)"`
+	BillingUSDExchangeRate   string `json:"-" gorm:"type:varchar(64)"`
+	BillingPriceVersion      string `json:"-" gorm:"type:varchar(64)"`
+	BillingUsageEventID      string `json:"-" gorm:"type:varchar(128);index"`
+	BillingSettledTime       int64  `json:"-" gorm:"bigint"`
+	ResultJSON               string `json:"-" gorm:"type:text"`
+	ResultValidatedTime      int64  `json:"-" gorm:"bigint"`
+	ResultRetentionSeconds   int64  `json:"-" gorm:"bigint"`
+	ResultExpiresAt          int64  `json:"-" gorm:"bigint;index"`
+	SubmissionPhase          string `json:"-" gorm:"type:varchar(32);index"`
+	SubmissionOwner          string `json:"-" gorm:"type:varchar(128)"`
+	SubmissionLeaseToken     string `json:"-" gorm:"type:varchar(64)"`
+	SubmissionLeaseExpiresAt int64  `json:"-" gorm:"bigint;index"`
+	SubmissionRetryUntil     int64  `json:"-" gorm:"bigint;index"`
+	SubmissionAttempt        int    `json:"-"`
+	SubmissionStartedTime    int64  `json:"-" gorm:"bigint"`
+	CreatedTime              int64  `json:"created_at" gorm:"bigint"`
+	UpdatedTime              int64  `json:"updated_at" gorm:"bigint"`
 }
 
 func (operation *WildFlowOperation) BeforeCreate(_ *gorm.DB) error {
@@ -44,6 +56,9 @@ func (operation *WildFlowOperation) BeforeCreate(_ *gorm.DB) error {
 	}
 	if operation.BillingState == "" {
 		operation.BillingState = WildFlowBillingStatePending
+	}
+	if operation.SubmissionPhase == "" {
+		operation.SubmissionPhase = WildFlowSubmissionPhasePrepared
 	}
 	operation.UpdatedTime = now
 	return nil
@@ -94,6 +109,68 @@ func UpdateWildFlowOperationExecution(
 			"last_error_code": errorCode,
 			"updated_time":    time.Now().Unix(),
 		}).Error
+}
+
+// StoreWildFlowOperationResult persists the first validated public result and
+// never replaces it. This gives idempotent replays an immutable response even
+// if inference storage changes later.
+func StoreWildFlowOperationResult(operationID string, resultJSON string, expiresAt int64) (*WildFlowOperation, error) {
+	if DB == nil || operationID == "" || resultJSON == "" || expiresAt <= time.Now().Unix() {
+		return nil, errors.New("invalid WildFlow operation result")
+	}
+	var result *WildFlowOperation
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var operation WildFlowOperation
+		if err := lockForUpdate(tx).Where("operation_id = ?", operationID).First(&operation).Error; err != nil {
+			return err
+		}
+		if operation.State != "succeeded" {
+			return errors.New("WildFlow operation result is not successful")
+		}
+		if operation.ResultJSON != "" {
+			updates := map[string]any{}
+			if operation.ResultRetentionSeconds == 0 {
+				updates["result_retention_seconds"] = expiresAt - time.Now().Unix()
+			}
+			if operation.ResultExpiresAt == 0 {
+				updates["result_expires_at"] = expiresAt
+			}
+			if operation.ResultValidatedTime == 0 {
+				updates["result_validated_time"] = time.Now().Unix()
+			}
+			if len(updates) > 0 {
+				if err := tx.Model(&WildFlowOperation{}).Where("id = ?", operation.ID).Updates(updates).Error; err != nil {
+					return err
+				}
+				if err := tx.Where("id = ?", operation.ID).First(&operation).Error; err != nil {
+					return err
+				}
+			}
+			result = &operation
+			return nil
+		}
+		now := time.Now().Unix()
+		updates := map[string]any{
+			"result_json":           resultJSON,
+			"result_validated_time": now,
+			"result_expires_at":     expiresAt,
+			"updated_time":          now,
+		}
+		if operation.ResultRetentionSeconds == 0 {
+			updates["result_retention_seconds"] = expiresAt - now
+		}
+		if err := tx.Model(&WildFlowOperation{}).
+			Where("id = ? AND (result_json = ? OR result_json IS NULL)", operation.ID, "").
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id = ?", operation.ID).First(&operation).Error; err != nil {
+			return err
+		}
+		result = &operation
+		return nil
+	})
+	return result, err
 }
 
 func ListWildFlowOperationsForBillingReconciliation(limit int) ([]*WildFlowOperation, error) {

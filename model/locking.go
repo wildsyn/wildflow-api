@@ -23,3 +23,10 @@ func lockForUpdate(tx *gorm.DB) *gorm.DB {
 	}
 	return tx.Clauses(clause.Locking{Strength: "UPDATE"})
 }
+
+func lockLogForUpdate(tx *gorm.DB) *gorm.DB {
+	if common.UsingLogDatabase(common.DatabaseTypeSQLite) {
+		return tx
+	}
+	return tx.Clauses(clause.Locking{Strength: "UPDATE"})
+}

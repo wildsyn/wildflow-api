@@ -22,6 +22,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 const wildFlowJobRequestLimit = 256 * 1024
@@ -103,6 +104,22 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		writeWildFlowOperationError(c, err)
 		return
 	}
+	if operation.JobID == "" && wildFlowSubmissionNeedsReconciliation(operation) {
+		if _, reconcileErr := service.ReconcileWildFlowSubmissionLease(operation.OperationID, time.Now().Unix()); reconcileErr != nil {
+			logger.LogError(c.Request.Context(), "reconcile WildFlow submission lease: "+reconcileErr.Error())
+		}
+		operation, err = model.GetWildFlowOperationForUser(userID, operation.OperationID)
+		if err != nil || operation == nil {
+			if err == nil {
+				err = errors.New("WildFlow operation disappeared during submission reconciliation")
+			}
+			wildFlowInternalError(c, err)
+			return
+		}
+	}
+	if !created && writeWildFlowExistingOperationReplay(c, operation) {
+		return
+	}
 	if operation.State == "recovery_required" {
 		writeWildFlowOperationHeaders(c, operation)
 		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, nil))
@@ -116,6 +133,9 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		}
 		job, getErr := client.GetJob(c.Request.Context(), operation.JobID, wildFlowTenantRef(userID))
 		if getErr != nil {
+			if !created && writeWildFlowLegacyResultUnavailableRecovery(c, operation, getErr) {
+				return
+			}
 			writeWildFlowInferenceError(c, getErr)
 			return
 		}
@@ -129,18 +149,86 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		if !finalizeWildFlowOperationBilling(c, operation, job.Artifacts) {
 			return
 		}
+		if operation.State == "succeeded" && writeWildFlowPersistedResult(c, operation, http.StatusOK, true) {
+			return
+		}
 		writeWildFlowOperationHeaders(c, operation)
 		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
 		return
 	}
+	owner := "api:" + uuid.NewString()
+	leaseToken := uuid.NewString()
+	claimed, acquired, err := model.ClaimWildFlowOperationSubmission(
+		operation.OperationID,
+		owner,
+		leaseToken,
+		service.WildFlowSubmissionLeaseDeadline(),
+	)
+	if err != nil {
+		wildFlowInternalError(c, err)
+		return
+	}
+	operation = claimed
+	if !acquired {
+		if writeWildFlowExistingOperationReplay(c, operation) {
+			return
+		}
+		writeWildFlowOperationHeaders(c, operation)
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusAccepted, wildFlowOperationResponse(operation, nil))
+		return
+	}
+
 	client, err := newWildFlowInferenceClient()
 	if err != nil {
+		updated, transitionErr := model.MarkWildFlowOperationSubmissionRetryable(
+			operation.OperationID,
+			owner,
+			leaseToken,
+			"inference_unavailable",
+			service.WildFlowSubmissionRetryDeadline(),
+		)
+		if transitionErr != nil {
+			wildFlowInternalError(c, transitionErr)
+			return
+		}
+		operation = updated
+		c.Header("Retry-After", "5")
 		wildFlowJobError(c, http.StatusServiceUnavailable, "inference_unavailable", "inference service is unavailable")
 		return
 	}
-	operation, err = service.ReserveWildFlowOperationBilling(operation, request)
+	reservedOperation, err := service.ReserveWildFlowOperationBilling(operation, request)
 	if err != nil {
+		if _, transitionErr := model.MarkWildFlowOperationSubmissionRetryable(
+			operation.OperationID,
+			owner,
+			leaseToken,
+			"billing_reservation_failed",
+			service.WildFlowSubmissionRetryDeadline(),
+		); transitionErr != nil {
+			wildFlowInternalError(c, transitionErr)
+			return
+		}
 		writeWildFlowBillingError(c, err)
+		return
+	}
+	operation = reservedOperation
+	operation, err = model.BeginWildFlowOperationSubmission(operation.OperationID, owner, leaseToken)
+	if err != nil {
+		if errors.Is(err, model.ErrWildFlowSubmissionLeaseLost) {
+			current, loadErr := model.GetWildFlowOperationForUser(userID, operation.OperationID)
+			if loadErr != nil || current == nil {
+				wildFlowInternalError(c, errors.Join(err, loadErr))
+				return
+			}
+			if !writeWildFlowExistingOperationReplay(c, current) {
+				writeWildFlowOperationHeaders(c, current)
+				c.Header("Retry-After", "5")
+				c.JSON(http.StatusAccepted, wildFlowOperationResponse(current, nil))
+			}
+			return
+		}
+		wildFlowInternalError(c, err)
 		return
 	}
 	deadlineAfter := 30 * time.Minute
@@ -162,36 +250,38 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 	if err != nil {
 		var retryable *inferenceclient.RetryableError
 		if errors.As(err, &retryable) {
-			if updateErr := model.UpdateWildFlowOperationExecution(
+			updated, updateErr := model.MarkWildFlowOperationSubmissionRetryable(
 				operation.OperationID,
-				operation.JobID,
-				"submitting",
+				owner,
+				leaseToken,
 				"inference_unavailable",
-			); updateErr != nil {
+				service.WildFlowSubmissionRetryDeadline(),
+			)
+			if updateErr != nil {
 				wildFlowInternalError(c, updateErr)
 				return
 			}
+			operation = updated
 			writeWildFlowInferenceError(c, err)
 			return
 		}
-		markWildFlowRecoveryRequired(c, operation, "submission_unknown", err)
+		markWildFlowSubmissionRecoveryRequired(c, operation, owner, leaseToken, "submission_unknown", err)
 		return
 	}
-	if err := model.UpdateWildFlowOperationExecution(operation.OperationID, job.ID, job.State, ""); err != nil {
-		markWildFlowRecoveryRequired(c, operation, "operation_persistence_failed", err)
+	operation, err = model.CompleteWildFlowOperationSubmission(operation.OperationID, owner, leaseToken, job.ID, job.State)
+	if err != nil {
+		logger.LogError(c.Request.Context(), "persist accepted WildFlow submission: "+err.Error())
+		wildFlowJobError(c, http.StatusServiceUnavailable, "recovery_required", "job submission requires recovery")
 		return
 	}
-	operation.JobID = job.ID
-	operation.State = job.State
-	operation.LastErrorCode = ""
 	if !finalizeWildFlowOperationBilling(c, operation, job.Artifacts) {
 		return
 	}
-	status := http.StatusOK
-	if created {
-		status = http.StatusAccepted
-	}
+	status := http.StatusAccepted
 	writeWildFlowOperationHeaders(c, operation)
+	if operation.State == "succeeded" && writeWildFlowPersistedResult(c, operation, status, false) {
+		return
+	}
 	c.JSON(status, operation)
 }
 
@@ -225,9 +315,97 @@ func writeWildFlowOperationHeaders(c *gin.Context, operation *model.WildFlowOper
 	}
 }
 
+func writeWildFlowExistingOperationReplay(c *gin.Context, operation *model.WildFlowOperation) bool {
+	if operation.State == "succeeded" && operation.ResultJSON != "" {
+		return writeWildFlowPersistedResult(c, operation, http.StatusOK, true)
+	}
+	switch operation.State {
+	case "submitting":
+		phase := operation.SubmissionPhase
+		if phase == "" {
+			phase = model.WildFlowSubmissionPhasePrepared
+		}
+		leaseActive := operation.SubmissionLeaseToken != "" && operation.SubmissionLeaseExpiresAt > time.Now().Unix()
+		if operation.JobID == "" && !leaseActive &&
+			(phase == model.WildFlowSubmissionPhasePrepared || phase == model.WildFlowSubmissionPhaseRetryable) {
+			return false
+		}
+		writeWildFlowOperationHeaders(c, operation)
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusAccepted, wildFlowOperationResponse(operation, nil))
+		return true
+	case "queued", "running", "cancelling":
+		writeWildFlowOperationHeaders(c, operation)
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusAccepted, wildFlowOperationResponse(operation, nil))
+		return true
+	case "recovery_required", "failed", "cancelled":
+		writeWildFlowOperationHeaders(c, operation)
+		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, nil))
+		return true
+	default:
+		return false
+	}
+}
+
+func wildFlowSubmissionNeedsReconciliation(operation *model.WildFlowOperation) bool {
+	if operation == nil || operation.JobID != "" {
+		return false
+	}
+	now := time.Now().Unix()
+	if operation.State == "submitting" && operation.SubmissionPhase == "" {
+		return true
+	}
+	if operation.State == "submitting" && operation.SubmissionPhase == model.WildFlowSubmissionPhaseSubmitting {
+		return operation.SubmissionLeaseExpiresAt > 0 && operation.SubmissionLeaseExpiresAt <= now
+	}
+	return operation.State == "submitting" &&
+		(operation.SubmissionPhase == model.WildFlowSubmissionPhasePrepared || operation.SubmissionPhase == model.WildFlowSubmissionPhaseRetryable) &&
+		operation.SubmissionRetryUntil > 0 && operation.SubmissionRetryUntil <= now
+}
+
+func writeWildFlowPersistedResult(c *gin.Context, operation *model.WildFlowOperation, status int, replay bool) bool {
+	if operation == nil || operation.ResultJSON == "" {
+		return false
+	}
+	if err := service.EnsureWildFlowOperationResultRetention(operation); err != nil {
+		wildFlowInternalError(c, err)
+		return true
+	}
+	writeWildFlowOperationHeaders(c, operation)
+	if operation.ResultExpiresAt > 0 && time.Now().Unix() >= operation.ResultExpiresAt {
+		wildFlowJobError(c, http.StatusGone, "result_expired", "idempotent result expired; use a new Idempotency-Key")
+		return true
+	}
+	if replay {
+		c.Header("X-Idempotent-Replay", "true")
+	}
+	c.Data(status, "application/json; charset=utf-8", []byte(operation.ResultJSON))
+	return true
+}
+
 func GetWildFlowJob(c *gin.Context) {
 	operation, ok := loadWildFlowOperation(c)
 	if !ok {
+		return
+	}
+	if wildFlowSubmissionNeedsReconciliation(operation) {
+		if _, err := service.ReconcileWildFlowSubmissionLease(operation.OperationID, time.Now().Unix()); err != nil {
+			wildFlowInternalError(c, err)
+			return
+		}
+		reloaded, err := model.GetWildFlowOperationForUser(operation.UserID, operation.OperationID)
+		if err != nil {
+			wildFlowInternalError(c, err)
+			return
+		}
+		if reloaded == nil {
+			wildFlowJobError(c, http.StatusNotFound, "job_not_found", "job not found")
+			return
+		}
+		operation = reloaded
+	}
+	if operation.State == "succeeded" && writeWildFlowPersistedResult(c, operation, http.StatusOK, false) {
 		return
 	}
 	if operation.State == "recovery_required" {
@@ -245,6 +423,9 @@ func GetWildFlowJob(c *gin.Context) {
 	}
 	job, err := client.GetJob(c.Request.Context(), operation.JobID, wildFlowTenantRef(operation.UserID))
 	if err != nil {
+		if writeWildFlowLegacyResultUnavailableRecovery(c, operation, err) {
+			return
+		}
 		writeWildFlowInferenceError(c, err)
 		return
 	}
@@ -258,7 +439,32 @@ func GetWildFlowJob(c *gin.Context) {
 	if !finalizeWildFlowOperationBilling(c, operation, job.Artifacts) {
 		return
 	}
+	if operation.State == "succeeded" && writeWildFlowPersistedResult(c, operation, http.StatusOK, false) {
+		return
+	}
 	c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
+}
+
+func writeWildFlowLegacyResultUnavailableRecovery(c *gin.Context, operation *model.WildFlowOperation, err error) bool {
+	var apiError *inferenceclient.APIError
+	if operation == nil || operation.State != "succeeded" || operation.ResultJSON != "" ||
+		!errors.As(err, &apiError) || apiError.StatusCode != http.StatusNotFound {
+		return false
+	}
+	if updateErr := model.UpdateWildFlowOperationExecution(
+		operation.OperationID,
+		operation.JobID,
+		"recovery_required",
+		"result_unavailable",
+	); updateErr != nil {
+		wildFlowInternalError(c, updateErr)
+		return true
+	}
+	operation.State = "recovery_required"
+	operation.LastErrorCode = "result_unavailable"
+	writeWildFlowOperationHeaders(c, operation)
+	c.JSON(http.StatusOK, wildFlowOperationResponse(operation, nil))
+	return true
 }
 
 func CancelWildFlowJob(c *gin.Context) {
@@ -402,8 +608,14 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model
 	}
 	internalTrialReady := operation.ProductModelRef == service.WildFlowModelExamDualASR &&
 		operation.BillingState == model.WildFlowBillingStatePending
-	if operation.State != "succeeded" || (operation.BillingState != model.WildFlowBillingStateSettled && !internalTrialReady) {
+	retailResultReady := operation.ResultJSON != "" &&
+		(operation.BillingState == model.WildFlowBillingStateReserved || operation.BillingState == model.WildFlowBillingStateSettled)
+	if operation.State != "succeeded" || (!retailResultReady && !internalTrialReady) {
 		wildFlowJobError(c, http.StatusConflict, "artifact_not_ready", "artifact is not ready")
+		return inferenceclient.Artifact{}, nil, false
+	}
+	if operation.ResultExpiresAt > 0 && time.Now().Unix() >= operation.ResultExpiresAt {
+		wildFlowJobError(c, http.StatusGone, "result_expired", "operation result expired")
 		return inferenceclient.Artifact{}, nil, false
 	}
 	if err := service.ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}); err != nil {
@@ -479,55 +691,11 @@ func wildFlowTenantRef(userID int) string {
 }
 
 func publicWildFlowArtifact(artifact inferenceclient.Artifact) gin.H {
-	return gin.H{
-		"id":         artifact.ID,
-		"job_id":     artifact.JobID,
-		"media_type": artifact.MediaType,
-		"size_bytes": artifact.SizeBytes,
-		"sha256":     artifact.SHA256,
-		"metadata":   publicWildFlowArtifactMetadata(artifact.Metadata),
-		"download":   "/v1/artifacts/" + artifact.ID + "/content",
-	}
-}
-
-func publicWildFlowArtifactMetadata(metadata map[string]any) map[string]any {
-	public := make(map[string]any)
-	for _, key := range []string{
-		"codec", "bitrate", "sample_rate", "channels", "duration_ms",
-		"input_characters", "completed_characters", "segment_count", "completed_segment_count",
-		"size_bytes", "sha256", "voice", "width", "height", "prompt_length",
-		"schema_version", "model_version_ref", "model_revision", "vibevoice_model_revision",
-		"faster_whisper_model_revision", "runtime_version_ref", "duration_seconds", "source_artifact_id",
-	} {
-		if value, ok := metadata[key]; ok {
-			public[key] = value
-		}
-	}
-	return public
+	return gin.H(service.PublicWildFlowArtifact(artifact))
 }
 
 func wildFlowOperationResponse(operation *model.WildFlowOperation, artifacts []inferenceclient.Artifact) gin.H {
-	response := gin.H{
-		"id":                operation.OperationID,
-		"request_id":        operation.RequestID,
-		"model":             operation.ProductModelRef,
-		"model_version_ref": operation.ModelVersionRef,
-		"job_id":            operation.JobID,
-		"state":             operation.State,
-		"created_at":        operation.CreatedTime,
-		"updated_at":        operation.UpdatedTime,
-	}
-	if operation.LastErrorCode != "" {
-		response["error"] = operation.LastErrorCode
-	}
-	if len(artifacts) > 0 {
-		publicArtifacts := make([]gin.H, 0, len(artifacts))
-		for _, artifact := range artifacts {
-			publicArtifacts = append(publicArtifacts, publicWildFlowArtifact(artifact))
-		}
-		response["artifacts"] = publicArtifacts
-	}
-	return response
+	return gin.H(service.WildFlowOperationResult(operation, artifacts))
 }
 
 func safeWildFlowFilename(filename string) string {
@@ -548,9 +716,19 @@ func wildFlowExecutionErrorCode(state string, lastError string) string {
 	return ""
 }
 
-func markWildFlowRecoveryRequired(c *gin.Context, operation *model.WildFlowOperation, code string, cause error) {
-	if err := model.UpdateWildFlowOperationExecution(operation.OperationID, operation.JobID, "recovery_required", code); err != nil {
+func markWildFlowSubmissionRecoveryRequired(
+	c *gin.Context,
+	operation *model.WildFlowOperation,
+	owner string,
+	leaseToken string,
+	code string,
+	cause error,
+) {
+	updated, err := model.MarkWildFlowOperationSubmissionRecoveryRequired(operation.OperationID, owner, leaseToken, code)
+	if err != nil {
 		logger.LogError(c.Request.Context(), "persist WildFlow recovery state: "+err.Error())
+	} else {
+		*operation = *updated
 	}
 	logger.LogError(c.Request.Context(), "WildFlow job requires recovery: "+cause.Error())
 	wildFlowJobError(c, http.StatusServiceUnavailable, code, "job submission is temporarily unavailable")

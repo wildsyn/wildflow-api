@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,7 +21,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestStartWildFlowBillingReconcilerFailsClosedWithoutAuthorityOrConfiguration(t *testing.T) {
+func TestStartWildFlowBillingReconcilerRunsLocalRecoveryWithoutInferenceConfiguration(t *testing.T) {
 	previousMasterNode := common.IsMasterNode
 	t.Cleanup(func() {
 		common.IsMasterNode = previousMasterNode
@@ -30,12 +32,25 @@ func TestStartWildFlowBillingReconcilerFailsClosedWithoutAuthorityOrConfiguratio
 	StartWildFlowBillingReconciler()
 	assert.False(t, wildFlowBillingReconcilerRunning.Load())
 
+	db := setupWildFlowBillingReconcilerTest(t)
+	operation := createReconcilerOperation(t, db, "local-only-startup", 112, 212, "")
+	require.NoError(t, db.Model(operation).Updates(map[string]any{
+		"state":            "submitting",
+		"submission_phase": "",
+	}).Error)
 	wildFlowBillingReconcilerOnce = sync.Once{}
 	common.IsMasterNode = true
 	t.Setenv("WILDFLOW_INFERENCE_URL", "")
 	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "")
+	t.Setenv("WILDFLOW_BILLING_RECONCILE_SECONDS", "300")
 	StartWildFlowBillingReconciler()
-	assert.False(t, wildFlowBillingReconcilerRunning.Load())
+	require.Eventually(t, func() bool {
+		if err := db.Where("operation_id = ?", operation.OperationID).First(operation).Error; err != nil {
+			return false
+		}
+		return operation.State == "recovery_required"
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, "legacy_submission_state_unknown", operation.LastErrorCode)
 }
 
 func TestStartWildFlowBillingReconcilerProcessesReservedJobsWhenConfigured(t *testing.T) {
@@ -75,7 +90,10 @@ func setupWildFlowBillingReconcilerTest(t *testing.T) *gorm.DB {
 	common.RedisEnabled = false
 	db, err := gorm.Open(sqlite.Open("file:wildflow-reconciler-"+uuid.NewString()+"?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.WildFlowOperation{}))
+	require.NoError(t, db.AutoMigrate(
+		&model.User{}, &model.Token{}, &model.Log{}, &model.WildFlowOperation{},
+		&model.WildFlowUsageEvent{}, &model.WildFlowBillingLogEntry{}, &model.WildFlowBillingLogProjectionReceipt{},
+	))
 	model.DB = db
 	model.LOG_DB = db
 	t.Cleanup(func() {
@@ -116,6 +134,13 @@ func createReconcilerOperation(t *testing.T, db *gorm.DB, suffix string, userID 
 	require.NoError(t, err)
 	reserved, err := model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
 	require.NoError(t, err)
+	_, err = model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
+		EventID: "usage-" + suffix, PayloadDigest: strings.Repeat("a", 64),
+		OperationID: operation.OperationID, JobID: jobID,
+		ModelVersionRef: operation.ModelVersionRef,
+		Kind:            "images", Quantity: 1, Unit: "image",
+	})
+	require.NoError(t, err)
 	return reserved
 }
 
@@ -147,6 +172,13 @@ func createVoxReconcilerOperation(t *testing.T, db *gorm.DB, suffix string, user
 	})
 	require.NoError(t, err)
 	reserved, err := model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
+	require.NoError(t, err)
+	_, err = model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
+		EventID: "usage-" + suffix, PayloadDigest: strings.Repeat("a", 64),
+		OperationID: operation.OperationID, JobID: jobID,
+		ModelVersionRef: operation.ModelVersionRef,
+		Kind:            "characters", Quantity: int64(len([]rune(input))), Unit: "character",
+	})
 	require.NoError(t, err)
 	return reserved
 }
@@ -234,6 +266,54 @@ func TestReconcileWildFlowBillingKeepsReservationOnTransientInferenceFailure(t *
 	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
 }
 
+func TestReconcileWildFlowBillingNeverCommitsTerminalBillingWithoutCanonicalAudit(t *testing.T) {
+	db := setupWildFlowBillingReconcilerTest(t)
+	succeeded := createReconcilerOperation(t, db, "audit-failure-succeeded", 121, 221, "job-audit-failure-succeeded")
+	failed := createReconcilerOperation(t, db, "audit-failure-failed", 122, 222, "job-audit-failure-failed")
+	forcedErr := errors.New("forced canonical audit insert failure")
+	callbackName := "test:wildflow-reconciler-canonical-failure:" + uuid.NewString()
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "wild_flow_billing_log_entries" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Create().Remove(callbackName) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/internal/v1/jobs/job-audit-failure-succeeded":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-audit-failure-succeeded","state":"succeeded","artifacts":[{"id":"artifact-audit-failure","job_id":"job-audit-failure-succeeded","media_type":"image/png","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}`))
+		case "/internal/v1/jobs/job-audit-failure-failed":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-audit-failure-failed","state":"failed","last_error":"provider failed"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := inferenceclient.New(inferenceclient.Config{
+		BaseURL: server.URL, Token: "internal-token", Timeout: time.Second, AllowInternalHTTP: true,
+	})
+	require.NoError(t, err)
+
+	processed, err := ReconcileWildFlowBillingOnce(context.Background(), client, 100)
+	require.Error(t, err)
+	assert.Equal(t, 2, processed)
+	require.NoError(t, db.Where("operation_id = ?", succeeded.OperationID).First(succeeded).Error)
+	require.NoError(t, db.Where("operation_id = ?", failed.OperationID).First(failed).Error)
+	assert.Equal(t, model.WildFlowBillingStateReserved, succeeded.BillingState)
+	assert.Equal(t, model.WildFlowBillingStateReserved, failed.BillingState)
+	var succeededUser model.User
+	var failedUser model.User
+	require.NoError(t, db.First(&succeededUser, succeeded.UserID).Error)
+	require.NoError(t, db.First(&failedUser, failed.UserID).Error)
+	assert.Zero(t, succeededUser.UsedQuota)
+	assert.Zero(t, succeededUser.RequestCount)
+	assert.Equal(t, 100_000-3_425, failedUser.Quota)
+	var canonicalCount int64
+	require.NoError(t, db.Model(&model.WildFlowBillingLogEntry{}).Count(&canonicalCount).Error)
+	assert.Zero(t, canonicalCount)
+}
+
 func TestReconcileWildFlowBillingRequiresCompleteVoxMP3Artifact(t *testing.T) {
 	db := setupWildFlowBillingReconcilerTest(t)
 	operation := createVoxReconcilerOperation(t, db, "invalid-vox", 106, 206, "job-invalid-vox", "hello")
@@ -304,8 +384,17 @@ func TestReconcileWildFlowBillingRevisitsReservedRecoveryOperations(t *testing.T
 	assert.Equal(t, 100_000, failedUser.Quota)
 }
 
-func TestReconcileWildFlowBillingRejectsNilClient(t *testing.T) {
+func TestReconcileWildFlowBillingRunsLocalRecoveryWithNilClient(t *testing.T) {
+	db := setupWildFlowBillingReconcilerTest(t)
+	operation := createReconcilerOperation(t, db, "local-only-once", 113, 213, "")
+	require.NoError(t, db.Model(operation).Updates(map[string]any{
+		"state":            "submitting",
+		"submission_phase": "",
+	}).Error)
+
 	processed, err := ReconcileWildFlowBillingOnce(context.Background(), nil, 100)
-	require.Error(t, err)
+	require.NoError(t, err)
 	assert.Zero(t, processed)
+	require.NoError(t, db.Where("operation_id = ?", operation.OperationID).First(operation).Error)
+	assert.Equal(t, "recovery_required", operation.State)
 }
