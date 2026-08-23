@@ -43,10 +43,17 @@ func TestWildFlowContractMigrationExpandsLegacySQLiteRowsInPlace(t *testing.T) {
 	))
 	for _, column := range []string{
 		"billing_usage_event_id", "result_json", "result_validated_time", "result_retention_seconds", "result_expires_at",
+		"submission_phase", "submission_owner", "submission_lease_token", "submission_lease_expires_at", "submission_retry_until", "submission_attempt",
 	} {
 		assert.True(t, database.Migrator().HasColumn(&WildFlowOperation{}, column), column)
 	}
 	assert.True(t, database.Migrator().HasTable(&WildFlowBillingLogEntry{}))
+	for _, column := range []string{
+		"projection_state", "projection_attempts", "projection_last_error", "projection_claim_token",
+		"projection_lease_expires_at", "projected_time",
+	} {
+		assert.True(t, database.Migrator().HasColumn(&WildFlowBillingLogEntry{}, column), column)
+	}
 
 	var operation WildFlowOperation
 	require.NoError(t, database.Where("operation_id = ?", "op-legacy").First(&operation).Error)

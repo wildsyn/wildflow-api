@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -249,6 +250,54 @@ func TestReconcileWildFlowBillingKeepsReservationOnTransientInferenceFailure(t *
 	require.NoError(t, db.Where("operation_id = ?", operation.OperationID).First(operation).Error)
 	assert.Equal(t, "queued", operation.State)
 	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+}
+
+func TestReconcileWildFlowBillingNeverCommitsTerminalBillingWithoutCanonicalAudit(t *testing.T) {
+	db := setupWildFlowBillingReconcilerTest(t)
+	succeeded := createReconcilerOperation(t, db, "audit-failure-succeeded", 121, 221, "job-audit-failure-succeeded")
+	failed := createReconcilerOperation(t, db, "audit-failure-failed", 122, 222, "job-audit-failure-failed")
+	forcedErr := errors.New("forced canonical audit insert failure")
+	callbackName := "test:wildflow-reconciler-canonical-failure:" + uuid.NewString()
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "wild_flow_billing_log_entries" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = db.Callback().Create().Remove(callbackName) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/internal/v1/jobs/job-audit-failure-succeeded":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-audit-failure-succeeded","state":"succeeded","artifacts":[{"id":"artifact-audit-failure","job_id":"job-audit-failure-succeeded","media_type":"image/png","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}`))
+		case "/internal/v1/jobs/job-audit-failure-failed":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-audit-failure-failed","state":"failed","last_error":"provider failed"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := inferenceclient.New(inferenceclient.Config{
+		BaseURL: server.URL, Token: "internal-token", Timeout: time.Second, AllowInternalHTTP: true,
+	})
+	require.NoError(t, err)
+
+	processed, err := ReconcileWildFlowBillingOnce(context.Background(), client, 100)
+	require.Error(t, err)
+	assert.Equal(t, 2, processed)
+	require.NoError(t, db.Where("operation_id = ?", succeeded.OperationID).First(succeeded).Error)
+	require.NoError(t, db.Where("operation_id = ?", failed.OperationID).First(failed).Error)
+	assert.Equal(t, model.WildFlowBillingStateReserved, succeeded.BillingState)
+	assert.Equal(t, model.WildFlowBillingStateReserved, failed.BillingState)
+	var succeededUser model.User
+	var failedUser model.User
+	require.NoError(t, db.First(&succeededUser, succeeded.UserID).Error)
+	require.NoError(t, db.First(&failedUser, failed.UserID).Error)
+	assert.Zero(t, succeededUser.UsedQuota)
+	assert.Zero(t, succeededUser.RequestCount)
+	assert.Equal(t, 100_000-3_425, failedUser.Quota)
+	var canonicalCount int64
+	require.NoError(t, db.Model(&model.WildFlowBillingLogEntry{}).Count(&canonicalCount).Error)
+	assert.Zero(t, canonicalCount)
 }
 
 func TestReconcileWildFlowBillingRequiresCompleteVoxMP3Artifact(t *testing.T) {
