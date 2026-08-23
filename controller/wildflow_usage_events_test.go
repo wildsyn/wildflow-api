@@ -51,15 +51,28 @@ func TestReceiveWildFlowUsageEventIsAuthenticatedImmutableAndIdempotent(t *testi
 	gin.SetMode(gin.TestMode)
 	database, err := gorm.Open(sqlite.Open("file:wildflow-usage-events?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(&model.WildFlowOperation{}, &model.WildFlowUsageEvent{}))
+	require.NoError(t, database.AutoMigrate(
+		&model.User{}, &model.Token{}, &model.Log{}, &model.WildFlowOperation{},
+		&model.WildFlowUsageEvent{}, &model.WildFlowBillingLogEntry{},
+	))
 	previousDB := model.DB
+	previousLogDB := model.LOG_DB
 	model.DB = database
-	t.Cleanup(func() { model.DB = previousDB })
+	model.LOG_DB = database
+	t.Cleanup(func() {
+		model.DB = previousDB
+		model.LOG_DB = previousLogDB
+	})
+	require.NoError(t, database.Create(&model.User{Id: 1, Username: "usage-event-user", Quota: 10_000}).Error)
 	require.NoError(t, database.Create(&model.WildFlowOperation{
 		OperationID: "operation-1", UserID: 1, TokenID: 1,
 		IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64),
 		RequestID: "request-1", ProductModelRef: "VoxCPM2", ModelVersionRef: "openbmb/VoxCPM2",
-		JobID: "job-1", State: "running",
+		JobID: "job-1", State: "succeeded", ResultValidatedTime: time.Now().Unix(),
+		BillingState: model.WildFlowBillingStateReserved, BillingSource: model.WildFlowBillingSourceWallet,
+		BillingQuota: 100, BillingCurrency: "CNY", BillingAmountMicros: 160,
+		BillingUnit: "10k_characters", BillingBillableUnits: 2,
+		BillingQuotaPerUnit: "500000", BillingUSDExchangeRate: "7.3", BillingPriceVersion: "test-v1",
 	}).Error)
 
 	t.Setenv("WILDFLOW_USAGE_EVENT_TOKEN", strings.Repeat("t", 40))
@@ -98,6 +111,14 @@ func TestReceiveWildFlowUsageEventIsAuthenticatedImmutableAndIdempotent(t *testi
 	var count int64
 	require.NoError(t, database.Model(&model.WildFlowUsageEvent{}).Count(&count).Error)
 	assert.Equal(t, int64(1), count)
+	var operation model.WildFlowOperation
+	require.NoError(t, database.Where("operation_id = ?", "operation-1").First(&operation).Error)
+	assert.Equal(t, model.WildFlowBillingStateSettled, operation.BillingState)
+	assert.Equal(t, "usage-1", operation.BillingUsageEventID)
+	var user model.User
+	require.NoError(t, database.First(&user, 1).Error)
+	assert.Equal(t, 100, user.UsedQuota)
+	assert.Equal(t, 1, user.RequestCount)
 }
 
 func TestReceiveWildFlowUsageEventRejectsMissingIdentityBeforeDatabaseAccess(t *testing.T) {

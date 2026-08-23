@@ -41,6 +41,8 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 		&model.UserSubscription{},
 		&model.SubscriptionPreConsumeRecord{},
 		&model.WildFlowOperation{},
+		&model.WildFlowUsageEvent{},
+		&model.WildFlowBillingLogEntry{},
 	))
 	model.DB = db
 	model.LOG_DB = db
@@ -473,6 +475,14 @@ func TestSucceededWildFlowJobSettlesRetailPriceExactlyOnce(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &payload))
 	operationID := payload["id"].(string)
+	replayed, err := model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
+		EventID: "usage-billed-succeeded", PayloadDigest: strings.Repeat("c", 64),
+		OperationID: operationID, JobID: "job-billed-succeeded",
+		ModelVersionRef: "black-forest-labs/FLUX.2-klein-4B",
+		Kind: "images", Quantity: 1, Unit: "image",
+	})
+	require.NoError(t, err)
+	assert.False(t, replayed)
 
 	first := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
 	second := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
@@ -486,6 +496,7 @@ func TestSucceededWildFlowJobSettlesRetailPriceExactlyOnce(t *testing.T) {
 	assert.Equal(t, 3_425, user.UsedQuota)
 	assert.Equal(t, 1, user.RequestCount)
 	assert.Equal(t, model.WildFlowBillingStateSettled, operation.BillingState)
+	assert.Equal(t, "usage-billed-succeeded", operation.BillingUsageEventID)
 	var consumeLogs int64
 	require.NoError(t, model.LOG_DB.Model(&model.Log{}).
 		Where("user_id = ? AND type = ? AND request_id = ?", 42, model.LogTypeConsume, operationID).
@@ -804,8 +815,10 @@ func TestCreateWildFlowJobSubmitsTTSOnceAndReplaysTheOperation(t *testing.T) {
 	conflict := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", `{"model":"tts-standard","parameters":{"input":"different"}}`, map[string]string{"Idempotency-Key": "tts-1"})
 
 	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
-	require.Equal(t, http.StatusOK, replayed.Code, replayed.Body.String())
+	require.Equal(t, http.StatusAccepted, replayed.Code, replayed.Body.String())
 	require.Equal(t, http.StatusConflict, conflict.Code, conflict.Body.String())
+	assert.Equal(t, created.Header().Get("Location"), replayed.Header().Get("Location"))
+	assert.Equal(t, "5", replayed.Header().Get("Retry-After"))
 	assert.Equal(t, 1, submissions)
 	var first, second map[string]any
 	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &first))
@@ -898,6 +911,7 @@ func TestCreateWildFlowJobPreservesRetryAfterFromInference(t *testing.T) {
 }
 
 func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
+	jobReads := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "user:42", r.Header.Get("X-WildFlow-Tenant-Ref"))
 		switch {
@@ -906,6 +920,7 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte(`{"job":{"id":"job-1","state":"queued"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/jobs/job-1":
+			jobReads++
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = fmt.Fprintf(w, `{"job":{"id":"job-1","state":"succeeded","artifacts":[%s]}}`, validVoxArtifactJSON("artifact-1", "job-1", 5))
 		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-1":
@@ -936,6 +951,9 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	assert.Contains(t, statusResponse.Body.String(), `"state":"succeeded"`)
 	assert.Contains(t, statusResponse.Body.String(), `"download":"/v1/artifacts/artifact-1/content"`)
 	require.Equal(t, http.StatusOK, replayed.Code, replayed.Body.String())
+	assert.Equal(t, "true", replayed.Header().Get("X-Idempotent-Replay"))
+	assert.Equal(t, statusResponse.Body.String(), replayed.Body.String())
+	assert.Equal(t, 1, jobReads, "successful replay must use the persisted immutable result")
 	assert.Contains(t, replayed.Body.String(), `"download":"/v1/artifacts/artifact-1/content"`)
 	require.Equal(t, http.StatusOK, artifactResponse.Code, artifactResponse.Body.String())
 	assert.NotContains(t, artifactResponse.Body.String(), "storage_ref")
@@ -948,6 +966,36 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	assert.Equal(t, "audio/mpeg", downloadResponse.Header().Get("Content-Type"))
 	assert.Contains(t, downloadResponse.Header().Get("Content-Disposition"), ".mp3")
 	assert.Equal(t, "audio-result", downloadResponse.Body.String())
+}
+
+func TestSucceededWildFlowJobReplayReturnsGoneAfterResultRetentionExpires(t *testing.T) {
+	jobReads := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"id":"job-expired-result","state":"queued"}}`))
+			return
+		}
+		jobReads++
+		_, _ = fmt.Fprintf(w, `{"job":{"id":"job-expired-result","state":"succeeded","artifacts":[%s]}}`, validVoxArtifactJSON("artifact-expired-result", "job-expired-result", 5))
+	}))
+	body := `{"model":"tts-standard","parameters":{"input":"hello"}}`
+	created := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "expired-result"})
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &payload))
+	operationID := payload["id"].(string)
+	status := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
+	require.Equal(t, http.StatusOK, status.Code, status.Body.String())
+	require.NoError(t, model.DB.Model(&model.WildFlowOperation{}).
+		Where("operation_id = ?", operationID).
+		Update("result_expires_at", time.Now().Add(-time.Minute).Unix()).Error)
+
+	replay := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "expired-result"})
+	require.Equal(t, http.StatusGone, replay.Code, replay.Body.String())
+	assert.Contains(t, replay.Body.String(), `"code":"result_expired"`)
+	assert.Equal(t, 1, jobReads)
 }
 
 func TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch(t *testing.T) {

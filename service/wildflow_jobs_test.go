@@ -3,9 +3,21 @@ package service
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestWildFlowOperationResultRetentionHasExplicitDefaultAndOverride(t *testing.T) {
+	t.Setenv("WILDFLOW_OPERATION_RESULT_RETENTION_SECONDS", "")
+	require.Equal(t, 30*24*time.Hour, wildFlowOperationResultRetention())
+
+	t.Setenv("WILDFLOW_OPERATION_RESULT_RETENTION_SECONDS", "3600")
+	require.Equal(t, time.Hour, wildFlowOperationResultRetention())
+
+	t.Setenv("WILDFLOW_OPERATION_RESULT_RETENTION_SECONDS", "59")
+	require.Equal(t, 30*24*time.Hour, wildFlowOperationResultRetention())
+}
 
 func TestValidateWildFlowParametersRejectsUnsafeOrUnsupportedShapes(t *testing.T) {
 	t.Parallel()
