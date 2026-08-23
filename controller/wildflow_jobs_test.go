@@ -45,6 +45,7 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 		&model.WildFlowOperation{},
 		&model.WildFlowUsageEvent{},
 		&model.WildFlowBillingLogEntry{},
+		&model.WildFlowBillingLogProjectionReceipt{},
 	))
 	model.DB = db
 	model.LOG_DB = db
@@ -1230,7 +1231,7 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &operation))
 	operationID := operation["id"].(string)
 	_, err := model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
-		EventID: "usage-result-1", PayloadDigest: "usage-result-1-digest",
+		EventID: "usage-result-1", PayloadDigest: strings.Repeat("d", 64),
 		OperationID: operationID, JobID: "job-1", ModelVersionRef: "openbmb/VoxCPM2",
 		Kind: "characters", Quantity: 5, Unit: "character",
 	})

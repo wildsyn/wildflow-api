@@ -65,8 +65,9 @@ func TestWildFlowPostgresMigrationConcurrencyAndFaultRecovery(t *testing.T) {
 		&WildFlowOperation{},
 		&WildFlowUsageEvent{},
 		&WildFlowBillingLogEntry{},
+		&WildFlowBillingLogProjectionReceipt{},
 	))
-	require.NoError(t, logDB.AutoMigrate(&Log{}))
+	require.NoError(t, logDB.AutoMigrate(&Log{}, &WildFlowBillingLogProjectionReceipt{}))
 	for _, column := range []string{
 		"submission_phase",
 		"submission_owner",
@@ -77,6 +78,7 @@ func TestWildFlowPostgresMigrationConcurrencyAndFaultRecovery(t *testing.T) {
 	} {
 		assert.True(t, mainDB.Migrator().HasColumn(&WildFlowOperation{}, column), column)
 	}
+	assert.True(t, logDB.Migrator().HasTable(&WildFlowBillingLogProjectionReceipt{}))
 	for _, column := range []string{
 		"projection_state",
 		"projection_attempts",
@@ -213,6 +215,7 @@ func TestWildFlowPostgresMigrationConcurrencyAndFaultRecovery(t *testing.T) {
 		Where("request_id = ? AND type = ?", takeoverOperation.OperationID, LogTypeConsume).
 		Count(&takeoverLogCount).Error)
 	assert.Equal(t, int64(1), takeoverLogCount, "lease takeover must not duplicate an already in-flight external insert")
+	canonical = WildFlowBillingLogEntry{}
 	require.NoError(t, mainDB.Where(
 		"operation_id = ? AND log_type = ?", takeoverOperation.OperationID, LogTypeConsume,
 	).First(&canonical).Error)

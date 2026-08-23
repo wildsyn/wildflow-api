@@ -389,6 +389,22 @@ func GetWildFlowJob(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if wildFlowSubmissionNeedsReconciliation(operation) {
+		if _, err := service.ReconcileWildFlowSubmissionLease(operation.OperationID, time.Now().Unix()); err != nil {
+			wildFlowInternalError(c, err)
+			return
+		}
+		reloaded, err := model.GetWildFlowOperationForUser(operation.UserID, operation.OperationID)
+		if err != nil {
+			wildFlowInternalError(c, err)
+			return
+		}
+		if reloaded == nil {
+			wildFlowJobError(c, http.StatusNotFound, "job_not_found", "job not found")
+			return
+		}
+		operation = reloaded
+	}
 	if operation.State == "succeeded" && writeWildFlowPersistedResult(c, operation, http.StatusOK, false) {
 		return
 	}

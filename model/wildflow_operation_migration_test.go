@@ -39,7 +39,7 @@ func TestWildFlowContractMigrationExpandsLegacySQLiteRowsInPlace(t *testing.T) {
 	}).Error)
 
 	require.NoError(t, database.AutoMigrate(
-		&WildFlowOperation{}, &WildFlowUsageEvent{}, &WildFlowBillingLogEntry{},
+		&WildFlowOperation{}, &WildFlowUsageEvent{}, &WildFlowBillingLogEntry{}, &WildFlowBillingLogProjectionReceipt{},
 	))
 	for _, column := range []string{
 		"billing_usage_event_id", "result_json", "result_validated_time", "result_retention_seconds", "result_expires_at",
@@ -48,6 +48,8 @@ func TestWildFlowContractMigrationExpandsLegacySQLiteRowsInPlace(t *testing.T) {
 		assert.True(t, database.Migrator().HasColumn(&WildFlowOperation{}, column), column)
 	}
 	assert.True(t, database.Migrator().HasTable(&WildFlowBillingLogEntry{}))
+	assert.True(t, database.Migrator().HasColumn(&WildFlowUsageEvent{}, "ingest_token"))
+	assert.True(t, database.Migrator().HasTable(&WildFlowBillingLogProjectionReceipt{}))
 	for _, column := range []string{
 		"projection_state", "projection_attempts", "projection_last_error", "projection_claim_token",
 		"projection_lease_expires_at", "projected_time",

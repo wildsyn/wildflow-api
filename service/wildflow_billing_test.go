@@ -94,6 +94,7 @@ func TestReserveWildFlowOperationBillingUsesSubscriptionPreferenceDurably(t *tes
 		&model.WildFlowOperation{},
 		&model.WildFlowUsageEvent{},
 		&model.WildFlowBillingLogEntry{},
+		&model.WildFlowBillingLogProjectionReceipt{},
 	))
 	model.DB = db
 	model.LOG_DB = db

@@ -294,6 +294,7 @@ func migrateDB() error {
 		&WildFlowOperation{},
 		&WildFlowUsageEvent{},
 		&WildFlowBillingLogEntry{},
+		&WildFlowBillingLogProjectionReceipt{},
 		&CasbinRule{},
 		&AuthzRole{},
 	)
@@ -361,6 +362,7 @@ func migrateDBFast() error {
 		{&WildFlowOperation{}, "WildFlowOperation"},
 		{&WildFlowUsageEvent{}, "WildFlowUsageEvent"},
 		{&WildFlowBillingLogEntry{}, "WildFlowBillingLogEntry"},
+		{&WildFlowBillingLogProjectionReceipt{}, "WildFlowBillingLogProjectionReceipt"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))
@@ -408,7 +410,7 @@ func migrateLOGDB() error {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return migrateClickHouseLogDB()
 	}
-	return LOG_DB.AutoMigrate(&Log{})
+	return LOG_DB.AutoMigrate(&Log{}, &WildFlowBillingLogProjectionReceipt{})
 }
 
 func migrateClickHouseLogDB() error {

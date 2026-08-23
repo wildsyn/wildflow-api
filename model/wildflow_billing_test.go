@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,7 +21,10 @@ func setupWildFlowBillingModelTest(t *testing.T) *gorm.DB {
 	previousDB := DB
 	db, err := gorm.Open(sqlite.Open("file:wildflow-billing-"+uuid.NewString()+"?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&User{}, &Token{}, &Log{}, &WildFlowOperation{}, &WildFlowUsageEvent{}, &WildFlowBillingLogEntry{}))
+	require.NoError(t, db.AutoMigrate(
+		&User{}, &Token{}, &Log{}, &WildFlowOperation{}, &WildFlowUsageEvent{},
+		&WildFlowBillingLogEntry{}, &WildFlowBillingLogProjectionReceipt{},
+	))
 	DB = db
 	previousLogDB := LOG_DB
 	LOG_DB = db
@@ -275,7 +279,7 @@ func TestSettleWildFlowBillingIsIdempotentAndDoesNotMoveReservedQuota(t *testing
 	assert.False(t, changed, "a succeeded Job without a recorded usage event must not capture")
 	assert.Equal(t, WildFlowBillingStateReserved, first.BillingState)
 	replayed, err := RecordWildFlowUsageEvent(&WildFlowUsageEvent{
-		EventID: "usage-wallet-settle", PayloadDigest: "usage-wallet-settle-digest",
+		EventID: "usage-wallet-settle", PayloadDigest: strings.Repeat("a", 64),
 		OperationID: operation.OperationID, JobID: "job-settle",
 		ModelVersionRef: operation.ModelVersionRef,
 		Kind:            "images", Quantity: 1, Unit: "image",
@@ -306,13 +310,29 @@ func TestRecordWildFlowUsageEventRejectsBillingMismatchBeforePersistence(t *test
 	require.NoError(t, err)
 	require.NoError(t, UpdateWildFlowOperationExecution(operation.OperationID, "job-usage-mismatch", "succeeded", ""))
 	replayed, err := RecordWildFlowUsageEvent(&WildFlowUsageEvent{
-		EventID: "usage-mismatch", PayloadDigest: "usage-mismatch-digest",
+		EventID: "usage-mismatch", PayloadDigest: strings.Repeat("a", 64),
 		OperationID: operation.OperationID, JobID: "job-usage-mismatch",
 		ModelVersionRef: operation.ModelVersionRef,
 		Kind:            "images", Quantity: 2, Unit: "image",
 	})
 	assert.False(t, replayed)
 	require.ErrorIs(t, err, ErrWildFlowUsageEventConflict)
+	var count int64
+	require.NoError(t, db.Model(&WildFlowUsageEvent{}).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestRecordWildFlowUsageEventRejectsNonCanonicalDigest(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	_, _, operation := createWildFlowBillingFixture(t, db, "usage-invalid-digest")
+
+	replayed, err := RecordWildFlowUsageEvent(&WildFlowUsageEvent{
+		EventID: "usage-invalid-digest", PayloadDigest: "not-a-sha256",
+		OperationID: operation.OperationID, JobID: operation.JobID,
+		ModelVersionRef: operation.ModelVersionRef,
+	})
+	assert.False(t, replayed)
+	require.ErrorIs(t, err, ErrWildFlowUsageEventInvalid)
 	var count int64
 	require.NoError(t, db.Model(&WildFlowUsageEvent{}).Count(&count).Error)
 	assert.Zero(t, count)
@@ -331,7 +351,7 @@ func TestRecordWildFlowUsageEventReloadsIdentityWhenInsertReportsAffected(t *tes
 		}
 		tx.Session(&gorm.Session{NewDB: true}).Exec(
 			"INSERT INTO wild_flow_usage_events (event_id, payload_digest, operation_id, job_id, model_version_ref, kind, quantity, unit, created_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			"usage-found-rows", "different-persisted-digest", operation.OperationID, "job-usage-found-rows", operation.ModelVersionRef,
+			"usage-found-rows", strings.Repeat("b", 64), operation.OperationID, "job-usage-found-rows", operation.ModelVersionRef,
 			"images", 1, "image", time.Now().Unix(),
 		)
 	}))
@@ -346,7 +366,7 @@ func TestRecordWildFlowUsageEventReloadsIdentityWhenInsertReportsAffected(t *tes
 	})
 
 	replayed, err := RecordWildFlowUsageEvent(&WildFlowUsageEvent{
-		EventID: "usage-found-rows", PayloadDigest: "incoming-digest",
+		EventID: "usage-found-rows", PayloadDigest: strings.Repeat("a", 64),
 		OperationID: operation.OperationID, JobID: "job-usage-found-rows",
 		ModelVersionRef: operation.ModelVersionRef,
 		Kind:            "images", Quantity: 1, Unit: "image",
@@ -404,7 +424,7 @@ func TestSettleWildFlowBillingIsConcurrentAndUsageEventDeduplicated(t *testing.T
 	_, err = StoreWildFlowOperationResult(operation.OperationID, `{"id":"op-concurrent-settle","state":"succeeded"}`, time.Now().Add(time.Hour).Unix())
 	require.NoError(t, err)
 	_, err = RecordWildFlowUsageEvent(&WildFlowUsageEvent{
-		EventID: "usage-concurrent-settle", PayloadDigest: "usage-concurrent-settle-digest",
+		EventID: "usage-concurrent-settle", PayloadDigest: strings.Repeat("a", 64),
 		OperationID: operation.OperationID, JobID: "job-concurrent-settle",
 		ModelVersionRef: operation.ModelVersionRef,
 		Kind:            "images", Quantity: 1, Unit: "image",
@@ -519,7 +539,7 @@ func useSeparateWildFlowLogDB(t *testing.T) *gorm.DB {
 	previousLogDB := LOG_DB
 	logDB, err := gorm.Open(sqlite.Open("file:wildflow-log-projection-"+uuid.NewString()+"?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, logDB.AutoMigrate(&Log{}))
+	require.NoError(t, logDB.AutoMigrate(&Log{}, &WildFlowBillingLogProjectionReceipt{}))
 	LOG_DB = logDB
 	t.Cleanup(func() {
 		LOG_DB = previousLogDB
@@ -541,7 +561,7 @@ func prepareSuccessfulWildFlowBillingForSettlement(t *testing.T, db *gorm.DB, su
 	_, err = StoreWildFlowOperationResult(operation.OperationID, `{"id":"`+operation.OperationID+`","state":"succeeded"}`, time.Now().Add(time.Hour).Unix())
 	require.NoError(t, err)
 	_, err = RecordWildFlowUsageEvent(&WildFlowUsageEvent{
-		EventID: "usage-" + suffix, PayloadDigest: "usage-digest-" + suffix,
+		EventID: "usage-" + suffix, PayloadDigest: strings.Repeat("a", 64),
 		OperationID: operation.OperationID, JobID: jobID,
 		ModelVersionRef: operation.ModelVersionRef,
 		Kind:            "images", Quantity: 1, Unit: "image",
@@ -792,8 +812,12 @@ func TestWildFlowGenericLogProjectionFailsClosedForClickHouse(t *testing.T) {
 	assert.Zero(t, logCount)
 	var entry WildFlowBillingLogEntry
 	require.NoError(t, db.Where("operation_id = ? AND log_type = ?", operation.OperationID, LogTypeConsume).First(&entry).Error)
-	assert.Equal(t, WildFlowBillingProjectionFailed, entry.ProjectionState)
+	assert.Equal(t, WildFlowBillingProjectionUnsupported, entry.ProjectionState)
 	assert.Equal(t, "log_projection_idempotency_unsupported", entry.ProjectionLastError)
+	firstAttempts := entry.ProjectionAttempts
+	require.Error(t, RecordWildFlowBillingLog(operation, LogTypeConsume, "WildFlow job settled"))
+	require.NoError(t, db.Where("operation_id = ? AND log_type = ?", operation.OperationID, LogTypeConsume).First(&entry).Error)
+	assert.Equal(t, firstAttempts, entry.ProjectionAttempts, "unsupported ClickHouse projection must remain a terminal observable state")
 }
 
 func TestRefundWildFlowBillingDoesNotReleaseRecoveryHold(t *testing.T) {

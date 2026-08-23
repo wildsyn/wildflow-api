@@ -54,7 +54,7 @@ func TestReceiveWildFlowUsageEventIsAuthenticatedImmutableAndIdempotent(t *testi
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.Log{}, &model.WildFlowOperation{},
-		&model.WildFlowUsageEvent{}, &model.WildFlowBillingLogEntry{},
+		&model.WildFlowUsageEvent{}, &model.WildFlowBillingLogEntry{}, &model.WildFlowBillingLogProjectionReceipt{},
 	))
 	previousDB := model.DB
 	previousLogDB := model.LOG_DB

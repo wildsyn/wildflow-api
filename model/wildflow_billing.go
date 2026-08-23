@@ -536,9 +536,6 @@ func ensureWildFlowCanonicalBillingLogTx(
 	if claim.Error != nil {
 		return nil, claim.Error
 	}
-	if claim.RowsAffected > 0 {
-		return entry, nil
-	}
 	if err := lockForUpdate(tx).
 		Where("operation_id = ? AND log_type = ?", operation.OperationID, logType).
 		First(entry).Error; err != nil {
@@ -546,7 +543,7 @@ func ensureWildFlowCanonicalBillingLogTx(
 	}
 	if entry.UsageEventID != operation.BillingUsageEventID || entry.BillingSource != operation.BillingSource ||
 		entry.BillingQuota != operation.BillingQuota || entry.BillingCurrency != operation.BillingCurrency ||
-		entry.BillingAmountMicros != operation.BillingAmountMicros {
+		entry.BillingAmountMicros != operation.BillingAmountMicros || entry.Content != content {
 		return nil, ErrWildFlowBillingStateConflict
 	}
 	if entry.ProjectionState == "" {
@@ -567,25 +564,17 @@ func projectWildFlowBillingLog(operationID string, logType int) error {
 	}
 	if LOG_DB == nil {
 		projectionErr := errors.New("log database is not initialized")
-		return errors.Join(projectionErr, markWildFlowBillingProjectionFailed(entry, claimToken))
+		return errors.Join(projectionErr, markWildFlowBillingProjectionFailed(entry, claimToken, wildFlowBillingProjectionFailureCode(projectionErr)))
 	}
 	operation, err := GetWildFlowOperationByID(operationID)
 	if err != nil || operation == nil {
 		if err == nil {
 			err = errors.New("WildFlow billing operation not found")
 		}
-		return errors.Join(err, markWildFlowBillingProjectionFailed(entry, claimToken))
+		return errors.Join(err, markWildFlowBillingProjectionFailed(entry, claimToken, wildFlowBillingProjectionFailureCode(err)))
 	}
-	var legacyProjectionCount int64
-	if err := LOG_DB.Model(&Log{}).
-		Where("request_id = ? AND type = ?", operationID, logType).
-		Count(&legacyProjectionCount).Error; err != nil {
-		return errors.Join(err, markWildFlowBillingProjectionFailed(entry, claimToken))
-	}
-	if legacyProjectionCount == 0 {
-		if err := createWildFlowGenericBillingLog(operation, entry); err != nil {
-			return errors.Join(err, markWildFlowBillingProjectionFailed(entry, claimToken))
-		}
+	if err := createWildFlowGenericBillingLog(operation, entry); err != nil {
+		return errors.Join(err, markWildFlowBillingProjectionFailed(entry, claimToken, wildFlowBillingProjectionFailureCode(err)))
 	}
 	return markWildFlowBillingProjectionProjected(entry, claimToken)
 }
@@ -606,6 +595,9 @@ func claimWildFlowBillingProjection(operationID string, logType int) (*WildFlowB
 		if entry.ProjectionState == WildFlowBillingProjectionProjected || entry.ProjectionState == WildFlowBillingProjectionNotRequired {
 			result = &entry
 			return nil
+		}
+		if entry.ProjectionState == WildFlowBillingProjectionUnsupported {
+			return errWildFlowClickHouseProjectionUnsupported
 		}
 		if entry.ProjectionState == WildFlowBillingProjectionProjecting && entry.ProjectionLeaseExpiresAt > now {
 			result = &entry
@@ -640,9 +632,13 @@ func claimWildFlowBillingProjection(operationID string, logType int) (*WildFlowB
 	return result, claimToken, acquired, err
 }
 
-func markWildFlowBillingProjectionFailed(entry *WildFlowBillingLogEntry, claimToken string) error {
+func markWildFlowBillingProjectionFailed(entry *WildFlowBillingLogEntry, claimToken string, failureCode string) error {
 	if entry == nil {
 		return errors.New("nil WildFlow billing projection")
+	}
+	projectionState := WildFlowBillingProjectionFailed
+	if failureCode == "log_projection_idempotency_unsupported" {
+		projectionState = WildFlowBillingProjectionUnsupported
 	}
 	update := DB.Model(&WildFlowBillingLogEntry{}).
 		Where(
@@ -653,12 +649,21 @@ func markWildFlowBillingProjectionFailed(entry *WildFlowBillingLogEntry, claimTo
 			claimToken,
 		).
 		Updates(map[string]any{
-			"projection_state":            WildFlowBillingProjectionFailed,
-			"projection_last_error":       "log_projection_failed",
+			"projection_state":            projectionState,
+			"projection_last_error":       failureCode,
 			"projection_claim_token":      "",
 			"projection_lease_expires_at": int64(0),
 		})
 	return update.Error
+}
+
+var errWildFlowClickHouseProjectionUnsupported = errors.New("ClickHouse does not provide the transactional idempotency required for WildFlow billing log projection")
+
+func wildFlowBillingProjectionFailureCode(err error) string {
+	if errors.Is(err, errWildFlowClickHouseProjectionUnsupported) {
+		return "log_projection_idempotency_unsupported"
+	}
+	return "log_projection_failed"
 }
 
 func markWildFlowBillingProjectionProjected(entry *WildFlowBillingLogEntry, claimToken string) error {
@@ -690,6 +695,9 @@ func markWildFlowBillingProjectionProjected(entry *WildFlowBillingLogEntry, clai
 }
 
 func createWildFlowGenericBillingLog(operation *WildFlowOperation, entry *WildFlowBillingLogEntry) error {
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		return errWildFlowClickHouseProjectionUnsupported
+	}
 	username := ""
 	group := ""
 	var user User
@@ -717,7 +725,7 @@ func createWildFlowGenericBillingLog(operation *WildFlowOperation, entry *WildFl
 		"usd_exchange_rate": operation.BillingUSDExchangeRate,
 		"price_version":     operation.BillingPriceVersion,
 	}
-	return createLog(&Log{
+	logEntry := &Log{
 		UserId:    operation.UserID,
 		Username:  username,
 		CreatedAt: common.GetTimestamp(),
@@ -730,6 +738,51 @@ func createWildFlowGenericBillingLog(operation *WildFlowOperation, entry *WildFl
 		Group:     group,
 		RequestId: operation.OperationID,
 		Other:     common.MapToJsonStr(other),
+	}
+	return LOG_DB.Transaction(func(tx *gorm.DB) error {
+		receipt := &WildFlowBillingLogProjectionReceipt{
+			OperationID: operation.OperationID,
+			LogType:     entry.LogType,
+		}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(receipt).Error; err != nil {
+			return err
+		}
+		if err := lockLogForUpdate(tx).
+			Where("operation_id = ? AND log_type = ?", operation.OperationID, entry.LogType).
+			First(receipt).Error; err != nil {
+			return err
+		}
+		if receipt.Projected {
+			return nil
+		}
+		var legacyProjectionCount int64
+		if err := tx.Model(&Log{}).
+			Where("request_id = ? AND type = ?", operation.OperationID, entry.LogType).
+			Count(&legacyProjectionCount).Error; err != nil {
+			return err
+		}
+		if legacyProjectionCount == 0 {
+			if err := tx.Create(logEntry).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(&WildFlowBillingLogProjectionReceipt{}).
+			Where("operation_id = ? AND log_type = ? AND projected = ?", operation.OperationID, entry.LogType, false).
+			Updates(map[string]any{
+				"projected":      true,
+				"projected_time": time.Now().Unix(),
+			}).Error; err != nil {
+			return err
+		}
+		var persisted WildFlowBillingLogProjectionReceipt
+		if err := tx.Where("operation_id = ? AND log_type = ?", operation.OperationID, entry.LogType).
+			First(&persisted).Error; err != nil {
+			return err
+		}
+		if !persisted.Projected {
+			return errors.New("WildFlow billing log projection receipt was not committed")
+		}
+		return nil
 	})
 }
 

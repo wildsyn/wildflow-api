@@ -27,12 +27,32 @@ type WildFlowBillingLogEntry struct {
 	CreatedTime              int64  `json:"-" gorm:"bigint"`
 }
 
+// WildFlowBillingLogProjectionReceipt is the stable idempotency identity in
+// the SQL log database. It serializes legacy-log adoption and generic Log
+// creation without imposing a new uniqueness constraint on the shared logs
+// table and its historical rows.
+type WildFlowBillingLogProjectionReceipt struct {
+	OperationID   string `json:"-" gorm:"type:varchar(64);primaryKey"`
+	LogType       int    `json:"-" gorm:"primaryKey;autoIncrement:false"`
+	Projected     bool   `json:"-" gorm:"index"`
+	CreatedTime   int64  `json:"-" gorm:"bigint"`
+	ProjectedTime int64  `json:"-" gorm:"bigint"`
+}
+
+func (receipt *WildFlowBillingLogProjectionReceipt) BeforeCreate(_ *gorm.DB) error {
+	if receipt.CreatedTime == 0 {
+		receipt.CreatedTime = time.Now().Unix()
+	}
+	return nil
+}
+
 const (
 	WildFlowBillingProjectionPending     = "pending"
 	WildFlowBillingProjectionProjecting  = "projecting"
 	WildFlowBillingProjectionFailed      = "failed"
 	WildFlowBillingProjectionProjected   = "projected"
 	WildFlowBillingProjectionNotRequired = "not_required"
+	WildFlowBillingProjectionUnsupported = "unsupported"
 )
 
 func (entry *WildFlowBillingLogEntry) BeforeCreate(_ *gorm.DB) error {

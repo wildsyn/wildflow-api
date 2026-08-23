@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -91,7 +92,7 @@ func setupWildFlowBillingReconcilerTest(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.Log{}, &model.WildFlowOperation{},
-		&model.WildFlowUsageEvent{}, &model.WildFlowBillingLogEntry{},
+		&model.WildFlowUsageEvent{}, &model.WildFlowBillingLogEntry{}, &model.WildFlowBillingLogProjectionReceipt{},
 	))
 	model.DB = db
 	model.LOG_DB = db
@@ -134,7 +135,7 @@ func createReconcilerOperation(t *testing.T, db *gorm.DB, suffix string, userID 
 	reserved, err := model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
 	require.NoError(t, err)
 	_, err = model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
-		EventID: "usage-" + suffix, PayloadDigest: "usage-digest-" + suffix,
+		EventID: "usage-" + suffix, PayloadDigest: strings.Repeat("a", 64),
 		OperationID: operation.OperationID, JobID: jobID,
 		ModelVersionRef: operation.ModelVersionRef,
 		Kind:            "images", Quantity: 1, Unit: "image",
@@ -173,7 +174,7 @@ func createVoxReconcilerOperation(t *testing.T, db *gorm.DB, suffix string, user
 	reserved, err := model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
 	require.NoError(t, err)
 	_, err = model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
-		EventID: "usage-" + suffix, PayloadDigest: "usage-digest-" + suffix,
+		EventID: "usage-" + suffix, PayloadDigest: strings.Repeat("a", 64),
 		OperationID: operation.OperationID, JobID: jobID,
 		ModelVersionRef: operation.ModelVersionRef,
 		Kind:            "characters", Quantity: int64(len([]rune(input))), Unit: "character",
