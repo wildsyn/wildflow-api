@@ -324,6 +324,11 @@ func FinalizeWildFlowOperationBilling(ctx context.Context, operation *model.Wild
 		if err := ValidateWildFlowCompletedArtifacts(operation, artifacts); err != nil {
 			return err
 		}
+		if operation.OperationID != "" {
+			if _, err := PersistWildFlowOperationResult(operation, artifacts); err != nil {
+				return err
+			}
+		}
 	}
 	if operation.BillingState == "" || operation.BillingState == model.WildFlowBillingStatePending {
 		return nil
@@ -335,11 +340,12 @@ func FinalizeWildFlowOperationBilling(ctx context.Context, operation *model.Wild
 			return err
 		}
 		if settled != nil {
-			if settled.BillingState != model.WildFlowBillingStateSettled {
+			if settled.BillingState == model.WildFlowBillingStateSettled {
+				if err := model.RecordWildFlowBillingLog(settled, model.LogTypeConsume, "WildFlow job settled"); err != nil {
+					return err
+				}
+			} else if settled.BillingState != model.WildFlowBillingStateReserved {
 				return model.ErrWildFlowBillingStateConflict
-			}
-			if err := model.RecordWildFlowBillingLog(settled, model.LogTypeConsume, "WildFlow job settled"); err != nil {
-				return err
 			}
 			*operation = *settled
 		}
@@ -365,4 +371,19 @@ func FinalizeWildFlowOperationBilling(ctx context.Context, operation *model.Wild
 		_ = ctx
 		return nil
 	}
+}
+
+// SettleWildFlowOperationBillingFromRecordedUsage is called after the durable
+// usage-event insert. It is safe for replays and for events that arrive before
+// the successful result: the model settles only when both facts are durable.
+func SettleWildFlowOperationBillingFromRecordedUsage(ctx context.Context, operationID string) error {
+	operation, _, err := model.SettleWildFlowOperationBilling(operationID)
+	if err != nil {
+		return err
+	}
+	if operation == nil || operation.BillingState != model.WildFlowBillingStateSettled {
+		return nil
+	}
+	_ = ctx
+	return model.RecordWildFlowBillingLog(operation, model.LogTypeConsume, "WildFlow job settled")
 }

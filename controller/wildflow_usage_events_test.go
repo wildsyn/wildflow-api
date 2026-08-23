@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -57,18 +58,22 @@ func TestReceiveWildFlowUsageEventIsAuthenticatedImmutableAndIdempotent(t *testi
 	))
 	previousDB := model.DB
 	previousLogDB := model.LOG_DB
+	previousRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
 	model.DB = database
 	model.LOG_DB = database
 	t.Cleanup(func() {
 		model.DB = previousDB
 		model.LOG_DB = previousLogDB
+		common.RedisEnabled = previousRedisEnabled
 	})
 	require.NoError(t, database.Create(&model.User{Id: 1, Username: "usage-event-user", Quota: 10_000}).Error)
 	require.NoError(t, database.Create(&model.WildFlowOperation{
 		OperationID: "operation-1", UserID: 1, TokenID: 1,
 		IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64),
 		RequestID: "request-1", ProductModelRef: "VoxCPM2", ModelVersionRef: "openbmb/VoxCPM2",
-		JobID: "job-1", State: "succeeded", ResultValidatedTime: time.Now().Unix(),
+		JobID: "job-1", State: "succeeded", ResultJSON: `{"id":"operation-1","state":"succeeded"}`,
+		ResultValidatedTime: time.Now().Unix(), ResultExpiresAt: time.Now().Add(time.Hour).Unix(),
 		BillingState: model.WildFlowBillingStateReserved, BillingSource: model.WildFlowBillingSourceWallet,
 		BillingQuota: 100, BillingCurrency: "CNY", BillingAmountMicros: 160,
 		BillingUnit: "10k_characters", BillingBillableUnits: 2,

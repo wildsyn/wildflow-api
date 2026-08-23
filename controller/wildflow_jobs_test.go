@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -270,7 +271,7 @@ func TestCreateWildFlowJobPreConsumesRetailPriceExactlyOnce(t *testing.T) {
 	replayed := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "billed-image"})
 
 	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
-	require.Equal(t, http.StatusOK, replayed.Code, replayed.Body.String())
+	require.Equal(t, http.StatusAccepted, replayed.Code, replayed.Body.String())
 	assert.Equal(t, 1, submissions)
 	var user model.User
 	var token model.Token
@@ -479,7 +480,7 @@ func TestSucceededWildFlowJobSettlesRetailPriceExactlyOnce(t *testing.T) {
 		EventID: "usage-billed-succeeded", PayloadDigest: strings.Repeat("c", 64),
 		OperationID: operationID, JobID: "job-billed-succeeded",
 		ModelVersionRef: "black-forest-labs/FLUX.2-klein-4B",
-		Kind: "images", Quantity: 1, Unit: "image",
+		Kind:            "images", Quantity: 1, Unit: "image",
 	})
 	require.NoError(t, err)
 	assert.False(t, replayed)
@@ -824,8 +825,51 @@ func TestCreateWildFlowJobSubmitsTTSOnceAndReplaysTheOperation(t *testing.T) {
 	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &first))
 	require.NoError(t, common.Unmarshal(replayed.Body.Bytes(), &second))
 	assert.Equal(t, first["id"], second["id"])
+	assert.Equal(t, second["id"], second["operation_id"])
 	assert.Equal(t, "job-tts-1", first["job_id"])
 	assert.Equal(t, "queued", first["state"])
+}
+
+func TestConcurrentSameKeySubmitsAndReservesExactlyOnce(t *testing.T) {
+	var submissions atomic.Int32
+	submitted := make(chan struct{})
+	release := make(chan struct{})
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if submissions.Add(1) == 1 {
+			close(submitted)
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-concurrent-key","state":"queued"}}`))
+	}))
+	body := `{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`
+	firstResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstResponse <- performWildFlowRequest(
+			t, engine, http.MethodPost, "/v1/jobs", body,
+			map[string]string{"Idempotency-Key": "concurrent-key"},
+		)
+	}()
+	select {
+	case <-submitted:
+	case <-time.After(time.Second):
+		require.FailNow(t, "first provider submission did not start")
+	}
+
+	replay := performWildFlowRequest(
+		t, engine, http.MethodPost, "/v1/jobs", body,
+		map[string]string{"Idempotency-Key": "concurrent-key"},
+	)
+	close(release)
+	created := <-firstResponse
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	require.Equal(t, http.StatusAccepted, replay.Code, replay.Body.String())
+	assert.Equal(t, "5", replay.Header().Get("Retry-After"))
+	assert.Equal(t, int32(1), submissions.Load())
+	var user model.User
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	assert.Equal(t, 1_000_000-3_425, user.Quota)
 }
 
 func TestCreateWildFlowJobMapsFLUXToTheExactModelVersion(t *testing.T) {
@@ -939,6 +983,12 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	var operation map[string]any
 	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &operation))
 	operationID := operation["id"].(string)
+	_, err := model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
+		EventID: "usage-result-1", PayloadDigest: "usage-result-1-digest",
+		OperationID: operationID, JobID: "job-1", ModelVersionRef: "openbmb/VoxCPM2",
+		Kind: "characters", Quantity: 5, Unit: "character",
+	})
+	require.NoError(t, err)
 
 	statusResponse := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
 	hiddenOperation := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", map[string]string{"X-Test-User": "43"})
@@ -969,6 +1019,7 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 }
 
 func TestSucceededWildFlowJobReplayReturnsGoneAfterResultRetentionExpires(t *testing.T) {
+	t.Setenv("WILDFLOW_OPERATION_RESULT_RETENTION_SECONDS", "3600")
 	jobReads := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -988,6 +1039,10 @@ func TestSucceededWildFlowJobReplayReturnsGoneAfterResultRetentionExpires(t *tes
 	operationID := payload["id"].(string)
 	status := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
 	require.Equal(t, http.StatusOK, status.Code, status.Body.String())
+	var persisted model.WildFlowOperation
+	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&persisted).Error)
+	assert.Equal(t, int64(3600), persisted.ResultRetentionSeconds)
+	assert.WithinDuration(t, time.Now().Add(time.Hour), time.Unix(persisted.ResultExpiresAt, 0), 5*time.Second)
 	require.NoError(t, model.DB.Model(&model.WildFlowOperation{}).
 		Where("operation_id = ?", operationID).
 		Update("result_expires_at", time.Now().Add(-time.Minute).Unix()).Error)
@@ -995,6 +1050,37 @@ func TestSucceededWildFlowJobReplayReturnsGoneAfterResultRetentionExpires(t *tes
 	replay := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "expired-result"})
 	require.Equal(t, http.StatusGone, replay.Code, replay.Body.String())
 	assert.Contains(t, replay.Body.String(), `"code":"result_expired"`)
+	assert.Equal(t, 1, jobReads)
+}
+
+func TestLegacySucceededOperationWithoutRecoverableResultEntersManualRecovery(t *testing.T) {
+	submissions := 0
+	jobReads := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			submissions++
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"id":"job-legacy-result","state":"queued"}}`))
+			return
+		}
+		jobReads++
+		http.NotFound(w, r)
+	}))
+	body := `{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`
+	created := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "legacy-result"})
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &payload))
+	operationID := payload["id"].(string)
+	require.NoError(t, model.UpdateWildFlowOperationExecution(operationID, "job-legacy-result", "succeeded", ""))
+
+	replay := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "legacy-result"})
+	require.Equal(t, http.StatusOK, replay.Code, replay.Body.String())
+	assert.Contains(t, replay.Body.String(), `"state":"recovery_required"`)
+	assert.Contains(t, replay.Body.String(), `"error":"result_unavailable"`)
+	assert.Empty(t, replay.Header().Get("Retry-After"))
+	assert.Equal(t, 1, submissions)
 	assert.Equal(t, 1, jobReads)
 }
 

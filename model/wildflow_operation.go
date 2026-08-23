@@ -32,7 +32,12 @@ type WildFlowOperation struct {
 	BillingQuotaPerUnit    string `json:"-" gorm:"type:varchar(64)"`
 	BillingUSDExchangeRate string `json:"-" gorm:"type:varchar(64)"`
 	BillingPriceVersion    string `json:"-" gorm:"type:varchar(64)"`
+	BillingUsageEventID    string `json:"-" gorm:"type:varchar(128);index"`
 	BillingSettledTime     int64  `json:"-" gorm:"bigint"`
+	ResultJSON             string `json:"-" gorm:"type:text"`
+	ResultValidatedTime    int64  `json:"-" gorm:"bigint"`
+	ResultRetentionSeconds int64  `json:"-" gorm:"bigint"`
+	ResultExpiresAt        int64  `json:"-" gorm:"bigint;index"`
 	CreatedTime            int64  `json:"created_at" gorm:"bigint"`
 	UpdatedTime            int64  `json:"updated_at" gorm:"bigint"`
 }
@@ -94,6 +99,68 @@ func UpdateWildFlowOperationExecution(
 			"last_error_code": errorCode,
 			"updated_time":    time.Now().Unix(),
 		}).Error
+}
+
+// StoreWildFlowOperationResult persists the first validated public result and
+// never replaces it. This gives idempotent replays an immutable response even
+// if inference storage changes later.
+func StoreWildFlowOperationResult(operationID string, resultJSON string, expiresAt int64) (*WildFlowOperation, error) {
+	if DB == nil || operationID == "" || resultJSON == "" || expiresAt <= time.Now().Unix() {
+		return nil, errors.New("invalid WildFlow operation result")
+	}
+	var result *WildFlowOperation
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var operation WildFlowOperation
+		if err := lockForUpdate(tx).Where("operation_id = ?", operationID).First(&operation).Error; err != nil {
+			return err
+		}
+		if operation.State != "succeeded" {
+			return errors.New("WildFlow operation result is not successful")
+		}
+		if operation.ResultJSON != "" {
+			updates := map[string]any{}
+			if operation.ResultRetentionSeconds == 0 {
+				updates["result_retention_seconds"] = expiresAt - time.Now().Unix()
+			}
+			if operation.ResultExpiresAt == 0 {
+				updates["result_expires_at"] = expiresAt
+			}
+			if operation.ResultValidatedTime == 0 {
+				updates["result_validated_time"] = time.Now().Unix()
+			}
+			if len(updates) > 0 {
+				if err := tx.Model(&WildFlowOperation{}).Where("id = ?", operation.ID).Updates(updates).Error; err != nil {
+					return err
+				}
+				if err := tx.Where("id = ?", operation.ID).First(&operation).Error; err != nil {
+					return err
+				}
+			}
+			result = &operation
+			return nil
+		}
+		now := time.Now().Unix()
+		updates := map[string]any{
+			"result_json":           resultJSON,
+			"result_validated_time": now,
+			"result_expires_at":     expiresAt,
+			"updated_time":          now,
+		}
+		if operation.ResultRetentionSeconds == 0 {
+			updates["result_retention_seconds"] = expiresAt - now
+		}
+		if err := tx.Model(&WildFlowOperation{}).
+			Where("id = ? AND (result_json = ? OR result_json IS NULL)", operation.ID, "").
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id = ?", operation.ID).First(&operation).Error; err != nil {
+			return err
+		}
+		result = &operation
+		return nil
+	})
+	return result, err
 }
 
 func ListWildFlowOperationsForBillingReconciliation(limit int) ([]*WildFlowOperation, error) {

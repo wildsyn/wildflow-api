@@ -224,7 +224,8 @@ func TestSettleWildFlowBillingIsIdempotentAndDoesNotMoveReservedQuota(t *testing
 	_, err := ReserveWildFlowWalletBilling(operation.OperationID, quote)
 	require.NoError(t, err)
 	require.NoError(t, UpdateWildFlowOperationExecution(operation.OperationID, "job-settle", "succeeded", ""))
-	require.NoError(t, MarkWildFlowOperationResultValidated(operation.OperationID))
+	_, err = StoreWildFlowOperationResult(operation.OperationID, `{"id":"op-wallet-settle","state":"succeeded"}`, time.Now().Add(time.Hour).Unix())
+	require.NoError(t, err)
 
 	first, changed, err := SettleWildFlowOperationBilling(operation.OperationID)
 	require.NoError(t, err)
@@ -234,7 +235,7 @@ func TestSettleWildFlowBillingIsIdempotentAndDoesNotMoveReservedQuota(t *testing
 		EventID: "usage-wallet-settle", PayloadDigest: "usage-wallet-settle-digest",
 		OperationID: operation.OperationID, JobID: "job-settle",
 		ModelVersionRef: operation.ModelVersionRef,
-		Kind: "images", Quantity: 1, Unit: "image",
+		Kind:            "images", Quantity: 1, Unit: "image",
 	})
 	require.NoError(t, err)
 	assert.False(t, replayed)
@@ -265,7 +266,7 @@ func TestRecordWildFlowUsageEventRejectsBillingMismatchBeforePersistence(t *test
 		EventID: "usage-mismatch", PayloadDigest: "usage-mismatch-digest",
 		OperationID: operation.OperationID, JobID: "job-usage-mismatch",
 		ModelVersionRef: operation.ModelVersionRef,
-		Kind: "images", Quantity: 2, Unit: "image",
+		Kind:            "images", Quantity: 2, Unit: "image",
 	})
 	assert.False(t, replayed)
 	require.ErrorIs(t, err, ErrWildFlowUsageEventConflict)
@@ -284,12 +285,13 @@ func TestSettleWildFlowBillingIsConcurrentAndUsageEventDeduplicated(t *testing.T
 	_, err = ReserveWildFlowWalletBilling(operation.OperationID, quote)
 	require.NoError(t, err)
 	require.NoError(t, UpdateWildFlowOperationExecution(operation.OperationID, "job-concurrent-settle", "succeeded", ""))
-	require.NoError(t, MarkWildFlowOperationResultValidated(operation.OperationID))
+	_, err = StoreWildFlowOperationResult(operation.OperationID, `{"id":"op-concurrent-settle","state":"succeeded"}`, time.Now().Add(time.Hour).Unix())
+	require.NoError(t, err)
 	_, err = RecordWildFlowUsageEvent(&WildFlowUsageEvent{
 		EventID: "usage-concurrent-settle", PayloadDigest: "usage-concurrent-settle-digest",
 		OperationID: operation.OperationID, JobID: "job-concurrent-settle",
 		ModelVersionRef: operation.ModelVersionRef,
-		Kind: "images", Quantity: 1, Unit: "image",
+		Kind:            "images", Quantity: 1, Unit: "image",
 	})
 	require.NoError(t, err)
 
@@ -351,6 +353,27 @@ func TestRecordWildFlowBillingLogHasConcurrentUniqueConsumeEntry(t *testing.T) {
 	for recordErr := range errorsByWorker {
 		require.NoError(t, recordErr)
 	}
+	var auditCount int64
+	require.NoError(t, db.Model(&WildFlowBillingLogEntry{}).Count(&auditCount).Error)
+	assert.Equal(t, int64(1), auditCount)
+	var logCount int64
+	require.NoError(t, db.Model(&Log{}).
+		Where("request_id = ? AND type = ?", operation.OperationID, LogTypeConsume).
+		Count(&logCount).Error)
+	assert.Equal(t, int64(1), logCount)
+}
+
+func TestRecordWildFlowBillingLogAdoptsLegacyProjectionWithoutDuplicatingIt(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	_, _, operation := createWildFlowBillingFixture(t, db, "legacy-log")
+	require.NoError(t, db.Create(&Log{
+		UserId: operation.UserID, Type: LogTypeConsume, RequestId: operation.OperationID,
+	}).Error)
+	previousLogConsumeEnabled := common.LogConsumeEnabled
+	common.LogConsumeEnabled = true
+	t.Cleanup(func() { common.LogConsumeEnabled = previousLogConsumeEnabled })
+
+	require.NoError(t, RecordWildFlowBillingLog(operation, LogTypeConsume, "WildFlow job settled"))
 	var auditCount int64
 	require.NoError(t, db.Model(&WildFlowBillingLogEntry{}).Count(&auditCount).Error)
 	assert.Equal(t, int64(1), auditCount)

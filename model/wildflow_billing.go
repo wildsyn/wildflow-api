@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -256,17 +257,47 @@ func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 			result = operation
 			return nil
 		}
-		if operation.BillingState != WildFlowBillingStateReserved || operation.State != "succeeded" {
+		if operation.BillingState != WildFlowBillingStateReserved || operation.State != "succeeded" ||
+			operation.ResultJSON == "" || operation.ResultValidatedTime == 0 {
 			result = operation
 			return nil
 		}
+		var usageEvent WildFlowUsageEvent
+		eventErr := tx.Where(
+			"operation_id = ? AND job_id = ? AND model_version_ref = ?",
+			operation.OperationID,
+			operation.JobID,
+			operation.ModelVersionRef,
+		).Order("created_time asc, event_id asc").First(&usageEvent).Error
+		if errors.Is(eventErr, gorm.ErrRecordNotFound) {
+			result = operation
+			return nil
+		}
+		if eventErr != nil {
+			return eventErr
+		}
+		if !wildFlowUsageEventMatchesOperation(operation, &usageEvent) {
+			return ErrWildFlowBillingStateConflict
+		}
 		now := time.Now().Unix()
-		if err := tx.Model(&WildFlowOperation{}).Where("id = ?", operation.ID).Updates(map[string]any{
-			"billing_state":        WildFlowBillingStateSettled,
-			"billing_settled_time": now,
-			"updated_time":         now,
-		}).Error; err != nil {
-			return err
+		update := tx.Model(&WildFlowOperation{}).
+			Where("id = ? AND billing_state = ? AND state = ? AND result_json <> ? AND result_validated_time > 0",
+				operation.ID, WildFlowBillingStateReserved, "succeeded", "").
+			Updates(map[string]any{
+				"billing_state":          WildFlowBillingStateSettled,
+				"billing_usage_event_id": usageEvent.EventID,
+				"billing_settled_time":   now,
+				"updated_time":           now,
+			})
+		if update.Error != nil {
+			return update.Error
+		}
+		if update.RowsAffected == 0 {
+			if err := tx.Where("id = ?", operation.ID).First(operation).Error; err != nil {
+				return err
+			}
+			result = operation
+			return nil
 		}
 		if err := tx.Model(&User{}).Where("id = ?", operation.UserID).Updates(map[string]any{
 			"used_quota":    gorm.Expr("used_quota + ?", operation.BillingQuota),
@@ -275,6 +306,7 @@ func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 			return err
 		}
 		operation.BillingState = WildFlowBillingStateSettled
+		operation.BillingUsageEventID = usageEvent.EventID
 		operation.BillingSettledTime = now
 		operation.UpdatedTime = now
 		result = operation
@@ -448,36 +480,62 @@ func RecordWildFlowBillingLog(operation *WildFlowOperation, logType int, content
 	if operation == nil {
 		return fmt.Errorf("nil WildFlow operation")
 	}
-	if logType == LogTypeConsume && !common.LogConsumeEnabled {
-		return nil
+	if DB == nil {
+		return fmt.Errorf("database is not initialized")
 	}
-	if LOG_DB == nil {
+	projectToGenericLog := logType != LogTypeConsume || common.LogConsumeEnabled
+	if projectToGenericLog && LOG_DB == nil {
 		return fmt.Errorf("log database is not initialized")
 	}
-	var existing int64
-	if err := LOG_DB.Model(&Log{}).
-		Where("request_id = ? AND type = ?", operation.OperationID, logType).
-		Count(&existing).Error; err != nil {
-		return err
+	entry := &WildFlowBillingLogEntry{
+		OperationID:         operation.OperationID,
+		LogType:             logType,
+		UsageEventID:        operation.BillingUsageEventID,
+		BillingSource:       operation.BillingSource,
+		BillingQuota:        operation.BillingQuota,
+		BillingCurrency:     operation.BillingCurrency,
+		BillingAmountMicros: operation.BillingAmountMicros,
+		Content:             content,
 	}
-	if existing > 0 {
+	claim := DB.Clauses(clause.OnConflict{DoNothing: true}).Create(entry)
+	if claim.Error != nil {
+		return claim.Error
+	}
+	if claim.RowsAffected == 0 {
 		return nil
 	}
-	username, _ := GetUsernameById(operation.UserID, true)
-	tokenName := ""
-	if operation.TokenID > 0 {
-		if token, err := GetTokenById(operation.TokenID); err == nil {
-			tokenName = token.Name
-		}
+	if !projectToGenericLog {
+		return nil
 	}
+	// The marker is the concurrency primitive. This read only preserves legacy
+	// projections created before the marker table existed.
+	var legacyProjectionCount int64
+	if err := LOG_DB.Model(&Log{}).
+		Where("request_id = ? AND type = ?", operation.OperationID, logType).
+		Count(&legacyProjectionCount).Error; err != nil {
+		return err
+	}
+	if legacyProjectionCount > 0 {
+		return nil
+	}
+	username := ""
 	group := ""
 	var user User
-	if err := DB.Select("group").Where("id = ?", operation.UserID).First(&user).Error; err == nil {
+	if err := DB.Select("username", "group").Where("id = ?", operation.UserID).First(&user).Error; err == nil {
+		username = user.Username
 		group = user.Group
+	}
+	tokenName := ""
+	if operation.TokenID > 0 {
+		var token Token
+		if err := DB.Select("name").Where("id = ?", operation.TokenID).First(&token).Error; err == nil {
+			tokenName = token.Name
+		}
 	}
 	other := map[string]any{
 		"operation_id":      operation.OperationID,
 		"job_id":            operation.JobID,
+		"usage_event_id":    operation.BillingUsageEventID,
 		"billing_source":    operation.BillingSource,
 		"currency":          operation.BillingCurrency,
 		"amount_micros":     operation.BillingAmountMicros,

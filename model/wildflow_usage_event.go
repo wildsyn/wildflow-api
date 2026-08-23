@@ -68,6 +68,9 @@ func RecordWildFlowUsageEvent(event *WildFlowUsageEvent) (bool, error) {
 		if operation.JobID != event.JobID || operation.ModelVersionRef != event.ModelVersionRef {
 			return ErrWildFlowUsageEventConflict
 		}
+		if !wildFlowUsageEventMatchesOperation(&operation, event) {
+			return ErrWildFlowUsageEventConflict
+		}
 		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(event)
 		if result.Error != nil {
 			return result.Error
@@ -85,4 +88,27 @@ func RecordWildFlowUsageEvent(event *WildFlowUsageEvent) (bool, error) {
 		return nil
 	})
 	return replayed, err
+}
+
+func wildFlowUsageEventMatchesOperation(operation *WildFlowOperation, event *WildFlowUsageEvent) bool {
+	if operation == nil || event == nil {
+		return false
+	}
+	if operation.BillingUsageEventID != "" && operation.BillingUsageEventID != event.EventID {
+		return false
+	}
+	if operation.BillingState == "" || operation.BillingState == WildFlowBillingStatePending {
+		return true
+	}
+	if event.Quantity != operation.BillingBillableUnits {
+		return false
+	}
+	switch operation.BillingUnit {
+	case "10k_characters":
+		return event.Kind == "characters" && event.Unit == "character"
+	case "image":
+		return event.Kind == "images" && event.Unit == "image"
+	default:
+		return false
+	}
 }

@@ -75,7 +75,10 @@ func setupWildFlowBillingReconcilerTest(t *testing.T) *gorm.DB {
 	common.RedisEnabled = false
 	db, err := gorm.Open(sqlite.Open("file:wildflow-reconciler-"+uuid.NewString()+"?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.WildFlowOperation{}))
+	require.NoError(t, db.AutoMigrate(
+		&model.User{}, &model.Token{}, &model.Log{}, &model.WildFlowOperation{},
+		&model.WildFlowUsageEvent{}, &model.WildFlowBillingLogEntry{},
+	))
 	model.DB = db
 	model.LOG_DB = db
 	t.Cleanup(func() {
@@ -116,6 +119,13 @@ func createReconcilerOperation(t *testing.T, db *gorm.DB, suffix string, userID 
 	require.NoError(t, err)
 	reserved, err := model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
 	require.NoError(t, err)
+	_, err = model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
+		EventID: "usage-" + suffix, PayloadDigest: "usage-digest-" + suffix,
+		OperationID: operation.OperationID, JobID: jobID,
+		ModelVersionRef: operation.ModelVersionRef,
+		Kind:            "images", Quantity: 1, Unit: "image",
+	})
+	require.NoError(t, err)
 	return reserved
 }
 
@@ -147,6 +157,13 @@ func createVoxReconcilerOperation(t *testing.T, db *gorm.DB, suffix string, user
 	})
 	require.NoError(t, err)
 	reserved, err := model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
+	require.NoError(t, err)
+	_, err = model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
+		EventID: "usage-" + suffix, PayloadDigest: "usage-digest-" + suffix,
+		OperationID: operation.OperationID, JobID: jobID,
+		ModelVersionRef: operation.ModelVersionRef,
+		Kind:            "characters", Quantity: int64(len([]rune(input))), Unit: "character",
+	})
 	require.NoError(t, err)
 	return reserved
 }

@@ -103,6 +103,9 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		writeWildFlowOperationError(c, err)
 		return
 	}
+	if !created && writeWildFlowExistingOperationReplay(c, operation) {
+		return
+	}
 	if operation.State == "recovery_required" {
 		writeWildFlowOperationHeaders(c, operation)
 		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, nil))
@@ -116,6 +119,24 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		}
 		job, getErr := client.GetJob(c.Request.Context(), operation.JobID, wildFlowTenantRef(userID))
 		if getErr != nil {
+			var apiError *inferenceclient.APIError
+			if !created && operation.State == "succeeded" && operation.ResultJSON == "" &&
+				errors.As(getErr, &apiError) && apiError.StatusCode == http.StatusNotFound {
+				if updateErr := model.UpdateWildFlowOperationExecution(
+					operation.OperationID,
+					operation.JobID,
+					"recovery_required",
+					"result_unavailable",
+				); updateErr != nil {
+					wildFlowInternalError(c, updateErr)
+					return
+				}
+				operation.State = "recovery_required"
+				operation.LastErrorCode = "result_unavailable"
+				writeWildFlowOperationHeaders(c, operation)
+				c.JSON(http.StatusOK, wildFlowOperationResponse(operation, nil))
+				return
+			}
 			writeWildFlowInferenceError(c, getErr)
 			return
 		}
@@ -127,6 +148,9 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		operation.State = job.State
 		operation.LastErrorCode = errorCode
 		if !finalizeWildFlowOperationBilling(c, operation, job.Artifacts) {
+			return
+		}
+		if operation.State == "succeeded" && writeWildFlowPersistedResult(c, operation, http.StatusOK, true) {
 			return
 		}
 		writeWildFlowOperationHeaders(c, operation)
@@ -192,6 +216,9 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		status = http.StatusAccepted
 	}
 	writeWildFlowOperationHeaders(c, operation)
+	if operation.State == "succeeded" && writeWildFlowPersistedResult(c, operation, status, false) {
+		return
+	}
 	c.JSON(status, operation)
 }
 
@@ -225,9 +252,47 @@ func writeWildFlowOperationHeaders(c *gin.Context, operation *model.WildFlowOper
 	}
 }
 
+func writeWildFlowExistingOperationReplay(c *gin.Context, operation *model.WildFlowOperation) bool {
+	if operation.State == "succeeded" && operation.ResultJSON != "" {
+		return writeWildFlowPersistedResult(c, operation, http.StatusOK, true)
+	}
+	switch operation.State {
+	case "submitting", "queued", "running", "cancelling":
+		writeWildFlowOperationHeaders(c, operation)
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusAccepted, wildFlowOperationResponse(operation, nil))
+		return true
+	default:
+		return false
+	}
+}
+
+func writeWildFlowPersistedResult(c *gin.Context, operation *model.WildFlowOperation, status int, replay bool) bool {
+	if operation == nil || operation.ResultJSON == "" {
+		return false
+	}
+	if err := service.EnsureWildFlowOperationResultRetention(operation); err != nil {
+		wildFlowInternalError(c, err)
+		return true
+	}
+	writeWildFlowOperationHeaders(c, operation)
+	if operation.ResultExpiresAt > 0 && time.Now().Unix() >= operation.ResultExpiresAt {
+		wildFlowJobError(c, http.StatusGone, "result_expired", "idempotent result expired; use a new Idempotency-Key")
+		return true
+	}
+	if replay {
+		c.Header("X-Idempotent-Replay", "true")
+	}
+	c.Data(status, "application/json; charset=utf-8", []byte(operation.ResultJSON))
+	return true
+}
+
 func GetWildFlowJob(c *gin.Context) {
 	operation, ok := loadWildFlowOperation(c)
 	if !ok {
+		return
+	}
+	if operation.State == "succeeded" && writeWildFlowPersistedResult(c, operation, http.StatusOK, false) {
 		return
 	}
 	if operation.State == "recovery_required" {
@@ -256,6 +321,9 @@ func GetWildFlowJob(c *gin.Context) {
 	operation.State = job.State
 	operation.LastErrorCode = errorCode
 	if !finalizeWildFlowOperationBilling(c, operation, job.Artifacts) {
+		return
+	}
+	if operation.State == "succeeded" && writeWildFlowPersistedResult(c, operation, http.StatusOK, false) {
 		return
 	}
 	c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
@@ -402,8 +470,14 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model
 	}
 	internalTrialReady := operation.ProductModelRef == service.WildFlowModelExamDualASR &&
 		operation.BillingState == model.WildFlowBillingStatePending
-	if operation.State != "succeeded" || (operation.BillingState != model.WildFlowBillingStateSettled && !internalTrialReady) {
+	retailResultReady := operation.ResultJSON != "" &&
+		(operation.BillingState == model.WildFlowBillingStateReserved || operation.BillingState == model.WildFlowBillingStateSettled)
+	if operation.State != "succeeded" || (!retailResultReady && !internalTrialReady) {
 		wildFlowJobError(c, http.StatusConflict, "artifact_not_ready", "artifact is not ready")
+		return inferenceclient.Artifact{}, nil, false
+	}
+	if operation.ResultExpiresAt > 0 && time.Now().Unix() >= operation.ResultExpiresAt {
+		wildFlowJobError(c, http.StatusGone, "result_expired", "operation result expired")
 		return inferenceclient.Artifact{}, nil, false
 	}
 	if err := service.ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}); err != nil {
@@ -479,55 +553,11 @@ func wildFlowTenantRef(userID int) string {
 }
 
 func publicWildFlowArtifact(artifact inferenceclient.Artifact) gin.H {
-	return gin.H{
-		"id":         artifact.ID,
-		"job_id":     artifact.JobID,
-		"media_type": artifact.MediaType,
-		"size_bytes": artifact.SizeBytes,
-		"sha256":     artifact.SHA256,
-		"metadata":   publicWildFlowArtifactMetadata(artifact.Metadata),
-		"download":   "/v1/artifacts/" + artifact.ID + "/content",
-	}
-}
-
-func publicWildFlowArtifactMetadata(metadata map[string]any) map[string]any {
-	public := make(map[string]any)
-	for _, key := range []string{
-		"codec", "bitrate", "sample_rate", "channels", "duration_ms",
-		"input_characters", "completed_characters", "segment_count", "completed_segment_count",
-		"size_bytes", "sha256", "voice", "width", "height", "prompt_length",
-		"schema_version", "model_version_ref", "model_revision", "vibevoice_model_revision",
-		"faster_whisper_model_revision", "runtime_version_ref", "duration_seconds", "source_artifact_id",
-	} {
-		if value, ok := metadata[key]; ok {
-			public[key] = value
-		}
-	}
-	return public
+	return gin.H(service.PublicWildFlowArtifact(artifact))
 }
 
 func wildFlowOperationResponse(operation *model.WildFlowOperation, artifacts []inferenceclient.Artifact) gin.H {
-	response := gin.H{
-		"id":                operation.OperationID,
-		"request_id":        operation.RequestID,
-		"model":             operation.ProductModelRef,
-		"model_version_ref": operation.ModelVersionRef,
-		"job_id":            operation.JobID,
-		"state":             operation.State,
-		"created_at":        operation.CreatedTime,
-		"updated_at":        operation.UpdatedTime,
-	}
-	if operation.LastErrorCode != "" {
-		response["error"] = operation.LastErrorCode
-	}
-	if len(artifacts) > 0 {
-		publicArtifacts := make([]gin.H, 0, len(artifacts))
-		for _, artifact := range artifacts {
-			publicArtifacts = append(publicArtifacts, publicWildFlowArtifact(artifact))
-		}
-		response["artifacts"] = publicArtifacts
-	}
-	return response
+	return gin.H(service.WildFlowOperationResult(operation, artifacts))
 }
 
 func safeWildFlowFilename(filename string) string {

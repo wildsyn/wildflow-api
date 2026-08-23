@@ -12,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -103,6 +104,14 @@ func ReceiveWildFlowUsageEvent(c *gin.Context) {
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "usage event persistence failed"})
+		return
+	}
+	if err := service.SettleWildFlowOperationBillingFromRecordedUsage(c.Request.Context(), event.Payload.OperationID); err != nil {
+		if errors.Is(err, model.ErrWildFlowBillingStateConflict) {
+			c.JSON(http.StatusConflict, gin.H{"error": "usage event billing conflict"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "usage event settlement failed"})
 		return
 	}
 	if replayed {
