@@ -64,15 +64,24 @@ func runWildFlowBillingReconciler(client *inferenceclient.Client) {
 }
 
 func ReconcileWildFlowBillingOnce(ctx context.Context, client *inferenceclient.Client, limit int) (int, error) {
+	var reconciliationErrors []error
+	if _, err := ReconcileWildFlowSubmissionLeasesOnce(time.Now().Unix(), limit); err != nil {
+		reconciliationErrors = append(reconciliationErrors, fmt.Errorf("submission leases: %w", err))
+	}
+	if _, err := model.ReconcileWildFlowCanonicalBillingAudits(limit); err != nil {
+		reconciliationErrors = append(reconciliationErrors, fmt.Errorf("canonical billing audits: %w", err))
+	}
+	if _, err := model.ReconcileWildFlowBillingLogProjections(limit); err != nil {
+		reconciliationErrors = append(reconciliationErrors, fmt.Errorf("billing log projections: %w", err))
+	}
 	if client == nil {
-		return 0, fmt.Errorf("nil WildFlow inference client")
+		return 0, errors.Join(append(reconciliationErrors, fmt.Errorf("nil WildFlow inference client"))...)
 	}
 	operations, err := model.ListWildFlowOperationsForBillingReconciliation(limit)
 	if err != nil {
 		return 0, err
 	}
 	processed := 0
-	var reconciliationErrors []error
 	for _, operation := range operations {
 		job, getErr := client.GetJob(ctx, operation.JobID, "user:"+strconv.Itoa(operation.UserID))
 		if getErr != nil {

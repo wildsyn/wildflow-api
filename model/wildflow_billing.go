@@ -3,9 +3,11 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -254,6 +256,9 @@ func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 			return err
 		}
 		if operation.BillingState == WildFlowBillingStateSettled {
+			if _, err := ensureWildFlowCanonicalBillingLogTx(tx, operation, LogTypeConsume, "WildFlow job settled"); err != nil {
+				return err
+			}
 			result = operation
 			return nil
 		}
@@ -309,6 +314,9 @@ func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 		operation.BillingUsageEventID = usageEvent.EventID
 		operation.BillingSettledTime = now
 		operation.UpdatedTime = now
+		if _, err := ensureWildFlowCanonicalBillingLogTx(tx, operation, LogTypeConsume, "WildFlow job settled"); err != nil {
+			return err
+		}
 		result = operation
 		changed = true
 		return nil
@@ -317,49 +325,30 @@ func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 }
 
 func RefundWildFlowOperationBilling(operationID string) (*WildFlowOperation, bool, error) {
-	operation, err := GetWildFlowOperationByID(operationID)
-	if err != nil {
-		return nil, false, err
-	}
-	if operation == nil || operation.BillingState == WildFlowBillingStateRefunded {
-		return operation, false, nil
-	}
-	if (operation.BillingState != WildFlowBillingStateReserved && operation.BillingState != WildFlowBillingStateRefunding) ||
-		(operation.State != "failed" && operation.State != "cancelled") {
-		return operation, false, nil
-	}
-	if operation.BillingSource == WildFlowBillingSourceSubscription {
-		operation, err = claimWildFlowSubscriptionRefund(operationID)
-		if err != nil {
-			return nil, false, err
-		}
-		if operation == nil || operation.BillingState == WildFlowBillingStateRefunded {
-			return operation, false, nil
-		}
-		if err := RefundSubscriptionPreConsume(operation.OperationID); err != nil {
-			return operation, false, err
-		}
-	}
-
 	var result *WildFlowOperation
 	var tokenKey string
 	changed := false
-	err = DB.Transaction(func(tx *gorm.DB) error {
+	err := DB.Transaction(func(tx *gorm.DB) error {
 		locked, err := loadWildFlowOperationForBilling(tx, operationID)
 		if err != nil {
 			return err
 		}
 		if locked.BillingState == WildFlowBillingStateRefunded {
+			if _, err := ensureWildFlowCanonicalBillingLogTx(tx, locked, LogTypeRefund, "WildFlow job refunded"); err != nil {
+				return err
+			}
 			result = locked
 			return nil
 		}
-		expectedBillingState := WildFlowBillingStateReserved
+		if (locked.BillingState != WildFlowBillingStateReserved && locked.BillingState != WildFlowBillingStateRefunding) ||
+			(locked.State != "failed" && locked.State != "cancelled") {
+			result = locked
+			return nil
+		}
 		if locked.BillingSource == WildFlowBillingSourceSubscription {
-			expectedBillingState = WildFlowBillingStateRefunding
-		}
-		if locked.BillingState != expectedBillingState || (locked.State != "failed" && locked.State != "cancelled") {
-			result = locked
-			return nil
+			if err := refundSubscriptionPreConsumeTx(tx, locked.OperationID); err != nil {
+				return err
+			}
 		}
 		if locked.BillingSource == WildFlowBillingSourceWallet {
 			if err := tx.Model(&User{}).Where("id = ?", locked.UserID).
@@ -397,6 +386,9 @@ func RefundWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 		locked.BillingState = WildFlowBillingStateRefunded
 		locked.BillingSettledTime = now
 		locked.UpdatedTime = now
+		if _, err := ensureWildFlowCanonicalBillingLogTx(tx, locked, LogTypeRefund, "WildFlow job refunded"); err != nil {
+			return err
+		}
 		result = locked
 		changed = true
 		return nil
@@ -412,46 +404,6 @@ func RefundWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 		syncWildFlowBillingQuotaCache(result.UserID, tokenKey, userDelta, result.BillingTokenQuota)
 	}
 	return result, changed, nil
-}
-
-func claimWildFlowSubscriptionRefund(operationID string) (*WildFlowOperation, error) {
-	var result *WildFlowOperation
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		operation, err := loadWildFlowOperationForBilling(tx, operationID)
-		if err != nil {
-			return err
-		}
-		if operation.BillingState == WildFlowBillingStateRefunded {
-			result = operation
-			return nil
-		}
-		if operation.BillingSource != WildFlowBillingSourceSubscription ||
-			(operation.State != "failed" && operation.State != "cancelled") {
-			result = operation
-			return nil
-		}
-		switch operation.BillingState {
-		case WildFlowBillingStateRefunding:
-			result = operation
-			return nil
-		case WildFlowBillingStateReserved:
-			now := time.Now().Unix()
-			if err := tx.Model(&WildFlowOperation{}).Where("id = ?", operation.ID).Updates(map[string]any{
-				"billing_state": WildFlowBillingStateRefunding,
-				"updated_time":  now,
-			}).Error; err != nil {
-				return err
-			}
-			operation.BillingState = WildFlowBillingStateRefunding
-			operation.UpdatedTime = now
-			result = operation
-			return nil
-		default:
-			result = operation
-			return nil
-		}
-	})
-	return result, err
 }
 
 func GetWildFlowOperationByID(operationID string) (*WildFlowOperation, error) {
@@ -483,9 +435,91 @@ func RecordWildFlowBillingLog(operation *WildFlowOperation, logType int, content
 	if DB == nil {
 		return fmt.Errorf("database is not initialized")
 	}
-	projectToGenericLog := logType != LogTypeConsume || common.LogConsumeEnabled
-	if projectToGenericLog && LOG_DB == nil {
-		return fmt.Errorf("log database is not initialized")
+	var entry *WildFlowBillingLogEntry
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		entry, err = ensureWildFlowCanonicalBillingLogTx(tx, operation, logType, content)
+		return err
+	}); err != nil {
+		return err
+	}
+	if entry.ProjectionState == WildFlowBillingProjectionNotRequired || entry.ProjectionState == WildFlowBillingProjectionProjected {
+		return nil
+	}
+	return projectWildFlowBillingLog(operation.OperationID, logType)
+}
+
+func ReconcileWildFlowCanonicalBillingAudits(limit int) (int, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var candidates []*WildFlowOperation
+	if err := DB.Table("wild_flow_operations AS operations").
+		Select("operations.*").
+		Joins(
+			"LEFT JOIN wild_flow_billing_log_entries AS audits ON audits.operation_id = operations.operation_id "+
+				"AND ((operations.billing_state = ? AND audits.log_type = ?) OR "+
+				"(operations.billing_state = ? AND audits.log_type = ?))",
+			WildFlowBillingStateSettled,
+			LogTypeConsume,
+			WildFlowBillingStateRefunded,
+			LogTypeRefund,
+		).
+		Where("operations.billing_state IN ? AND audits.operation_id IS NULL", []string{
+			WildFlowBillingStateSettled,
+			WildFlowBillingStateRefunded,
+		}).
+		Order("operations.updated_time asc, operations.id asc").
+		Limit(limit).
+		Find(&candidates).Error; err != nil {
+		return 0, err
+	}
+
+	processed := 0
+	var reconcileErrors []error
+	for _, candidate := range candidates {
+		err := DB.Transaction(func(tx *gorm.DB) error {
+			operation, err := loadWildFlowOperationForBilling(tx, candidate.OperationID)
+			if err != nil {
+				return err
+			}
+			logType := 0
+			content := ""
+			switch operation.BillingState {
+			case WildFlowBillingStateSettled:
+				logType = LogTypeConsume
+				content = "WildFlow job settled"
+			case WildFlowBillingStateRefunded:
+				logType = LogTypeRefund
+				content = "WildFlow job refunded"
+			default:
+				return nil
+			}
+			_, err = ensureWildFlowCanonicalBillingLogTx(tx, operation, logType, content)
+			return err
+		})
+		if err != nil {
+			reconcileErrors = append(reconcileErrors, fmt.Errorf("operation %s canonical billing audit: %w", candidate.OperationID, err))
+			continue
+		}
+		processed++
+	}
+	return processed, errors.Join(reconcileErrors...)
+}
+
+func ensureWildFlowCanonicalBillingLogTx(
+	tx *gorm.DB,
+	operation *WildFlowOperation,
+	logType int,
+	content string,
+) (*WildFlowBillingLogEntry, error) {
+	if tx == nil || operation == nil || strings.TrimSpace(operation.OperationID) == "" ||
+		(logType != LogTypeConsume && logType != LogTypeRefund) {
+		return nil, errors.New("invalid WildFlow canonical billing audit")
+	}
+	projectionState := WildFlowBillingProjectionPending
+	if logType == LogTypeConsume && !common.LogConsumeEnabled {
+		projectionState = WildFlowBillingProjectionNotRequired
 	}
 	entry := &WildFlowBillingLogEntry{
 		OperationID:         operation.OperationID,
@@ -496,28 +530,166 @@ func RecordWildFlowBillingLog(operation *WildFlowOperation, logType int, content
 		BillingCurrency:     operation.BillingCurrency,
 		BillingAmountMicros: operation.BillingAmountMicros,
 		Content:             content,
+		ProjectionState:     projectionState,
 	}
-	claim := DB.Clauses(clause.OnConflict{DoNothing: true}).Create(entry)
+	claim := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(entry)
 	if claim.Error != nil {
-		return claim.Error
+		return nil, claim.Error
 	}
-	if claim.RowsAffected == 0 {
-		return nil
+	if claim.RowsAffected > 0 {
+		return entry, nil
 	}
-	if !projectToGenericLog {
-		return nil
+	if err := lockForUpdate(tx).
+		Where("operation_id = ? AND log_type = ?", operation.OperationID, logType).
+		First(entry).Error; err != nil {
+		return nil, err
 	}
-	// The marker is the concurrency primitive. This read only preserves legacy
-	// projections created before the marker table existed.
-	var legacyProjectionCount int64
-	if err := LOG_DB.Model(&Log{}).
-		Where("request_id = ? AND type = ?", operation.OperationID, logType).
-		Count(&legacyProjectionCount).Error; err != nil {
+	if entry.UsageEventID != operation.BillingUsageEventID || entry.BillingSource != operation.BillingSource ||
+		entry.BillingQuota != operation.BillingQuota || entry.BillingCurrency != operation.BillingCurrency ||
+		entry.BillingAmountMicros != operation.BillingAmountMicros {
+		return nil, ErrWildFlowBillingStateConflict
+	}
+	if entry.ProjectionState == "" {
+		if err := tx.Model(&WildFlowBillingLogEntry{}).
+			Where("operation_id = ? AND log_type = ? AND projection_state = ?", operation.OperationID, logType, "").
+			Update("projection_state", projectionState).Error; err != nil {
+			return nil, err
+		}
+		entry.ProjectionState = projectionState
+	}
+	return entry, nil
+}
+
+func projectWildFlowBillingLog(operationID string, logType int) error {
+	entry, claimToken, acquired, err := claimWildFlowBillingProjection(operationID, logType)
+	if err != nil || !acquired {
 		return err
 	}
-	if legacyProjectionCount > 0 {
-		return nil
+	if LOG_DB == nil {
+		projectionErr := errors.New("log database is not initialized")
+		return errors.Join(projectionErr, markWildFlowBillingProjectionFailed(entry, claimToken))
 	}
+	operation, err := GetWildFlowOperationByID(operationID)
+	if err != nil || operation == nil {
+		if err == nil {
+			err = errors.New("WildFlow billing operation not found")
+		}
+		return errors.Join(err, markWildFlowBillingProjectionFailed(entry, claimToken))
+	}
+	var legacyProjectionCount int64
+	if err := LOG_DB.Model(&Log{}).
+		Where("request_id = ? AND type = ?", operationID, logType).
+		Count(&legacyProjectionCount).Error; err != nil {
+		return errors.Join(err, markWildFlowBillingProjectionFailed(entry, claimToken))
+	}
+	if legacyProjectionCount == 0 {
+		if err := createWildFlowGenericBillingLog(operation, entry); err != nil {
+			return errors.Join(err, markWildFlowBillingProjectionFailed(entry, claimToken))
+		}
+	}
+	return markWildFlowBillingProjectionProjected(entry, claimToken)
+}
+
+func claimWildFlowBillingProjection(operationID string, logType int) (*WildFlowBillingLogEntry, string, bool, error) {
+	claimToken := uuid.NewString()
+	now := time.Now().Unix()
+	leaseExpiresAt := time.Now().Add(time.Minute).Unix()
+	var result *WildFlowBillingLogEntry
+	acquired := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var entry WildFlowBillingLogEntry
+		if err := lockForUpdate(tx).
+			Where("operation_id = ? AND log_type = ?", operationID, logType).
+			First(&entry).Error; err != nil {
+			return err
+		}
+		if entry.ProjectionState == WildFlowBillingProjectionProjected || entry.ProjectionState == WildFlowBillingProjectionNotRequired {
+			result = &entry
+			return nil
+		}
+		if entry.ProjectionState == WildFlowBillingProjectionProjecting && entry.ProjectionLeaseExpiresAt > now {
+			result = &entry
+			return nil
+		}
+		update := tx.Model(&WildFlowBillingLogEntry{}).
+			Where(
+				"operation_id = ? AND log_type = ? AND (projection_state IN ? OR (projection_state = ? AND projection_lease_expires_at <= ?))",
+				operationID,
+				logType,
+				[]string{"", WildFlowBillingProjectionPending, WildFlowBillingProjectionFailed},
+				WildFlowBillingProjectionProjecting,
+				now,
+			).
+			Updates(map[string]any{
+				"projection_state":            WildFlowBillingProjectionProjecting,
+				"projection_attempts":         gorm.Expr("projection_attempts + 1"),
+				"projection_last_error":       "",
+				"projection_claim_token":      claimToken,
+				"projection_lease_expires_at": leaseExpiresAt,
+			})
+		if update.Error != nil {
+			return update.Error
+		}
+		if err := tx.Where("operation_id = ? AND log_type = ?", operationID, logType).First(&entry).Error; err != nil {
+			return err
+		}
+		result = &entry
+		acquired = update.RowsAffected == 1 && entry.ProjectionClaimToken == claimToken
+		return nil
+	})
+	return result, claimToken, acquired, err
+}
+
+func markWildFlowBillingProjectionFailed(entry *WildFlowBillingLogEntry, claimToken string) error {
+	if entry == nil {
+		return errors.New("nil WildFlow billing projection")
+	}
+	update := DB.Model(&WildFlowBillingLogEntry{}).
+		Where(
+			"operation_id = ? AND log_type = ? AND projection_state = ? AND projection_claim_token = ?",
+			entry.OperationID,
+			entry.LogType,
+			WildFlowBillingProjectionProjecting,
+			claimToken,
+		).
+		Updates(map[string]any{
+			"projection_state":            WildFlowBillingProjectionFailed,
+			"projection_last_error":       "log_projection_failed",
+			"projection_claim_token":      "",
+			"projection_lease_expires_at": int64(0),
+		})
+	return update.Error
+}
+
+func markWildFlowBillingProjectionProjected(entry *WildFlowBillingLogEntry, claimToken string) error {
+	if entry == nil {
+		return errors.New("nil WildFlow billing projection")
+	}
+	update := DB.Model(&WildFlowBillingLogEntry{}).
+		Where(
+			"operation_id = ? AND log_type = ? AND projection_state = ? AND projection_claim_token = ?",
+			entry.OperationID,
+			entry.LogType,
+			WildFlowBillingProjectionProjecting,
+			claimToken,
+		).
+		Updates(map[string]any{
+			"projection_state":            WildFlowBillingProjectionProjected,
+			"projection_last_error":       "",
+			"projection_claim_token":      "",
+			"projection_lease_expires_at": int64(0),
+			"projected_time":              time.Now().Unix(),
+		})
+	if update.Error != nil {
+		return update.Error
+	}
+	if update.RowsAffected != 1 {
+		return errors.New("WildFlow billing projection claim lost")
+	}
+	return nil
+}
+
+func createWildFlowGenericBillingLog(operation *WildFlowOperation, entry *WildFlowBillingLogEntry) error {
 	username := ""
 	group := ""
 	var user User
@@ -535,7 +707,7 @@ func RecordWildFlowBillingLog(operation *WildFlowOperation, logType int, content
 	other := map[string]any{
 		"operation_id":      operation.OperationID,
 		"job_id":            operation.JobID,
-		"usage_event_id":    operation.BillingUsageEventID,
+		"usage_event_id":    entry.UsageEventID,
 		"billing_source":    operation.BillingSource,
 		"currency":          operation.BillingCurrency,
 		"amount_micros":     operation.BillingAmountMicros,
@@ -549,8 +721,8 @@ func RecordWildFlowBillingLog(operation *WildFlowOperation, logType int, content
 		UserId:    operation.UserID,
 		Username:  username,
 		CreatedAt: common.GetTimestamp(),
-		Type:      logType,
-		Content:   content,
+		Type:      entry.LogType,
+		Content:   entry.Content,
 		TokenName: tokenName,
 		ModelName: operation.ProductModelRef,
 		Quota:     operation.BillingQuota,
@@ -559,4 +731,33 @@ func RecordWildFlowBillingLog(operation *WildFlowOperation, logType int, content
 		RequestId: operation.OperationID,
 		Other:     common.MapToJsonStr(other),
 	})
+}
+
+func ReconcileWildFlowBillingLogProjections(limit int) (int, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	now := time.Now().Unix()
+	var entries []*WildFlowBillingLogEntry
+	if err := DB.Where(
+		"projection_state IN ? OR (projection_state = ? AND projection_lease_expires_at <= ?)",
+		[]string{"", WildFlowBillingProjectionPending, WildFlowBillingProjectionFailed},
+		WildFlowBillingProjectionProjecting,
+		now,
+	).
+		Order("created_time asc, operation_id asc, log_type asc").
+		Limit(limit).
+		Find(&entries).Error; err != nil {
+		return 0, err
+	}
+	processed := 0
+	var projectionErrors []error
+	for _, entry := range entries {
+		if err := projectWildFlowBillingLog(entry.OperationID, entry.LogType); err != nil {
+			projectionErrors = append(projectionErrors, fmt.Errorf("operation %s log %d: %w", entry.OperationID, entry.LogType, err))
+			continue
+		}
+		processed++
+	}
+	return processed, errors.Join(projectionErrors...)
 }

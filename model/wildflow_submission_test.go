@@ -73,3 +73,23 @@ func TestWildFlowSubmissionLeaseHasOneOwnerAndRecoversExpiredPreparedWork(t *tes
 	assert.Equal(t, WildFlowSubmissionPhaseRecoveryRequired, persisted.SubmissionPhase)
 	assert.Equal(t, WildFlowBillingStateReserved, persisted.BillingState, "unknown side effects keep the reservation")
 }
+
+func TestLegacySubmittingOperationWithoutLeaseBecomesStickyRecovery(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	_, _, operation := createWildFlowBillingFixture(t, db, "legacy-submission")
+	require.NoError(t, db.Model(&WildFlowOperation{}).
+		Where("operation_id = ?", operation.OperationID).
+		Updates(map[string]any{
+			"billing_state":    WildFlowBillingStateReserved,
+			"submission_phase": "",
+		}).Error)
+
+	processed, err := ReconcileWildFlowSubmissionLease(operation.OperationID, time.Now().Unix())
+	require.NoError(t, err)
+	assert.True(t, processed)
+	require.NoError(t, db.Where("operation_id = ?", operation.OperationID).First(operation).Error)
+	assert.Equal(t, "recovery_required", operation.State)
+	assert.Equal(t, "legacy_submission_state_unknown", operation.LastErrorCode)
+	assert.Equal(t, WildFlowSubmissionPhaseRecoveryRequired, operation.SubmissionPhase)
+	assert.Equal(t, WildFlowBillingStateReserved, operation.BillingState, "legacy provider side effects are unknown")
+}

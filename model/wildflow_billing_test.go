@@ -95,7 +95,7 @@ func TestReserveWildFlowSubscriptionBillingRollsBackPreConsumeWhenTokenReserveFa
 
 func createWildFlowBillingFixture(t *testing.T, db *gorm.DB, suffix string) (*User, *Token, *WildFlowOperation) {
 	t.Helper()
-	user := &User{Username: "billing-" + suffix, Quota: 100_000, Group: "default"}
+	user := &User{Username: "billing-" + suffix, Quota: 100_000, Group: "default", AffCode: "aff-" + suffix}
 	require.NoError(t, db.Create(user).Error)
 	token := &Token{
 		UserId:      user.Id,
@@ -216,6 +216,48 @@ func TestRefundWildFlowBillingRestoresWalletAndTokenExactlyOnce(t *testing.T) {
 	assert.Zero(t, token.UsedQuota)
 	assert.Equal(t, WildFlowBillingStateRefunded, first.BillingState)
 	assert.Equal(t, WildFlowBillingStateRefunded, second.BillingState)
+}
+
+func TestReconcileWildFlowCanonicalBillingAuditsBackfillsLegacyTerminalRows(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	_, _, settled := createWildFlowBillingFixture(t, db, "legacy-settled-audit")
+	_, _, refunded := createWildFlowBillingFixture(t, db, "legacy-refunded-audit")
+	require.NoError(t, db.Model(&WildFlowOperation{}).
+		Where("operation_id = ?", settled.OperationID).
+		Updates(map[string]any{
+			"billing_state":          WildFlowBillingStateSettled,
+			"billing_source":         WildFlowBillingSourceWallet,
+			"billing_usage_event_id": "usage-legacy-settled-audit",
+			"billing_quota":          testWildFlowBillingQuote().Quota,
+			"billing_currency":       testWildFlowBillingQuote().Currency,
+			"billing_amount_micros":  testWildFlowBillingQuote().AmountMicros,
+		}).Error)
+	require.NoError(t, db.Model(&WildFlowOperation{}).
+		Where("operation_id = ?", refunded.OperationID).
+		Updates(map[string]any{
+			"billing_state":         WildFlowBillingStateRefunded,
+			"billing_source":        WildFlowBillingSourceWallet,
+			"billing_quota":         testWildFlowBillingQuote().Quota,
+			"billing_currency":      testWildFlowBillingQuote().Currency,
+			"billing_amount_micros": testWildFlowBillingQuote().AmountMicros,
+		}).Error)
+
+	processed, err := ReconcileWildFlowCanonicalBillingAudits(100)
+	require.NoError(t, err)
+	assert.Equal(t, 2, processed)
+	processed, err = ReconcileWildFlowCanonicalBillingAudits(100)
+	require.NoError(t, err)
+	assert.Zero(t, processed)
+	var consumeCount int64
+	var refundCount int64
+	require.NoError(t, db.Model(&WildFlowBillingLogEntry{}).
+		Where("operation_id = ? AND log_type = ?", settled.OperationID, LogTypeConsume).
+		Count(&consumeCount).Error)
+	require.NoError(t, db.Model(&WildFlowBillingLogEntry{}).
+		Where("operation_id = ? AND log_type = ?", refunded.OperationID, LogTypeRefund).
+		Count(&refundCount).Error)
+	assert.Equal(t, int64(1), consumeCount)
+	assert.Equal(t, int64(1), refundCount)
 }
 
 func TestSettleWildFlowBillingIsIdempotentAndDoesNotMoveReservedQuota(t *testing.T) {

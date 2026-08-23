@@ -121,6 +121,8 @@ func PrepareWildFlowOperation(
 		ProductModelRef:        offering.ID,
 		ModelVersionRef:        offering.ModelVersionRef,
 		State:                  "submitting",
+		SubmissionPhase:        model.WildFlowSubmissionPhasePrepared,
+		SubmissionRetryUntil:   WildFlowSubmissionRetryDeadline(),
 		ResultRetentionSeconds: int64(wildFlowOperationResultRetention() / time.Second),
 	}
 	if err := model.CreateWildFlowOperation(operation); err != nil {
