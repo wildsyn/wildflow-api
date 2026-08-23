@@ -1177,6 +1177,7 @@ func TestLegacySubmittingGETReconcilesUnknownSubmissionBeforeResponse(t *testing
 		BillingQuota:         3_425,
 	}
 	require.NoError(t, model.DB.Create(operation).Error)
+	require.NoError(t, model.DB.Model(operation).Update("submission_phase", "").Error)
 	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", 42).Update("quota", 1_000_000-3_425).Error)
 	require.NoError(t, model.DB.Model(&model.Token{}).Where("id = ?", 7).Update("remain_quota", 1_000_000-3_425).Error)
 
