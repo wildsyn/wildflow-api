@@ -20,7 +20,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestStartWildFlowBillingReconcilerFailsClosedWithoutAuthorityOrConfiguration(t *testing.T) {
+func TestStartWildFlowBillingReconcilerRunsLocalRecoveryWithoutInferenceConfiguration(t *testing.T) {
 	previousMasterNode := common.IsMasterNode
 	t.Cleanup(func() {
 		common.IsMasterNode = previousMasterNode
@@ -31,12 +31,25 @@ func TestStartWildFlowBillingReconcilerFailsClosedWithoutAuthorityOrConfiguratio
 	StartWildFlowBillingReconciler()
 	assert.False(t, wildFlowBillingReconcilerRunning.Load())
 
+	db := setupWildFlowBillingReconcilerTest(t)
+	operation := createReconcilerOperation(t, db, "local-only-startup", 112, 212, "")
+	require.NoError(t, db.Model(operation).Updates(map[string]any{
+		"state":            "submitting",
+		"submission_phase": "",
+	}).Error)
 	wildFlowBillingReconcilerOnce = sync.Once{}
 	common.IsMasterNode = true
 	t.Setenv("WILDFLOW_INFERENCE_URL", "")
 	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "")
+	t.Setenv("WILDFLOW_BILLING_RECONCILE_SECONDS", "300")
 	StartWildFlowBillingReconciler()
-	assert.False(t, wildFlowBillingReconcilerRunning.Load())
+	require.Eventually(t, func() bool {
+		if err := db.Where("operation_id = ?", operation.OperationID).First(operation).Error; err != nil {
+			return false
+		}
+		return operation.State == "recovery_required"
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, "legacy_submission_state_unknown", operation.LastErrorCode)
 }
 
 func TestStartWildFlowBillingReconcilerProcessesReservedJobsWhenConfigured(t *testing.T) {
@@ -370,8 +383,17 @@ func TestReconcileWildFlowBillingRevisitsReservedRecoveryOperations(t *testing.T
 	assert.Equal(t, 100_000, failedUser.Quota)
 }
 
-func TestReconcileWildFlowBillingRejectsNilClient(t *testing.T) {
+func TestReconcileWildFlowBillingRunsLocalRecoveryWithNilClient(t *testing.T) {
+	db := setupWildFlowBillingReconcilerTest(t)
+	operation := createReconcilerOperation(t, db, "local-only-once", 113, 213, "")
+	require.NoError(t, db.Model(operation).Updates(map[string]any{
+		"state":            "submitting",
+		"submission_phase": "",
+	}).Error)
+
 	processed, err := ReconcileWildFlowBillingOnce(context.Background(), nil, 100)
-	require.Error(t, err)
+	require.NoError(t, err)
 	assert.Zero(t, processed)
+	require.NoError(t, db.Where("operation_id = ?", operation.OperationID).First(operation).Error)
+	assert.Equal(t, "recovery_required", operation.State)
 }

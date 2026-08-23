@@ -1157,6 +1157,48 @@ func TestLegacySucceededGETUsesStickyResultUnavailableRecovery(t *testing.T) {
 	assert.Equal(t, int32(1), jobReads.Load(), "sticky recovery must not read inference twice")
 }
 
+func TestLegacySubmittingGETReconcilesUnknownSubmissionBeforeResponse(t *testing.T) {
+	var inferenceRequests atomic.Int32
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		inferenceRequests.Add(1)
+	}))
+	operation := &model.WildFlowOperation{
+		OperationID:          "op-legacy-submitting-get",
+		UserID:               42,
+		TokenID:              7,
+		IdempotencyKeyDigest: "legacy-submitting-key",
+		RequestDigest:        "legacy-submitting-request",
+		RequestID:            "legacy-submitting-request-id",
+		ProductModelRef:      service.WildFlowModelFlux2,
+		ModelVersionRef:      "black-forest-labs/FLUX.2-klein-4B",
+		State:                "submitting",
+		BillingState:         model.WildFlowBillingStateReserved,
+		BillingSource:        model.WildFlowBillingSourceWallet,
+		BillingQuota:         3_425,
+	}
+	require.NoError(t, model.DB.Create(operation).Error)
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", 42).Update("quota", 1_000_000-3_425).Error)
+	require.NoError(t, model.DB.Model(&model.Token{}).Where("id = ?", 7).Update("remain_quota", 1_000_000-3_425).Error)
+
+	hidden := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operation.OperationID, "", map[string]string{"X-Test-User": "43"})
+	require.Equal(t, http.StatusNotFound, hidden.Code, hidden.Body.String())
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operation.OperationID, "", nil)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"state":"recovery_required"`)
+	assert.Contains(t, response.Body.String(), `"error":"legacy_submission_state_unknown"`)
+	assert.Zero(t, inferenceRequests.Load(), "blank-job local recovery must not contact inference")
+	require.NoError(t, model.DB.Where("operation_id = ?", operation.OperationID).First(operation).Error)
+	assert.Equal(t, "recovery_required", operation.State)
+	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+	var user model.User
+	var token model.Token
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	require.NoError(t, model.DB.First(&token, 7).Error)
+	assert.Equal(t, 1_000_000-3_425, user.Quota, "unknown provider side effects must keep the reservation")
+	assert.Equal(t, 1_000_000-3_425, token.RemainQuota)
+}
+
 func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	jobReads := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

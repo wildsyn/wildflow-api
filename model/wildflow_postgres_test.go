@@ -160,6 +160,63 @@ func TestWildFlowPostgresMigrationConcurrencyAndFaultRecovery(t *testing.T) {
 		"operation_id = ? AND log_type = ?", operation.OperationID, LogTypeConsume,
 	).First(&canonical).Error)
 	assert.Equal(t, WildFlowBillingProjectionProjected, canonical.ProjectionState)
+
+	_, _, takeoverOperation := createWildFlowBillingFixture(t, mainDB, "pg-takeover-"+suffix)
+	takeoverOperation.BillingState = WildFlowBillingStateSettled
+	takeoverOperation.BillingSource = WildFlowBillingSourceWallet
+	takeoverOperation.BillingUsageEventID = "usage-pg-takeover-" + suffix
+	require.NoError(t, mainDB.Transaction(func(tx *gorm.DB) error {
+		_, ensureErr := ensureWildFlowCanonicalBillingLogTx(tx, takeoverOperation, LogTypeConsume, "WildFlow takeover projection")
+		return ensureErr
+	}))
+	firstPaused := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	pauseCallback := "test:wildflow-postgres-log-pause:" + uuid.NewString()
+	var paused atomic.Bool
+	require.NoError(t, logDB.Callback().Create().Before("gorm:create").Register(pauseCallback, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "logs" && paused.CompareAndSwap(false, true) {
+			close(firstPaused)
+			<-releaseFirst
+		}
+	}))
+	t.Cleanup(func() { _ = logDB.Callback().Create().Remove(pauseCallback) })
+	projectionResults := make(chan error, 2)
+	go func() {
+		projectionResults <- RecordWildFlowBillingLog(takeoverOperation, LogTypeConsume, "WildFlow takeover projection")
+	}()
+	select {
+	case <-firstPaused:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "first PostgreSQL projection did not pause before external insert")
+	}
+	require.NoError(t, mainDB.Model(&WildFlowBillingLogEntry{}).
+		Where("operation_id = ? AND log_type = ?", takeoverOperation.OperationID, LogTypeConsume).
+		Update("projection_lease_expires_at", time.Now().Add(-time.Minute).Unix()).Error)
+	go func() {
+		projectionResults <- RecordWildFlowBillingLog(takeoverOperation, LogTypeConsume, "WildFlow takeover projection")
+	}()
+	require.Eventually(t, func() bool {
+		var entry WildFlowBillingLogEntry
+		if err := mainDB.Where("operation_id = ? AND log_type = ?", takeoverOperation.OperationID, LogTypeConsume).First(&entry).Error; err != nil {
+			return false
+		}
+		return entry.ProjectionAttempts >= 2
+	}, 5*time.Second, 10*time.Millisecond, "expired lease must permit a takeover claim")
+	close(releaseFirst)
+	var projectionErrors []error
+	for index := 0; index < 2; index++ {
+		projectionErrors = append(projectionErrors, <-projectionResults)
+	}
+	assert.True(t, projectionErrors[0] == nil || projectionErrors[1] == nil, "takeover owner must complete projection")
+	var takeoverLogCount int64
+	require.NoError(t, logDB.Model(&Log{}).
+		Where("request_id = ? AND type = ?", takeoverOperation.OperationID, LogTypeConsume).
+		Count(&takeoverLogCount).Error)
+	assert.Equal(t, int64(1), takeoverLogCount, "lease takeover must not duplicate an already in-flight external insert")
+	require.NoError(t, mainDB.Where(
+		"operation_id = ? AND log_type = ?", takeoverOperation.OperationID, LogTypeConsume,
+	).First(&canonical).Error)
+	assert.Equal(t, WildFlowBillingProjectionProjected, canonical.ProjectionState)
 	reconciledAudits, err := ReconcileWildFlowCanonicalBillingAudits(100)
 	require.NoError(t, err)
 	assert.Zero(t, reconciledAudits)

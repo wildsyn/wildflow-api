@@ -318,6 +318,79 @@ func TestRecordWildFlowUsageEventRejectsBillingMismatchBeforePersistence(t *test
 	assert.Zero(t, count)
 }
 
+func TestRecordWildFlowUsageEventReloadsIdentityWhenInsertReportsAffected(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	_, _, operation := createWildFlowBillingFixture(t, db, "usage-found-rows")
+	require.NoError(t, UpdateWildFlowOperationExecution(operation.OperationID, "job-usage-found-rows", "succeeded", ""))
+
+	callbackName := "test:wildflow-usage-found-rows:" + uuid.NewString()
+	var injected atomic.Bool
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callbackName+":inject", func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.Table != "wild_flow_usage_events" || !injected.CompareAndSwap(false, true) {
+			return
+		}
+		tx.Session(&gorm.Session{NewDB: true}).Exec(
+			"INSERT INTO wild_flow_usage_events (event_id, payload_digest, operation_id, job_id, model_version_ref, kind, quantity, unit, created_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			"usage-found-rows", "different-persisted-digest", operation.OperationID, "job-usage-found-rows", operation.ModelVersionRef,
+			"images", 1, "image", time.Now().Unix(),
+		)
+	}))
+	require.NoError(t, db.Callback().Create().After("gorm:create").Register(callbackName+":affected", func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "wild_flow_usage_events" {
+			tx.RowsAffected = 1 // emulate MySQL clientFoundRows=true on duplicate upsert
+		}
+	}))
+	t.Cleanup(func() {
+		_ = db.Callback().Create().Remove(callbackName + ":inject")
+		_ = db.Callback().Create().Remove(callbackName + ":affected")
+	})
+
+	replayed, err := RecordWildFlowUsageEvent(&WildFlowUsageEvent{
+		EventID: "usage-found-rows", PayloadDigest: "incoming-digest",
+		OperationID: operation.OperationID, JobID: "job-usage-found-rows",
+		ModelVersionRef: operation.ModelVersionRef,
+		Kind:            "images", Quantity: 1, Unit: "image",
+	})
+	assert.False(t, replayed)
+	require.ErrorIs(t, err, ErrWildFlowUsageEventConflict)
+}
+
+func TestCanonicalBillingLogReloadsIdentityWhenInsertReportsAffected(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	_, _, operation := createWildFlowBillingFixture(t, db, "canonical-found-rows")
+	operation.BillingState = WildFlowBillingStateSettled
+	operation.BillingSource = WildFlowBillingSourceWallet
+	operation.BillingUsageEventID = "usage-canonical-found-rows"
+
+	callbackName := "test:wildflow-canonical-found-rows:" + uuid.NewString()
+	var injected atomic.Bool
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callbackName+":inject", func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.Table != "wild_flow_billing_log_entries" || !injected.CompareAndSwap(false, true) {
+			return
+		}
+		tx.Session(&gorm.Session{NewDB: true}).Exec(
+			"INSERT INTO wild_flow_billing_log_entries (operation_id, log_type, usage_event_id, billing_source, content, projection_state, created_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			operation.OperationID, LogTypeConsume, operation.BillingUsageEventID, operation.BillingSource,
+			"different persisted content", WildFlowBillingProjectionPending, time.Now().Unix(),
+		)
+	}))
+	require.NoError(t, db.Callback().Create().After("gorm:create").Register(callbackName+":affected", func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "wild_flow_billing_log_entries" {
+			tx.RowsAffected = 1
+		}
+	}))
+	t.Cleanup(func() {
+		_ = db.Callback().Create().Remove(callbackName + ":inject")
+		_ = db.Callback().Create().Remove(callbackName + ":affected")
+	})
+
+	err := db.Transaction(func(tx *gorm.DB) error {
+		_, ensureErr := ensureWildFlowCanonicalBillingLogTx(tx, operation, LogTypeConsume, "expected content")
+		return ensureErr
+	})
+	require.ErrorIs(t, err, ErrWildFlowBillingStateConflict)
+}
+
 func TestSettleWildFlowBillingIsConcurrentAndUsageEventDeduplicated(t *testing.T) {
 	db := setupWildFlowBillingModelTest(t)
 	sqlDB, err := db.DB()
@@ -693,6 +766,34 @@ func TestWildFlowGenericLogProjectionAdoptsWriteAfterStatusCrash(t *testing.T) {
 	var entry WildFlowBillingLogEntry
 	require.NoError(t, db.Where("operation_id = ? AND log_type = ?", operation.OperationID, LogTypeConsume).First(&entry).Error)
 	assert.Equal(t, WildFlowBillingProjectionProjected, entry.ProjectionState)
+}
+
+func TestWildFlowGenericLogProjectionFailsClosedForClickHouse(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	logDB := useSeparateWildFlowLogDB(t)
+	_, _, operation := createWildFlowBillingFixture(t, db, "projection-clickhouse")
+	operation.BillingState = WildFlowBillingStateSettled
+	previousLogConsumeEnabled := common.LogConsumeEnabled
+	previousLogDatabaseType := common.LogDatabaseType()
+	common.LogConsumeEnabled = true
+	common.SetLogDatabaseType(common.DatabaseTypeClickHouse)
+	t.Cleanup(func() {
+		common.LogConsumeEnabled = previousLogConsumeEnabled
+		common.SetLogDatabaseType(previousLogDatabaseType)
+	})
+
+	err := RecordWildFlowBillingLog(operation, LogTypeConsume, "WildFlow job settled")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ClickHouse")
+	var logCount int64
+	require.NoError(t, logDB.Model(&Log{}).
+		Where("request_id = ? AND type = ?", operation.OperationID, LogTypeConsume).
+		Count(&logCount).Error)
+	assert.Zero(t, logCount)
+	var entry WildFlowBillingLogEntry
+	require.NoError(t, db.Where("operation_id = ? AND log_type = ?", operation.OperationID, LogTypeConsume).First(&entry).Error)
+	assert.Equal(t, WildFlowBillingProjectionFailed, entry.ProjectionState)
+	assert.Equal(t, "log_projection_idempotency_unsupported", entry.ProjectionLastError)
 }
 
 func TestRefundWildFlowBillingDoesNotReleaseRecoveryHold(t *testing.T) {
