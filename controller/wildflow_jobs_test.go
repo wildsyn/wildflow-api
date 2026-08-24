@@ -46,6 +46,8 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 		&model.WildFlowUsageEvent{},
 		&model.WildFlowBillingLogEntry{},
 		&model.WildFlowBillingLogProjectionReceipt{},
+		&model.WildFlowArtifactDownloadReceipt{},
+		&model.WildFlowPublicJourneyReceiptRecord{},
 	))
 	model.DB = db
 	model.LOG_DB = db
@@ -161,7 +163,7 @@ func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemains
 		submissions++
 		var body map[string]any
 		require.NoError(t, common.DecodeJson(r.Body, &body))
-		assert.Equal(t, service.WildFlowModelExamDualASR, body["product_model_ref"])
+		assert.Equal(t, "exam-replay-dual-asr", body["product_model_ref"])
 		assert.Equal(t, service.WildFlowModelExamDualASR, body["model_version_ref"])
 		assert.Equal(t, []any{"input-1"}, body["input_artifact_ids"])
 		deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
@@ -189,7 +191,9 @@ func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemains
 	require.NoError(t, model.DB.Where("operation_id = ?", response.Header().Get("Location")[len("/v1/jobs/"):]).First(&operation).Error)
 	assert.Equal(t, 1_000_000, user.Quota)
 	assert.Equal(t, 1_000_000, token.RemainQuota)
+	assert.Equal(t, service.WildFlowModelExamDualASR, operation.ProductModelRef)
 	assert.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
+	assert.Equal(t, model.WildFlowBillingSourceTeamTrial, operation.BillingSource)
 }
 
 func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T) {
@@ -214,7 +218,7 @@ func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T
 		IdempotencyKeyDigest: "key-asr-download", RequestDigest: "request-asr-download",
 		RequestID: "request-asr-download", ProductModelRef: service.WildFlowModelExamDualASR,
 		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr", State: "succeeded",
-		BillingState: model.WildFlowBillingStatePending,
+		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
 	}).Error)
 
 	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", nil)
@@ -222,6 +226,94 @@ func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T
 	assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
 	assert.Contains(t, response.Header().Get("Content-Disposition"), "artifact-asr.json")
 	assert.Equal(t, content, response.Body.Bytes())
+	var receipt model.WildFlowArtifactDownloadReceipt
+	require.NoError(t, model.DB.Where("operation_id = ? AND artifact_id = ?", "op-asr-download", "artifact-asr").First(&receipt).Error)
+	assert.Equal(t, int64(len(content)), receipt.ArtifactSizeBytes)
+	assert.Equal(t, digest, receipt.ArtifactSHA256)
+	assert.Equal(t, fmt.Sprintf("%x", sha256.Sum256([]byte("user:42"))), receipt.TenantRefSHA256)
+	firstCompletedAt := receipt.CompletedAt
+	replayed := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", nil)
+	require.Equal(t, http.StatusOK, replayed.Code, replayed.Body.String())
+	require.NoError(t, model.DB.Where("operation_id = ? AND artifact_id = ?", "op-asr-download", "artifact-asr").First(&receipt).Error)
+	assert.Equal(t, firstCompletedAt, receipt.CompletedAt)
+}
+
+func TestInternalExamDualASRDownloadRejectsSameLengthDigestMismatchWithoutReceipt(t *testing.T) {
+	expected := []byte(`{"schema_version":1}`)
+	actual := []byte(`{"schema_version":2}`)
+	require.Len(t, actual, len(expected))
+	digest := fmt.Sprintf("%x", sha256.Sum256(expected))
+	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, service.WildFlowModelExamDualASR)
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/artifacts/artifact-asr-mismatch":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"artifact":{"id":"artifact-asr-mismatch","job_id":"job-asr-mismatch","media_type":"application/json","size_bytes":%d,"sha256":%q,"metadata":%s}}`, len(expected), digest, metadata)
+		case "/internal/v1/artifacts/artifact-asr-mismatch/content":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", strconv.Itoa(len(actual)))
+			_, _ = w.Write(actual)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	require.NoError(t, model.DB.Create(&model.WildFlowOperation{
+		OperationID: "op-asr-mismatch", UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64),
+		RequestID: "request-asr-mismatch", ProductModelRef: service.WildFlowModelExamDualASR,
+		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr-mismatch", State: "succeeded",
+		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+	}).Error)
+
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr-mismatch/content", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, "the stream started before its final digest was known")
+	assert.Equal(t, actual, response.Body.Bytes())
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.Where("operation_id = ?", "op-asr-mismatch").First(&operation).Error)
+	assert.Equal(t, "recovery_required", operation.State)
+	assert.Equal(t, "artifact_integrity_error", operation.LastErrorCode)
+	var count int64
+	require.NoError(t, model.DB.Model(&model.WildFlowArtifactDownloadReceipt{}).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestInternalExamDualASRDownloadRejectsShortStreamWithoutReceipt(t *testing.T) {
+	expected := []byte(`{"schema_version":1}`)
+	actual := []byte(`{"short":true}`)
+	require.Less(t, len(actual), len(expected))
+	digest := fmt.Sprintf("%x", sha256.Sum256(expected))
+	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, service.WildFlowModelExamDualASR)
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/artifacts/artifact-asr-short":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"artifact":{"id":"artifact-asr-short","job_id":"job-asr-short","media_type":"application/json","size_bytes":%d,"sha256":%q,"metadata":%s}}`, len(expected), digest, metadata)
+		case "/internal/v1/artifacts/artifact-asr-short/content":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", strconv.Itoa(len(expected)))
+			_, _ = w.Write(actual)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	require.NoError(t, model.DB.Create(&model.WildFlowOperation{
+		OperationID: "op-asr-short", UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64),
+		RequestID: "request-asr-short", ProductModelRef: service.WildFlowModelExamDualASR,
+		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr-short", State: "succeeded",
+		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+	}).Error)
+
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr-short/content", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, "the stream started before unexpected EOF")
+	assert.Equal(t, actual, response.Body.Bytes())
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.Where("operation_id = ?", "op-asr-short").First(&operation).Error)
+	assert.Equal(t, "recovery_required", operation.State)
+	assert.Equal(t, "artifact_stream_error", operation.LastErrorCode)
+	var count int64
+	require.NoError(t, model.DB.Model(&model.WildFlowArtifactDownloadReceipt{}).Count(&count).Error)
+	assert.Zero(t, count)
 }
 
 func TestInternalExamDualASROperationReadAllowsStandardRegisteredUserToken(t *testing.T) {

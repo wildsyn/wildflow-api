@@ -293,6 +293,8 @@ func migrateDB() error {
 		&SystemTaskLock{},
 		&WildFlowOperation{},
 		&WildFlowUsageEvent{},
+		&WildFlowArtifactDownloadReceipt{},
+		&WildFlowPublicJourneyReceiptRecord{},
 		&WildFlowBillingLogEntry{},
 		&WildFlowBillingLogProjectionReceipt{},
 		&CasbinRule{},
@@ -361,6 +363,8 @@ func migrateDBFast() error {
 		{&SystemTaskLock{}, "SystemTaskLock"},
 		{&WildFlowOperation{}, "WildFlowOperation"},
 		{&WildFlowUsageEvent{}, "WildFlowUsageEvent"},
+		{&WildFlowArtifactDownloadReceipt{}, "WildFlowArtifactDownloadReceipt"},
+		{&WildFlowPublicJourneyReceiptRecord{}, "WildFlowPublicJourneyReceiptRecord"},
 		{&WildFlowBillingLogEntry{}, "WildFlowBillingLogEntry"},
 		{&WildFlowBillingLogProjectionReceipt{}, "WildFlowBillingLogProjectionReceipt"},
 	}

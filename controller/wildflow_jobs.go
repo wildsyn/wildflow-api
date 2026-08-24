@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"mime"
 	"net/http"
@@ -156,6 +157,14 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		c.JSON(http.StatusOK, wildFlowOperationResponse(operation, job.Artifacts))
 		return
 	}
+	runtimeOfferingRef, err := service.ResolveWildFlowRuntimeOfferingRef(
+		operation.ProductModelRef,
+		operation.ModelVersionRef,
+	)
+	if err != nil {
+		wildFlowInternalError(c, err)
+		return
+	}
 	owner := "api:" + uuid.NewString()
 	leaseToken := uuid.NewString()
 	claimed, acquired, err := model.ClaimWildFlowOperationSubmission(
@@ -240,7 +249,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		RequestDigest:        operation.RequestDigest,
 		RequestID:            operation.RequestID,
 		TenantRef:            wildFlowTenantRef(userID),
-		ProductModelRef:      operation.ProductModelRef,
+		ProductModelRef:      runtimeOfferingRef,
 		ModelVersionRef:      operation.ModelVersionRef,
 		InputArtifactIDs:     request.InputArtifactIDs,
 		Parameters:           request.Parameters,
@@ -553,7 +562,14 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 		c.Header("Content-Length", strconv.FormatInt(content.ContentLength, 10))
 	}
 	c.Status(http.StatusOK)
-	if _, err := io.Copy(c.Writer, content.Body); err != nil {
+	writer := io.Writer(c.Writer)
+	var contentDigest hash.Hash
+	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
+		contentDigest = sha256.New()
+		writer = io.MultiWriter(c.Writer, contentDigest)
+	}
+	written, err := io.Copy(writer, content.Body)
+	if err != nil {
 		if updateErr := model.UpdateWildFlowOperationExecution(
 			operation.OperationID,
 			operation.JobID,
@@ -563,6 +579,32 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 			logger.LogError(c.Request.Context(), "persist WildFlow artifact stream recovery: "+updateErr.Error())
 		}
 		logger.LogError(c.Request.Context(), "stream WildFlow artifact: "+err.Error())
+		return
+	}
+	if operation.ProductModelRef != service.WildFlowModelExamDualASR {
+		return
+	}
+	actualDigest := hex.EncodeToString(contentDigest.Sum(nil))
+	if written != artifact.SizeBytes || actualDigest != strings.ToLower(artifact.SHA256) {
+		if updateErr := model.UpdateWildFlowOperationExecution(
+			operation.OperationID,
+			operation.JobID,
+			"recovery_required",
+			"artifact_integrity_error",
+		); updateErr != nil {
+			logger.LogError(c.Request.Context(), "persist WildFlow artifact integrity recovery: "+updateErr.Error())
+		}
+		logger.LogError(c.Request.Context(), "WildFlow artifact stream digest or size differs from metadata")
+		return
+	}
+	tenantDigest := sha256.Sum256([]byte(wildFlowTenantRef(operation.UserID)))
+	if _, _, err := model.RecordWildFlowArtifactDownloadReceipt(&model.WildFlowArtifactDownloadReceipt{
+		OperationID: operation.OperationID, JobID: operation.JobID, ArtifactID: artifact.ID,
+		UserID: operation.UserID, TenantRefSHA256: hex.EncodeToString(tenantDigest[:]),
+		ArtifactMediaType: artifact.MediaType, ArtifactSizeBytes: written,
+		ArtifactSHA256: actualDigest, CompletedAt: time.Now().UTC(),
+	}); err != nil {
+		logger.LogError(c.Request.Context(), "persist WildFlow artifact download receipt: "+err.Error())
 	}
 }
 

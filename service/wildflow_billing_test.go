@@ -231,6 +231,7 @@ func TestInternalExamDualASRTrialDoesNotCreateRetailBilling(t *testing.T) {
 	operation := &model.WildFlowOperation{
 		OperationID: "op-internal-asr", ProductModelRef: WildFlowModelExamDualASR,
 		ModelVersionRef: WildFlowModelExamDualASR, BillingState: model.WildFlowBillingStatePending,
+		BillingSource: model.WildFlowBillingSourceTeamTrial,
 	}
 	request := WildFlowJobRequest{
 		Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
@@ -240,6 +241,7 @@ func TestInternalExamDualASRTrialDoesNotCreateRetailBilling(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, operation, reserved)
 	assert.Equal(t, model.WildFlowBillingStatePending, reserved.BillingState)
+	assert.Equal(t, model.WildFlowBillingSourceTeamTrial, reserved.BillingSource)
 	_, err = QuoteWildFlowBilling(request)
 	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
 	operation.BillingState = model.WildFlowBillingStateReserved

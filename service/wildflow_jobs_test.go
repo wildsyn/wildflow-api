@@ -125,3 +125,27 @@ func TestPublicWildFlowCatalogExposesTeamDualASR(t *testing.T) {
 	require.Equal(t, WildFlowModelExamDualASR, public.ModelVersionRef)
 	require.Equal(t, "直播回放双 ASR", public.DisplayName)
 }
+
+func TestResolveWildFlowRuntimeOfferingRefKeepsPublicAndRuntimeIdentityDistinct(t *testing.T) {
+	t.Parallel()
+
+	runtimeRef, err := ResolveWildFlowRuntimeOfferingRef(
+		WildFlowModelExamDualASR,
+		WildFlowModelExamDualASR,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "exam-replay-dual-asr", runtimeRef)
+
+	runtimeRef, err = ResolveWildFlowRuntimeOfferingRef(
+		WildFlowModelVoxCPM2,
+		"openbmb/VoxCPM2",
+	)
+	require.NoError(t, err)
+	require.Equal(t, WildFlowModelVoxCPM2, runtimeRef)
+
+	_, err = ResolveWildFlowRuntimeOfferingRef(
+		WildFlowModelExamDualASR,
+		"wildflow/exam-replay-dual-asr-v0",
+	)
+	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
+}

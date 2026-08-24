@@ -1,7 +1,10 @@
 package model
 
 import (
+	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -64,6 +67,8 @@ func TestWildFlowPostgresMigrationConcurrencyAndFaultRecovery(t *testing.T) {
 		&SubscriptionPreConsumeRecord{},
 		&WildFlowOperation{},
 		&WildFlowUsageEvent{},
+		&WildFlowArtifactDownloadReceipt{},
+		&WildFlowPublicJourneyReceiptRecord{},
 		&WildFlowBillingLogEntry{},
 		&WildFlowBillingLogProjectionReceipt{},
 	))
@@ -79,6 +84,15 @@ func TestWildFlowPostgresMigrationConcurrencyAndFaultRecovery(t *testing.T) {
 		assert.True(t, mainDB.Migrator().HasColumn(&WildFlowOperation{}, column), column)
 	}
 	assert.True(t, logDB.Migrator().HasTable(&WildFlowBillingLogProjectionReceipt{}))
+	assert.True(t, mainDB.Migrator().HasColumn(&WildFlowUsageEvent{}, "ingested_at"))
+	assert.True(t, mainDB.Migrator().HasTable(&WildFlowArtifactDownloadReceipt{}))
+	assert.True(t, mainDB.Migrator().HasTable(&WildFlowPublicJourneyReceiptRecord{}))
+	assert.True(t, mainDB.Migrator().HasIndex(
+		&WildFlowArtifactDownloadReceipt{}, "idx_wildflow_download_operation_artifact",
+	))
+	assert.True(t, mainDB.Migrator().HasIndex(
+		&WildFlowPublicJourneyReceiptRecord{}, "idx_wildflow_public_journey_operation",
+	))
 	for _, column := range []string{
 		"projection_state",
 		"projection_attempts",
@@ -314,4 +328,119 @@ func TestWildFlowPostgresMigrationConcurrencyAndFaultRecovery(t *testing.T) {
 		ownerCount++
 	}
 	assert.Equal(t, 1, ownerCount)
+
+	trialOperation := &WildFlowOperation{
+		OperationID: "pg-team-trial-" + suffix, UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: strings.Repeat("a", 56) + suffix,
+		RequestDigest:        strings.Repeat("b", 64),
+		RequestID:            "request-pg-team-trial-" + suffix,
+		ProductModelRef:      "wildflow/exam-replay-dual-asr-v1",
+		ModelVersionRef:      "wildflow/exam-replay-dual-asr-v1",
+		JobID:                "job-pg-team-trial-" + suffix,
+		State:                "succeeded",
+		BillingState:         WildFlowBillingStatePending,
+		BillingSource:        WildFlowBillingSourceTeamTrial,
+	}
+	require.NoError(t, mainDB.Create(trialOperation).Error)
+	usageErrors := make(chan error, workers)
+	wait = sync.WaitGroup{}
+	for index := 0; index < workers; index++ {
+		index := index
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			startedAt := time.Now().UTC().Add(-time.Minute)
+			_, usageErr := RecordWildFlowUsageEvent(&WildFlowUsageEvent{
+				EventID:       "usage-pg-team-" + suffix + fmt.Sprintf("-%d", index),
+				PayloadDigest: strings.Repeat("c", 64), OperationID: trialOperation.OperationID,
+				JobID: trialOperation.JobID, AttemptID: "attempt-pg-team-" + suffix,
+				ModelVersionRef: trialOperation.ModelVersionRef, ChannelType: "gpu_agent",
+				Kind: "audio_duration", Quantity: 1000, Unit: "millisecond",
+				StartedAt: startedAt, EndedAt: startedAt.Add(time.Second),
+				EvidenceRef: "artifact:artifact-pg-team-" + suffix,
+			})
+			usageErrors <- usageErr
+		}()
+	}
+	wait.Wait()
+	close(usageErrors)
+	usageSuccesses := 0
+	for usageErr := range usageErrors {
+		if usageErr == nil {
+			usageSuccesses++
+			continue
+		}
+		require.ErrorIs(t, usageErr, ErrWildFlowUsageEventConflict)
+	}
+	assert.Equal(t, 1, usageSuccesses)
+	require.NoError(t, mainDB.Where("operation_id = ?", trialOperation.OperationID).First(trialOperation).Error)
+	assert.NotEmpty(t, trialOperation.BillingUsageEventID)
+	var trialUsage WildFlowUsageEvent
+	require.NoError(t, mainDB.Where("event_id = ?", trialOperation.BillingUsageEventID).First(&trialUsage).Error)
+	assert.Zero(t, trialUsage.IngestedAt.Nanosecond()%int(time.Millisecond))
+	var trialUsageCount int64
+	require.NoError(t, mainDB.Model(&WildFlowUsageEvent{}).
+		Where("operation_id = ?", trialOperation.OperationID).Count(&trialUsageCount).Error)
+	assert.Equal(t, int64(1), trialUsageCount)
+
+	artifactID := "artifact-pg-team-" + suffix
+	_, _, err = RecordWildFlowArtifactDownloadReceipt(&WildFlowArtifactDownloadReceipt{
+		OperationID: trialOperation.OperationID, JobID: trialOperation.JobID, ArtifactID: artifactID,
+		UserID: trialOperation.UserID, TenantRefSHA256: strings.Repeat("d", 64),
+		ArtifactMediaType: "application/json", ArtifactSizeBytes: 128,
+		ArtifactSHA256: strings.Repeat("e", 64), CompletedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	receiptResults := make(chan *WildFlowPublicJourneyReceiptRecord, workers)
+	receiptErrors := make(chan error, workers)
+	wait = sync.WaitGroup{}
+	for index := 0; index < workers; index++ {
+		index := index
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			record, receiptErr := LoadOrCreateWildFlowPublicJourneyReceipt(
+				context.Background(), trialOperation.OperationID, trialOperation.JobID, artifactID,
+				func(*WildFlowJourneyEvidence) (*WildFlowJourneyReceiptMaterial, error) {
+					payload := fmt.Sprintf("{\"candidate\":%d}\n", index)
+					digest := sha256.Sum256([]byte(payload))
+					return &WildFlowJourneyReceiptMaterial{
+						ReceiptJSON: payload, ReceiptSHA256: fmt.Sprintf("%x", digest),
+						ReceiptCreatedAt: time.Now().UTC(),
+					}, nil
+				},
+			)
+			receiptResults <- record
+			receiptErrors <- receiptErr
+		}()
+	}
+	wait.Wait()
+	close(receiptResults)
+	close(receiptErrors)
+	for receiptErr := range receiptErrors {
+		require.NoError(t, receiptErr)
+	}
+	winnerDigest := ""
+	for record := range receiptResults {
+		require.NotNil(t, record)
+		if winnerDigest == "" {
+			winnerDigest = record.ReceiptSHA256
+		}
+		assert.Equal(t, winnerDigest, record.ReceiptSHA256)
+	}
+	var receiptCount int64
+	require.NoError(t, mainDB.Model(&WildFlowPublicJourneyReceiptRecord{}).
+		Where("operation_id = ?", trialOperation.OperationID).Count(&receiptCount).Error)
+	assert.Equal(t, int64(1), receiptCount)
+	require.NoError(t, mainDB.Model(&WildFlowOperation{}).
+		Where("operation_id = ?", trialOperation.OperationID).
+		Update("state", "recovery_required").Error)
+	replayedReceipt, err := LoadOrCreateWildFlowPublicJourneyReceipt(
+		context.Background(), trialOperation.OperationID, trialOperation.JobID, artifactID,
+		func(*WildFlowJourneyEvidence) (*WildFlowJourneyReceiptMaterial, error) {
+			return nil, errors.New("durable receipt replay must not call the builder")
+		},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, winnerDigest, replayedReceipt.ReceiptSHA256)
 }
