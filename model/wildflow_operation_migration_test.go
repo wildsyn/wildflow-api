@@ -39,7 +39,8 @@ func TestWildFlowContractMigrationExpandsLegacySQLiteRowsInPlace(t *testing.T) {
 	}).Error)
 
 	require.NoError(t, database.AutoMigrate(
-		&WildFlowOperation{}, &WildFlowUsageEvent{}, &WildFlowBillingLogEntry{}, &WildFlowBillingLogProjectionReceipt{},
+		&WildFlowOperation{}, &WildFlowUsageEvent{}, &WildFlowArtifactDownloadReceipt{},
+		&WildFlowPublicJourneyReceiptRecord{}, &WildFlowBillingLogEntry{}, &WildFlowBillingLogProjectionReceipt{},
 	))
 	for _, column := range []string{
 		"billing_usage_event_id", "result_json", "result_validated_time", "result_retention_seconds", "result_expires_at",
@@ -49,6 +50,15 @@ func TestWildFlowContractMigrationExpandsLegacySQLiteRowsInPlace(t *testing.T) {
 	}
 	assert.True(t, database.Migrator().HasTable(&WildFlowBillingLogEntry{}))
 	assert.True(t, database.Migrator().HasColumn(&WildFlowUsageEvent{}, "ingest_token"))
+	assert.True(t, database.Migrator().HasColumn(&WildFlowUsageEvent{}, "ingested_at"))
+	assert.True(t, database.Migrator().HasTable(&WildFlowArtifactDownloadReceipt{}))
+	assert.True(t, database.Migrator().HasTable(&WildFlowPublicJourneyReceiptRecord{}))
+	assert.True(t, database.Migrator().HasIndex(
+		&WildFlowArtifactDownloadReceipt{}, "idx_wildflow_download_operation_artifact",
+	))
+	assert.True(t, database.Migrator().HasIndex(
+		&WildFlowPublicJourneyReceiptRecord{}, "idx_wildflow_public_journey_operation",
+	))
 	assert.True(t, database.Migrator().HasTable(&WildFlowBillingLogProjectionReceipt{}))
 	for _, column := range []string{
 		"projection_state", "projection_attempts", "projection_last_error", "projection_claim_token",

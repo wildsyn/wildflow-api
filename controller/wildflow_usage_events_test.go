@@ -48,6 +48,68 @@ func TestValidUsageEventAcceptsPositiveAudioDuration(t *testing.T) {
 	assert.False(t, validUsageEvent(event))
 }
 
+func TestReceiveWildFlowUsageEventPersistsGoCanonicalDigestGolden(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	database, err := gorm.Open(sqlite.Open("file:wildflow-usage-golden?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(
+		&model.WildFlowOperation{},
+		&model.WildFlowUsageEvent{},
+		&model.WildFlowBillingLogEntry{},
+	))
+	previousDB := model.DB
+	model.DB = database
+	t.Cleanup(func() { model.DB = previousDB })
+
+	modelVersionRef := "vendor/模型:<alpha>&\"quoted\"\\v1\u2028tail"
+	require.NoError(t, database.Create(&model.WildFlowOperation{
+		OperationID:          "op-golden-20260825",
+		UserID:               1,
+		IdempotencyKeyDigest: strings.Repeat("a", 64),
+		RequestDigest:        strings.Repeat("b", 64),
+		RequestID:            "request-golden-20260825",
+		ProductModelRef:      "golden-model",
+		ModelVersionRef:      modelVersionRef,
+		JobID:                "job-golden-20260825",
+		State:                "succeeded",
+		BillingState:         model.WildFlowBillingStatePending,
+	}).Error)
+
+	t.Setenv("WILDFLOW_USAGE_EVENT_TOKEN", strings.Repeat("t", 40))
+	engine := gin.New()
+	engine.POST("/internal/v1/usage-events", ReceiveWildFlowUsageEvent)
+	body := `{
+		"payload":{
+			"evidence_ref":"artifact:音频/<take>&\"quote\"\\path\u2029end",
+			"ended_at":"2026-08-25T09:10:12.123456789+08:00",
+			"started_at":"2026-08-25T09:10:11.12+08:00",
+			"unit":"millisecond","quantity":12345,"kind":"audio_duration",
+			"channel_type":"gpu_agent",
+			"model_version_ref":"vendor/模型:<alpha>&\"quoted\"\\v1\u2028tail",
+			"attempt_id":"attempt-golden-1","job_id":"job-golden-20260825",
+			"operation_id":"op-golden-20260825","usage_event_id":"usage-golden-20260825"
+		},
+		"event_type":"usage.recorded.v1","aggregate_id":"job-golden-20260825",
+		"aggregate_type":"job","event_id":"usage-golden-20260825"
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/usage-events", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 40))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "usage-golden-20260825")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
+
+	var persisted model.WildFlowUsageEvent
+	require.NoError(t, database.Where("event_id = ?", "usage-golden-20260825").First(&persisted).Error)
+	assert.Equal(t, modelVersionRef, persisted.ModelVersionRef)
+	assert.Equal(
+		t,
+		"ef75c4055f64819a146c360e219e175f543b2fad9b00f26a830790f6b7366787",
+		persisted.PayloadDigest,
+	)
+}
+
 func TestReceiveWildFlowUsageEventIsAuthenticatedImmutableAndIdempotent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	database, err := gorm.Open(sqlite.Open("file:wildflow-usage-events?mode=memory&cache=shared"), &gorm.Config{})

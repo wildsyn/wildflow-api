@@ -33,6 +33,7 @@ type WildFlowUsageEvent struct {
 	EndedAt         time.Time `json:"-"`
 	EvidenceRef     string    `json:"-" gorm:"type:varchar(256)"`
 	IngestToken     string    `json:"-" gorm:"type:varchar(64)"`
+	IngestedAt      time.Time `json:"-" gorm:"precision:3"`
 	CreatedTime     int64     `json:"-" gorm:"bigint"`
 }
 
@@ -40,13 +41,50 @@ func (event *WildFlowUsageEvent) BeforeCreate(_ *gorm.DB) error {
 	if event.IngestToken == "" {
 		event.IngestToken = uuid.NewString()
 	}
+	if event.IngestedAt.IsZero() {
+		event.IngestedAt = time.Now().UTC()
+	}
+	event.IngestedAt = event.IngestedAt.UTC().Truncate(time.Millisecond)
 	if event.CreatedTime == 0 {
-		event.CreatedTime = time.Now().Unix()
+		event.CreatedTime = event.IngestedAt.Unix()
 	}
 	return nil
 }
 
 func RecordWildFlowUsageEvent(event *WildFlowUsageEvent) (bool, error) {
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		replayed, err := recordWildFlowUsageEventOnce(event)
+		if err == nil {
+			return replayed, nil
+		}
+		lastErr = err
+		if !retryableWildFlowTransactionContention(err) {
+			return false, err
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+	}
+
+	// Resolve an ambiguous final retry from freshly committed immutable state.
+	var operation WildFlowOperation
+	operationLoaded := DB != nil && DB.Where(
+		"operation_id = ?", event.OperationID,
+	).First(&operation).Error == nil
+	if operationLoaded && operation.BillingSource == WildFlowBillingSourceTeamTrial &&
+		operation.BillingUsageEventID != "" && operation.BillingUsageEventID != event.EventID {
+		return false, ErrWildFlowUsageEventConflict
+	}
+	var persisted WildFlowUsageEvent
+	if operationLoaded && DB.Where("event_id = ?", event.EventID).First(&persisted).Error == nil &&
+		wildFlowUsageEventIdentityMatches(&persisted, event) &&
+		(operation.BillingSource != WildFlowBillingSourceTeamTrial ||
+			operation.BillingUsageEventID == event.EventID) {
+		return true, nil
+	}
+	return false, lastErr
+}
+
+func recordWildFlowUsageEventOnce(event *WildFlowUsageEvent) (bool, error) {
 	if DB == nil || event == nil {
 		return false, errors.New("WildFlow usage event database is unavailable")
 	}
@@ -58,22 +96,17 @@ func RecordWildFlowUsageEvent(event *WildFlowUsageEvent) (bool, error) {
 	// insert so the subsequent primary-key reload can compare exact instants.
 	event.StartedAt = event.StartedAt.UTC().Truncate(time.Millisecond)
 	event.EndedAt = event.EndedAt.UTC().Truncate(time.Millisecond)
+	if event.IngestedAt.IsZero() {
+		event.IngestedAt = time.Now().UTC()
+	}
+	event.IngestedAt = event.IngestedAt.UTC().Truncate(time.Millisecond)
+	if event.CreatedTime == 0 {
+		event.CreatedTime = event.IngestedAt.Unix()
+	}
 	replayed := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		var existing WildFlowUsageEvent
-		err := tx.Where("event_id = ?", event.EventID).First(&existing).Error
-		if err == nil {
-			if !wildFlowUsageEventIdentityMatches(&existing, event) {
-				return ErrWildFlowUsageEventConflict
-			}
-			replayed = true
-			return nil
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
 		var operation WildFlowOperation
-		if err := tx.Where("operation_id = ?", event.OperationID).First(&operation).Error; err != nil {
+		if err := lockForUpdate(tx).Where("operation_id = ?", event.OperationID).First(&operation).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrWildFlowUsageEventUnknown
 			}
@@ -85,18 +118,49 @@ func RecordWildFlowUsageEvent(event *WildFlowUsageEvent) (bool, error) {
 		if !wildFlowUsageEventMatchesOperation(&operation, event) {
 			return ErrWildFlowUsageEventConflict
 		}
-		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(event)
-		if result.Error != nil {
-			return result.Error
-		}
 		var persisted WildFlowUsageEvent
-		if lookupErr := tx.Where("event_id = ?", event.EventID).First(&persisted).Error; lookupErr != nil {
-			return lookupErr
+		existingErr := tx.Where("event_id = ?", event.EventID).First(&persisted).Error
+		if existingErr == nil {
+			if !wildFlowUsageEventIdentityMatches(&persisted, event) {
+				return ErrWildFlowUsageEventConflict
+			}
+			replayed = true
+		} else {
+			if !errors.Is(existingErr, gorm.ErrRecordNotFound) {
+				return existingErr
+			}
+			result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(event)
+			if result.Error != nil {
+				return result.Error
+			}
+			if lookupErr := tx.Where("event_id = ?", event.EventID).First(&persisted).Error; lookupErr != nil {
+				return lookupErr
+			}
+			if !wildFlowUsageEventIdentityMatches(&persisted, event) {
+				return ErrWildFlowUsageEventConflict
+			}
+			replayed = persisted.IngestToken == "" || persisted.IngestToken != event.IngestToken
 		}
-		if !wildFlowUsageEventIdentityMatches(&persisted, event) {
-			return ErrWildFlowUsageEventConflict
+		if operation.BillingSource == WildFlowBillingSourceTeamTrial {
+			if operation.BillingUsageEventID != "" && operation.BillingUsageEventID != event.EventID {
+				return ErrWildFlowUsageEventConflict
+			}
+			if operation.BillingUsageEventID == "" {
+				update := tx.Model(&WildFlowOperation{}).
+					Where("id = ? AND billing_source = ? AND billing_state = ? AND billing_usage_event_id = ?",
+						operation.ID, WildFlowBillingSourceTeamTrial, WildFlowBillingStatePending, "").
+					Updates(map[string]any{
+						"billing_usage_event_id": event.EventID,
+						"updated_time":           time.Now().Unix(),
+					})
+				if update.Error != nil {
+					return update.Error
+				}
+				if update.RowsAffected != 1 {
+					return ErrWildFlowUsageEventConflict
+				}
+			}
 		}
-		replayed = persisted.IngestToken == "" || persisted.IngestToken != event.IngestToken
 		return nil
 	})
 	return replayed, err

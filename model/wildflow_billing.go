@@ -21,6 +21,7 @@ const (
 
 	WildFlowBillingSourceWallet       = "wallet"
 	WildFlowBillingSourceSubscription = "subscription"
+	WildFlowBillingSourceTeamTrial    = "team_trial"
 )
 
 var (

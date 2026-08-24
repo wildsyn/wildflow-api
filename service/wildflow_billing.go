@@ -104,6 +104,7 @@ func ReserveWildFlowOperationBilling(operation *model.WildFlowOperation, request
 			return nil, err
 		}
 		if operation.ProductModelRef != WildFlowModelExamDualASR ||
+			operation.BillingSource != model.WildFlowBillingSourceTeamTrial ||
 			(operation.BillingState != "" && operation.BillingState != model.WildFlowBillingStatePending) {
 			return nil, model.ErrWildFlowBillingStateConflict
 		}

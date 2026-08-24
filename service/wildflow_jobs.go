@@ -125,6 +125,9 @@ func PrepareWildFlowOperation(
 		SubmissionRetryUntil:   WildFlowSubmissionRetryDeadline(),
 		ResultRetentionSeconds: int64(wildFlowOperationResultRetention() / time.Second),
 	}
+	if offering.Pricing.Unit == "team_trial" {
+		operation.BillingSource = model.WildFlowBillingSourceTeamTrial
+	}
 	if err := model.CreateWildFlowOperation(operation); err != nil {
 		existing, lookupErr := model.GetWildFlowOperationByUserAndKey(userID, keyDigest)
 		if lookupErr != nil {
@@ -152,6 +155,20 @@ func FindWildFlowOffering(id string) (WildFlowOffering, bool) {
 		}
 	}
 	return WildFlowOffering{}, false
+}
+
+// ResolveWildFlowRuntimeOfferingRef maps the public model identity persisted on
+// an Operation to the exact Offering identity accepted by inference. The model
+// version is checked independently so catalog drift fails before submission.
+func ResolveWildFlowRuntimeOfferingRef(publicModelRef string, modelVersionRef string) (string, error) {
+	offering, ok := FindWildFlowOffering(publicModelRef)
+	if !ok || offering.ModelVersionRef != modelVersionRef {
+		return "", ErrWildFlowUnsupportedModel
+	}
+	if offering.RuntimeOfferingID != "" {
+		return offering.RuntimeOfferingID, nil
+	}
+	return offering.ID, nil
 }
 
 func sha256Hex(value []byte) string {
