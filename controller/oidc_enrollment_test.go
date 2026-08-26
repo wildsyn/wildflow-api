@@ -66,6 +66,7 @@ func TestOIDCLogoutEndsCentralSessionThenReturnsToSignIn(t *testing.T) {
 func TestOIDCLogoutFallsBackToLocalSignInWhenOIDCIsDisabled(t *testing.T) {
 	setupOIDCEnrollmentTest(t)
 	system_setting.GetOIDCSettings().Enabled = false
+	system_setting.ServerAddress = "http://localhost:3000"
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/api/oauth/oidc/logout", nil)
@@ -73,7 +74,7 @@ func TestOIDCLogoutFallsBackToLocalSignInWhenOIDCIsDisabled(t *testing.T) {
 	BeginOIDCLogout(c)
 
 	require.Equal(t, http.StatusFound, recorder.Code)
-	assert.Equal(t, "https://wildflow.cn/sign-in", recorder.Header().Get("Location"))
+	assert.Equal(t, "/sign-in", recorder.Header().Get("Location"))
 }
 
 func TestOIDCLogoutRejectsCrossOriginEndSession(t *testing.T) {
