@@ -95,14 +95,14 @@ func writeOIDCEnrollmentUnavailable(c *gin.Context) {
 // New API session has already been revoked, allowing a different account to
 // authenticate instead of immediately restoring the previous SSO identity.
 func BeginOIDCLogout(c *gin.Context) {
+	settings := system_setting.GetOIDCSettings()
+	if !settings.Enabled {
+		c.Redirect(http.StatusFound, "/sign-in")
+		return
+	}
 	base, err := validatedApplicationBaseURL()
 	if err != nil {
 		writeOIDCEnrollmentUnavailable(c)
-		return
-	}
-	settings := system_setting.GetOIDCSettings()
-	if !settings.Enabled {
-		c.Redirect(http.StatusFound, base+"/sign-in")
 		return
 	}
 	authorization, err := parseOIDCHTTPSURL(settings.AuthorizationEndpoint)
