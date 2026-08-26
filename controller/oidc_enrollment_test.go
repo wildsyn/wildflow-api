@@ -48,6 +48,34 @@ func setupOIDCEnrollmentTest(t *testing.T) {
 	})
 }
 
+func TestOIDCLogoutEndsCentralSessionThenReturnsToSignIn(t *testing.T) {
+	setupOIDCEnrollmentTest(t)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/oauth/oidc/logout", nil)
+
+	BeginOIDCLogout(c)
+
+	require.Equal(t, http.StatusFound, recorder.Code)
+	logoutURL, err := url.Parse(recorder.Header().Get("Location"))
+	require.NoError(t, err)
+	assert.Equal(t, "https://auth.wildflow.cn/if/flow/default-invalidation-flow/", logoutURL.Scheme+"://"+logoutURL.Host+logoutURL.Path)
+	assert.Equal(t, "https://wildflow.cn/sign-in", logoutURL.Query().Get("next"))
+}
+
+func TestOIDCLogoutFallsBackToLocalSignInWhenOIDCIsDisabled(t *testing.T) {
+	setupOIDCEnrollmentTest(t)
+	system_setting.GetOIDCSettings().Enabled = false
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/oauth/oidc/logout", nil)
+
+	BeginOIDCLogout(c)
+
+	require.Equal(t, http.StatusFound, recorder.Code)
+	assert.Equal(t, "https://wildflow.cn/sign-in", recorder.Header().Get("Location"))
+}
+
 func TestOIDCEnrollmentLogsOutCentralSessionThenStartsOAuth(t *testing.T) {
 	setupOIDCEnrollmentTest(t)
 	router := gin.New()
