@@ -47,7 +47,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.POST("/oauth/state", middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.TryUserAuth(), anonymousRequestBodyLimit, controller.GenerateOAuthCode)
 		apiRouter.GET("/oauth/oidc/enroll", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.BeginOIDCEnrollment)
 		apiRouter.GET("/oauth/oidc/enroll/start", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.ContinueOIDCEnrollment)
-		apiRouter.GET("/oauth/oidc/logout", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.BeginOIDCLogout)
+		apiRouter.GET("/oauth/oidc/logout", middleware.SessionCookieOriginGuard(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.BeginOIDCLogout)
 		apiRouter.POST("/oauth/email/bind", middleware.UserAuth(), middleware.CriticalRateLimit(), controller.EmailBind)
 		// Non-standard OAuth (WeChat, Telegram) - keep original routes
 		apiRouter.GET("/oauth/wechat", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.WeChatAuth)
