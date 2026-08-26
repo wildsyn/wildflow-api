@@ -22,6 +22,7 @@ type oidcEnrollmentEndpoints struct {
 	enrollment    *url.URL
 	callbackURL   string
 	returnURL     string
+	signInURL     string
 }
 
 func parseOIDCHTTPSURL(raw string) (*url.URL, error) {
@@ -34,6 +35,15 @@ func parseOIDCHTTPSURL(raw string) (*url.URL, error) {
 
 func sameOIDCOrigin(first, second *url.URL) bool {
 	return strings.EqualFold(first.Scheme, second.Scheme) && strings.EqualFold(first.Host, second.Host)
+}
+
+func validatedApplicationBaseURL() (string, error) {
+	application, err := parseOIDCHTTPSURL(strings.TrimRight(system_setting.ServerAddress, "/"))
+	if err != nil || (application.Path != "" && application.Path != "/") || application.RawQuery != "" {
+		return "", errors.New("invalid application server address")
+	}
+	application.Path = ""
+	return strings.TrimRight(application.String(), "/"), nil
 }
 
 func validatedOIDCEnrollmentEndpoints() (*oidcEnrollmentEndpoints, error) {
@@ -60,18 +70,17 @@ func validatedOIDCEnrollmentEndpoints() (*oidcEnrollmentEndpoints, error) {
 	invalidation.Path = "/if/flow/default-invalidation-flow/"
 	invalidation.RawPath = ""
 	invalidation.RawQuery = ""
-	application, err := parseOIDCHTTPSURL(strings.TrimRight(system_setting.ServerAddress, "/"))
-	if err != nil || (application.Path != "" && application.Path != "/") || application.RawQuery != "" {
-		return nil, errors.New("invalid application server address")
+	base, err := validatedApplicationBaseURL()
+	if err != nil {
+		return nil, err
 	}
-	application.Path = ""
-	base := strings.TrimRight(application.String(), "/")
 	return &oidcEnrollmentEndpoints{
 		authorization: authorization,
 		invalidation:  &invalidation,
 		enrollment:    enrollment,
 		callbackURL:   base + "/oauth/oidc",
 		returnURL:     base + "/api/oauth/oidc/enroll/start",
+		signInURL:     base + "/sign-in",
 	}, nil
 }
 
@@ -80,6 +89,39 @@ func writeOIDCEnrollmentUnavailable(c *gin.Context) {
 		"success": false,
 		"message": "统一注册暂不可用，请稍后重试",
 	})
+}
+
+// BeginOIDCLogout ends the central identity-provider session after the local
+// New API session has already been revoked, allowing a different account to
+// authenticate instead of immediately restoring the previous SSO identity.
+func BeginOIDCLogout(c *gin.Context) {
+	base, err := validatedApplicationBaseURL()
+	if err != nil {
+		writeOIDCEnrollmentUnavailable(c)
+		return
+	}
+	settings := system_setting.GetOIDCSettings()
+	if !settings.Enabled {
+		c.Redirect(http.StatusFound, base+"/sign-in")
+		return
+	}
+	authorization, err := parseOIDCHTTPSURL(settings.AuthorizationEndpoint)
+	if err != nil {
+		writeOIDCEnrollmentUnavailable(c)
+		return
+	}
+	endSession, err := parseOIDCHTTPSURL(settings.EndSessionEndpoint)
+	if err != nil || !sameOIDCOrigin(authorization, endSession) {
+		writeOIDCEnrollmentUnavailable(c)
+		return
+	}
+	invalidation := *authorization
+	invalidation.Path = "/if/flow/default-invalidation-flow/"
+	invalidation.RawPath = ""
+	query := invalidation.Query()
+	query.Set("next", base+"/sign-in")
+	invalidation.RawQuery = query.Encode()
+	c.Redirect(http.StatusFound, invalidation.String())
 }
 
 // BeginOIDCEnrollment first ends any central Authentik session. Authentik's
