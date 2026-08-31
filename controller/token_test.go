@@ -13,9 +13,11 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/require"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -106,6 +108,10 @@ func migrateTokenControllerTestDB(t *testing.T, db *gorm.DB) {
 
 func setupTokenControllerTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+
+	// Token validation errors are localized; make sure the i18n bundle is
+	// loaded even when this package's tests run without main.go bootstrap.
+	require.NoError(t, i18n.Init())
 
 	db := openTokenControllerTestDB(t)
 	migrateTokenControllerTestDB(t, db)

@@ -223,9 +223,16 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	}
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
-		if token.Status == common.TokenStatusExhausted ||
-			token.Status == common.TokenStatusExpired ||
-			token.Status != common.TokenStatusEnabled {
+		if token.Status == common.TokenStatusDisabled {
+			return token, ErrTokenDisabled
+		}
+		if token.Status == common.TokenStatusExpired {
+			return token, ErrTokenExpired
+		}
+		if token.Status == common.TokenStatusExhausted {
+			return token, ErrTokenQuotaExhausted
+		}
+		if token.Status != common.TokenStatusEnabled {
 			return token, ErrTokenInvalid
 		}
 		if token.ExpiredTime != -1 && token.ExpiredTime < common.GetTimestamp() {
@@ -236,7 +243,7 @@ func ValidateUserToken(key string) (token *Token, err error) {
 					common.SysLog("failed to update token status" + err.Error())
 				}
 			}
-			return token, ErrTokenInvalid
+			return token, ErrTokenExpired
 		}
 		if !token.UnlimitedQuota && token.RemainQuota <= 0 {
 			if !common.RedisEnabled {
@@ -246,13 +253,13 @@ func ValidateUserToken(key string) (token *Token, err error) {
 					common.SysLog("failed to update token status" + err.Error())
 				}
 			}
-			return token, ErrTokenInvalid
+			return token, ErrTokenQuotaExhausted
 		}
 		return token, nil
 	}
 	common.SysLog("ValidateUserToken: failed to get token: " + err.Error())
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, ErrTokenInvalid
+		return nil, ErrTokenNotFound
 	}
 	return nil, fmt.Errorf("%w: %v", ErrDatabase, err)
 }

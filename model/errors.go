@@ -20,6 +20,17 @@ var (
 var (
 	ErrTokenNotProvided = errors.New("token not provided")
 	ErrTokenInvalid     = errors.New("token invalid")
+	// ErrTokenNotFound reports that the key does not match any token. It is
+	// intentionally a separate sentinel so relay callers can collapse it back
+	// into the generic ErrTokenInvalid message and avoid revealing whether a
+	// key exists; detailed status errors below are only returned for keys the
+	// caller already demonstrated possession of.
+	ErrTokenNotFound = errors.New("token not found")
+	// Detailed rejection reasons for keys whose existence has been proven.
+	// Callers may surface these as stable machine codes and human messages.
+	ErrTokenExpired        = errors.New("token expired")
+	ErrTokenDisabled       = errors.New("token disabled")
+	ErrTokenQuotaExhausted = errors.New("token quota exhausted")
 )
 
 // Redemption errors

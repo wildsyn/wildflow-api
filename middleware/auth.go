@@ -417,9 +417,32 @@ func TokenAuth() func(c *gin.Context) {
 				common.SysLog("TokenAuth ValidateUserToken database error: " + err.Error())
 				abortWithOpenAiMessage(c, http.StatusInternalServerError,
 					common.TranslateMessage(c, i18n.MsgDatabaseError))
-			} else {
+				return
+			}
+			// Unknown keys collapse into the generic invalid-token message so
+			// an unauthorized caller cannot probe whether a key exists. The
+			// detailed states below are only reachable when the presented key
+			// matches a real token, so explaining the reason does not leak
+			// key existence.
+			switch {
+			case errors.Is(err, model.ErrTokenNotProvided):
 				abortWithOpenAiMessage(c, http.StatusUnauthorized,
-					common.TranslateMessage(c, i18n.MsgTokenInvalid))
+					common.TranslateMessage(c, i18n.MsgTokenNotProvided), types.ErrorCodeTokenNotProvided)
+			case errors.Is(err, model.ErrTokenNotFound):
+				abortWithOpenAiMessage(c, http.StatusUnauthorized,
+					common.TranslateMessage(c, i18n.MsgTokenInvalid), types.ErrorCodeTokenNotFound)
+			case errors.Is(err, model.ErrTokenExpired):
+				abortWithOpenAiMessage(c, http.StatusUnauthorized,
+					common.TranslateMessage(c, i18n.MsgTokenExpired), types.ErrorCodeTokenExpired)
+			case errors.Is(err, model.ErrTokenDisabled):
+				abortWithOpenAiMessage(c, http.StatusUnauthorized,
+					common.TranslateMessage(c, i18n.MsgTokenDisabled), types.ErrorCodeTokenDisabled)
+			case errors.Is(err, model.ErrTokenQuotaExhausted):
+				abortWithOpenAiMessage(c, http.StatusUnauthorized,
+					common.TranslateMessage(c, i18n.MsgTokenExhausted), types.ErrorCodeTokenQuotaExhausted)
+			default:
+				abortWithOpenAiMessage(c, http.StatusUnauthorized,
+					common.TranslateMessage(c, i18n.MsgTokenInvalid), types.ErrorCodeTokenInvalid)
 			}
 			return
 		}

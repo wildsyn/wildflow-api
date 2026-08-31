@@ -36,6 +36,21 @@ type tokenRequest struct {
 	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
 }
 
+// validateTokenAllowIps rejects allow_ips entries that are neither valid IP
+// addresses nor valid CIDR ranges (IPv4 and IPv6). Without this check a
+// typo would be silently stored, then silently ignored at request time,
+// leaving the user with an ineffective restriction and no way to see why.
+func validateTokenAllowIps(c *gin.Context, allowIps *string) bool {
+	if allowIps == nil {
+		return true
+	}
+	if err := common.ValidateIPCIDRList(*allowIps); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgTokenAllowIpsInvalid, map[string]any{"Detail": err.Error()})
+		return false
+	}
+	return true
+}
+
 type tokenResponse struct {
 	*model.Token
 	AutoGroups []string `json:"auto_groups"`
@@ -285,6 +300,9 @@ func AddToken(c *gin.Context) {
 			return
 		}
 	}
+	if !validateTokenAllowIps(c, token.AllowIps) {
+		return
+	}
 	// 检查用户令牌数量是否已达上限
 	maxTokens := operation_setting.GetMaxUserTokens()
 	count, err := model.CountUserTokens(c.GetInt("id"))
@@ -378,6 +396,9 @@ func UpdateToken(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
 			return
 		}
+	}
+	if !validateTokenAllowIps(c, token.AllowIps) {
+		return
 	}
 	cleanToken, err := model.GetTokenByIds(token.Id, userId)
 	if err != nil {

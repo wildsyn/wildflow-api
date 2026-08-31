@@ -3640,7 +3640,14 @@
         ],
         "responses": {
           "200": {
-            "description": "成功",
+            "description": "成功，items 中 key 为脱敏值",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageInfo"
+                }
+              }
+            },
             "headers": {}
           }
         },
@@ -3672,7 +3679,25 @@
         },
         "responses": {
           "200": {
-            "description": "成功",
+            "description": "成功（success=true，data 不含 key）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "headers": {}
+          },
+          "400": {
+            "description": "校验失败：名称超长、额度非法、allow_ips 含非法 IP/CIDR、Auto 分组不可用、超出令牌数量上限",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenManagementError"
+                }
+              }
+            },
             "headers": {}
           }
         },
@@ -3704,7 +3729,25 @@
         },
         "responses": {
           "200": {
-            "description": "成功",
+            "description": "成功，data 为脱敏后的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "headers": {}
+          },
+          "400": {
+            "description": "校验失败：字段非法或 allow_ips 含非法 IP/CIDR（已存值保持不变）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenManagementError"
+                }
+              }
+            },
             "headers": {}
           }
         },
@@ -3775,7 +3818,14 @@
         ],
         "responses": {
           "200": {
-            "description": "成功",
+            "description": "成功，key 为脱敏值",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
             "headers": {}
           }
         },
@@ -3809,7 +3859,14 @@
         ],
         "responses": {
           "200": {
-            "description": "成功",
+            "description": "成功（撤销语义：删除成功后新请求立即拒绝）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
             "headers": {}
           }
         },
@@ -3851,7 +3908,14 @@
         },
         "responses": {
           "200": {
-            "description": "成功",
+            "description": "成功，data 为删除数量",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
             "headers": {}
           }
         },
@@ -3869,7 +3933,7 @@
       "get": {
         "summary": "获取令牌使用情况",
         "deprecated": false,
-        "description": "🔑 需要令牌认证（TokenAuth）",
+        "description": "🔑 需要令牌认证（TokenAuthReadOnly）。返回当前令牌的用量概览。401 携带稳定 code：token_not_provided / token_not_found / token_disabled（其他状态仍可只读查询）。",
         "tags": [
           "令牌管理"
         ],
@@ -3887,7 +3951,25 @@
         ],
         "responses": {
           "200": {
-            "description": "成功",
+            "description": "成功，data 含 name/total_granted/total_used/total_available/unlimited_quota/model_limits/model_limits_enabled/expires_at",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "headers": {}
+          },
+          "401": {
+            "description": "未提供令牌、令牌不存在或已被禁用（区别见错误文本与稳定 code）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenManagementError"
+                }
+              }
+            },
             "headers": {}
           }
         },
@@ -5229,6 +5311,155 @@
           }
         ]
       }
+    },
+    "/api/token/{id}/key": {
+      "post": {
+        "summary": "获取令牌完整 Key",
+        "deprecated": false,
+        "description": "🔐 需要登录（User权限），且受 CriticalRateLimit 限制。仅令牌所有者可调用；他人令牌返回 record not found，不泄露存在性。",
+        "tags": [
+          "令牌管理"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功返回完整 Key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenKeyResponse"
+                }
+              }
+            },
+            "headers": {}
+          },
+          "404": {
+            "description": "令牌不存在或不属于当前用户",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenManagementError"
+                }
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [
+          {
+            "Combination343": []
+          },
+          {
+            "Combination1243": []
+          }
+        ]
+      }
+    },
+    "/api/token/batch/keys": {
+      "post": {
+        "summary": "批量获取令牌完整 Key",
+        "deprecated": false,
+        "description": "🔐 需要登录（User权限），且受 CriticalRateLimit 限制。一次最多 100 个 ID；仅返回属于当前用户的令牌 Key。",
+        "tags": [
+          "令牌管理"
+        ],
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ids"
+                ],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    },
+                    "maxItems": 100,
+                    "description": "令牌 ID 列表"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，data.keys 为 ID -> 完整 Key 映射",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenKeysBatchResponse"
+                }
+              }
+            },
+            "headers": {}
+          },
+          "400": {
+            "description": "ids 为空或超过 100 个",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenManagementError"
+                }
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [
+          {
+            "Combination343": []
+          },
+          {
+            "Combination1243": []
+          }
+        ]
+      }
+    },
+    "/api/token/auto-groups": {
+      "get": {
+        "summary": "获取可用 Auto 分组",
+        "deprecated": false,
+        "description": "🔐 需要登录（User权限）。返回当前用户可选的 Auto 分组及数量上限，供 group=auto 的令牌配置使用。",
+        "tags": [
+          "令牌管理"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenAutoGroupsResponse"
+                }
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [
+          {
+            "Combination343": []
+          },
+          {
+            "Combination1243": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -5381,32 +5612,95 @@
       },
       "Token": {
         "type": "object",
+        "description": "API 令牌（Key）。列表/详情接口返回的 key 已脱敏；创建响应不返回 key，需通过 POST /api/token/{id}/key 获取。",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": "integer",
+            "description": "令牌 ID"
           },
           "user_id": {
-            "type": "integer"
+            "type": "integer",
+            "description": "所属用户 ID（服务端填充，仅返回）"
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 50,
+            "description": "应用名（同一用户可重名）"
           },
           "key": {
-            "type": "string"
+            "type": "string",
+            "description": "令牌 Key。管理接口返回脱敏值（如 sk-a****z），明文仅通过 POST /api/token/{id}/key 返回"
           },
           "status": {
-            "type": "integer"
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "description": "1=启用，2=手动禁用，3=已过期，4=额度耗尽。调用侧拒绝语义见 relay.json 401 响应码（token_expired/token_disabled/token_quota_exhausted）。"
+          },
+          "created_time": {
+            "type": "integer",
+            "description": "创建时间（Unix 秒）",
+            "readOnly": true
+          },
+          "accessed_time": {
+            "type": "integer",
+            "description": "最近访问时间（Unix 秒）",
+            "readOnly": true
           },
           "expired_time": {
-            "type": "integer"
+            "type": "integer",
+            "description": "过期时间（Unix 秒）；-1 表示永不过期。过期后新请求返回 401 token_expired"
           },
           "remain_quota": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 0,
+            "description": "剩余额度；unlimited_quota=false 时必填且不可为负。并发请求也不会突破该硬上限，耗尽后新请求返回 401 token_quota_exhausted"
           },
           "unlimited_quota": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "是否不限额额度（额度仍受账户余额约束）"
+          },
+          "used_quota": {
+            "type": "integer",
+            "description": "已用额度（只读）",
+            "readOnly": true
+          },
+          "model_limits_enabled": {
+            "type": "boolean",
+            "description": "是否启用模型限制；为 false 时 model_limits 被忽略"
+          },
+          "model_limits": {
+            "type": "string",
+            "description": "允许的模型名列表，逗号分隔。空字符串 + model_limits_enabled=false 表示不限制。禁用模型限制请将 model_limits_enabled 置 false 并传空串"
+          },
+          "allow_ips": {
+            "type": "string",
+            "description": "IP 白名单，每行一个 IP 或 CIDR（IPv4/IPv6 均支持，逗号分隔等同换行）。空/缺省表示不限制。写入时逐条校验，非法条目返回 token.allow_ips_invalid 校验错误（附行号），不再被静默接受；已在库中的历史非法条目在请求侧被忽略",
+            "example": "10.0.0.0/8\n2001:db8::/32"
+          },
+          "group": {
+            "type": "string",
+            "description": "令牌分组；\"auto\" 表示自动分组（配合 auto_groups）"
+          },
+          "cross_group_retry": {
+            "type": "boolean",
+            "description": "仅 group=auto 时有效：跨分组重试开关"
+          },
+          "auto_groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "group=auto 时可用的分组列表（GET 响应中的 auto_groups 字段）"
           }
-        }
+        },
+        "required": [
+          "name"
+        ]
       },
       "Redemption": {
         "type": "object",
@@ -5431,6 +5725,108 @@
           },
           "redeemed_time": {
             "type": "integer"
+          }
+        }
+      },
+      "TokenManagementError": {
+        "type": "object",
+        "required": [
+          "success",
+          "message"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "本地化错误信息；allow_ips 校验失败时包含违规条目与行号"
+          }
+        },
+        "description": "令牌管理接口的通用失败响应（success=false）。"
+      },
+      "TokenKeyResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "description": "完整令牌 Key（sk- 前缀需自行拼接）"
+              }
+            },
+            "required": [
+              "key"
+            ]
+          }
+        }
+      },
+      "TokenKeysBatchResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "keys": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "令牌 ID -> 完整 Key；仅返回属于当前用户的 ID"
+              }
+            }
+          }
+        }
+      },
+      "TokenAutoGroupsResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "groups": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "当前用户可用的 Auto 分组"
+              },
+              "max_count": {
+                "type": "integer",
+                "description": "Auto 分组数量上限"
+              }
+            }
           }
         }
       }
