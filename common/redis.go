@@ -104,12 +104,10 @@ func RedisDelKey(key string) error {
 	return RDB.Del(ctx, key).Err()
 }
 
-func RedisHSetObj(key string, obj interface{}, expiration time.Duration) error {
-	if DebugEnabled {
-		SysLog(fmt.Sprintf("Redis HSET: key=%s, obj=%+v, expiration=%v", key, obj, expiration))
-	}
-	ctx := context.Background()
-
+// RedisStructToHash flattens a pointer-to-struct into the string-valued map
+// written by RedisHSetObj. gorm.DeletedAt fields are skipped, pointer fields
+// marshal as "" when nil, and bools become "true"/"false".
+func RedisStructToHash(obj interface{}) map[string]interface{} {
 	data := make(map[string]interface{})
 
 	// 使用反射遍历结构体字段
@@ -142,6 +140,16 @@ func RedisHSetObj(key string, obj interface{}, expiration time.Duration) error {
 		// 其他类型直接转换为字符串
 		data[field.Name] = fmt.Sprintf("%v", value.Interface())
 	}
+	return data
+}
+
+func RedisHSetObj(key string, obj interface{}, expiration time.Duration) error {
+	if DebugEnabled {
+		SysLog(fmt.Sprintf("Redis HSET: key=%s, obj=%+v, expiration=%v", key, obj, expiration))
+	}
+	ctx := context.Background()
+
+	data := RedisStructToHash(obj)
 
 	txn := RDB.TxPipeline()
 	txn.HSet(ctx, key, data)
