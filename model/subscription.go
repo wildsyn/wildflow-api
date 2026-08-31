@@ -1339,10 +1339,10 @@ func preConsumeUserSubscriptionTx(tx *gorm.DB, requestId string, userId int, amo
 		Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
 		Order("end_time asc, id asc").
 		Find(&subs).Error; err != nil {
-		return nil, errors.New("no active subscription")
+		return nil, ErrNoActiveSubscription
 	}
 	if len(subs) == 0 {
-		return nil, errors.New("no active subscription")
+		return nil, ErrNoActiveSubscription
 	}
 	for _, candidate := range subs {
 		sub := candidate
@@ -1394,7 +1394,7 @@ func preConsumeUserSubscriptionTx(tx *gorm.DB, requestId string, userId int, amo
 		result.AmountUsedAfter = sub.AmountUsed
 		return result, nil
 	}
-	return nil, fmt.Errorf("subscription quota insufficient, need=%d", amount)
+	return nil, fmt.Errorf("%w, need=%d", ErrSubscriptionQuotaInsufficient, amount)
 }
 
 // RefundSubscriptionPreConsume is idempotent and refunds pre-consumed subscription quota by requestId.

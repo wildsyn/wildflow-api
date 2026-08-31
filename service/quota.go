@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -90,15 +89,6 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	if relayInfo.UsePrice {
 		return nil
 	}
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
-	if err != nil {
-		return err
-	}
-
-	token, err := model.GetTokenByKey(strings.TrimPrefix(relayInfo.TokenKey, "sk-"), false)
-	if err != nil {
-		return err
-	}
 
 	modelName := relayInfo.OriginModelName
 	textInputTokens := usage.InputTokenDetails.TextTokens
@@ -139,17 +129,24 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
 
-	if userQuota < quota {
-		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(userQuota), logger.FormatQuota(quota))
+	if quota <= 0 {
+		return nil
 	}
 
-	if !token.UnlimitedQuota && token.RemainQuota < quota {
-		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
+	// 原子条件扣减：账户余额与 Key 硬上限同时取得资格，不足时不发送上游消息
+	// 计入消费（错误向上传播，由 realtime 处理器终止会话），零账变。
+	if err := model.ReserveUserQuota(relayInfo.UserId, quota); err != nil {
+		return fmt.Errorf("user quota is not enough: %w", err)
 	}
-
-	err = PostConsumeQuota(relayInfo, quota, 0, false)
-	if err != nil {
-		return err
+	if !relayInfo.IsPlayground {
+		if err := model.ReserveTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota, relayInfo.TokenUnlimited); err != nil {
+			// Key 侧失败需回滚已扣的账户余额，保持零净账变
+			if rollbackErr := model.IncreaseUserQuota(relayInfo.UserId, quota, false); rollbackErr != nil {
+				common.SysLog(fmt.Sprintf("failed to rollback user quota after token reserve failure (userId=%d, quota=%d): %s",
+					relayInfo.UserId, quota, rollbackErr.Error()))
+			}
+			return fmt.Errorf("token quota is not enough: %w", err)
+		}
 	}
 	logger.LogInfo(ctx, "realtime streaming consume quota success, quota: "+fmt.Sprintf("%d", quota))
 	return nil
@@ -384,26 +381,94 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	})
 }
 
+// PreConsumeTokenQuota 通过 model 层原子事务条件扣减 Key 硬上限：
+// remain_quota >= quota 不成立时返回额度不足且零账变，并发/多实例下不会
+// 把 Key 剩余额度扣成负数。历史行为（读缓存 → 判断 → 无条件扣减）在并发
+// 下会突破硬上限，已被此合同取代。
 func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
-	if relayInfo.IsPlayground {
+	unlimitedToken := relayInfo.TokenUnlimited
+	tokenId := relayInfo.TokenId
+	if tokenId <= 0 && !relayInfo.IsPlayground {
+		// 老路径没有 tokenId 时按原逻辑读取（缓存可能过期，仅兜底）。
+		token, err := model.GetTokenByKey(relayInfo.TokenKey, false)
+		if err != nil {
+			return err
+		}
+		unlimitedToken = token.UnlimitedQuota
+		tokenId = token.Id
+	}
+	return model.ReserveTokenQuota(tokenId, relayInfo.TokenKey, quota, unlimitedToken)
+}
+
+// ReservePerCallBilling 为按次计费路径（Midjourney 等）建立预占：
+// 在调用 Provider 前于原子事务内同时取得账户余额与 Key 硬上限资格。
+// requestId 为空时回退为无记录的条件性扣减（可释放路径退化，不推荐）。
+// 返回错误时零账变，调用方不得发起 Provider 调用。
+func ReservePerCallBilling(relayInfo *relaycommon.RelayInfo, quota int) error {
+	if quota <= 0 {
 		return nil
 	}
-	//if relayInfo.TokenUnlimited {
-	//	return nil
-	//}
-	token, err := model.GetTokenByKey(relayInfo.TokenKey, false)
-	if err != nil {
+	if relayInfo.RequestId != "" {
+		_, err := model.ReserveWalletBillingQuota(relayInfo.RequestId, relayInfo.UserId,
+			relayInfo.TokenId, relayInfo.TokenKey, quota, relayInfo.TokenUnlimited)
 		return err
 	}
-	if !relayInfo.TokenUnlimited && token.RemainQuota < quota {
-		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
-	}
-	err = model.DecreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota)
-	if err != nil {
+	if err := model.ReserveUserQuota(relayInfo.UserId, quota); err != nil {
 		return err
+	}
+	if !relayInfo.IsPlayground {
+		if err := model.ReserveTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota, relayInfo.TokenUnlimited); err != nil {
+			// Key 侧失败回滚账户扣减，保持零净账变
+			if rollbackErr := model.IncreaseUserQuota(relayInfo.UserId, quota, false); rollbackErr != nil {
+				common.SysLog(fmt.Sprintf("failed to rollback user quota after token reserve failure (userId=%d, quota=%d): %s",
+					relayInfo.UserId, quota, rollbackErr.Error()))
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// SettlePerCallBilling 结算按次计费：Provider 已成功，按实际费用结算。
+// 有预占记录时为幂等结算；无记录时（requestId 为空的回退路径）按差额扣减。
+// 无论哪条路径都更新已用统计。
+func SettlePerCallBilling(relayInfo *relaycommon.RelayInfo, quota int) error {
+	if quota <= 0 {
+		return nil
+	}
+	if relayInfo.RequestId != "" {
+		err := model.SettleBillingReservation(relayInfo.RequestId, quota-relayInfo.FinalPreConsumedQuota)
+		if !errors.Is(err, model.ErrBillingReservationNotFound) {
+			if err != nil {
+				return err
+			}
+			return UpdateUsedQuotaStats(relayInfo, quota)
+		}
+	}
+	// 无预占记录：账变在预占时已发生，这里只记统计。
+	return UpdateUsedQuotaStats(relayInfo, quota)
+}
+
+// ReleasePerCallBilling 释放按次计费预占：Provider 未调用/明确失败/取消时退还，
+// 幂等。无预占记录时按预扣量原路退还。
+func ReleasePerCallBilling(relayInfo *relaycommon.RelayInfo) error {
+	if relayInfo.RequestId != "" {
+		err := model.ReleaseBillingReservation(relayInfo.RequestId, relayInfo.TokenKey)
+		if !errors.Is(err, model.ErrBillingReservationNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpdateUsedQuotaStats 记录用户/渠道的已用统计（不动余额）。
+func UpdateUsedQuotaStats(relayInfo *relaycommon.RelayInfo, quota int) error {
+	model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
+	if relayInfo.ChannelId != 0 {
+		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 	return nil
 }

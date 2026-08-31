@@ -211,15 +211,8 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(info.UserId, false)
-	if err != nil {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: err.Error(),
-		}
-	}
-
-	if userQuota-priceData.Quota < 0 {
+	// 原子预占：账户余额与 Key 硬上限在调用 Provider 前取得资格，失败零账变。
+	if err := service.ReservePerCallBilling(info, priceData.Quota); err != nil {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: "quota_not_enough",
@@ -230,13 +223,17 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
 	mjResp, _, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
+		// 请求未到达上游或失败：释放预占，零净账变
+		if releaseErr := service.ReleasePerCallBilling(info); releaseErr != nil {
+			common.SysLog("error releasing mj swap face billing: " + releaseErr.Error())
+		}
 		return &mjResp.Response
 	}
 	defer func() {
 		if mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
-			err := service.PostConsumeQuota(info, priceData.Quota, 0, true)
-			if err != nil {
-				common.SysLog("error consuming token remain quota: " + err.Error())
+			info.FinalPreConsumedQuota = priceData.Quota
+			if err := service.SettlePerCallBilling(info, priceData.Quota); err != nil {
+				common.SysLog("error settling mj swap face billing: " + err.Error())
 			}
 
 			tokenName := c.GetString("token_name")
@@ -252,8 +249,11 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 				Group:     info.UsingGroup,
 				Other:     other,
 			})
-			model.UpdateUserUsedQuotaAndRequestCount(info.UserId, priceData.Quota)
-			model.UpdateChannelUsedQuota(info.ChannelId, priceData.Quota)
+		} else {
+			// 上游未成功：释放预占，零净账变
+			if releaseErr := service.ReleasePerCallBilling(info); releaseErr != nil {
+				common.SysLog("error releasing mj swap face billing: " + releaseErr.Error())
+			}
 		}
 	}()
 	midjResponse := &mjResp.Response
@@ -518,32 +518,40 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
-	if err != nil {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: err.Error(),
+	// 原子预占：账户余额与 Key 硬上限在调用 Provider 前取得资格，失败零账变。
+	// consumeQuota 在响应后可能被改为 false（上游拒绝提交），此时必须释放预占，
+	// 因此用 reserved 记录"是否已预占"，而不是在 defer 里重读 consumeQuota。
+	reserved := false
+	if consumeQuota {
+		if err := service.ReservePerCallBilling(relayInfo, priceData.Quota); err != nil {
+			return &dto.MidjourneyResponse{
+				Code:        4,
+				Description: "quota_not_enough",
+			}
 		}
-	}
-
-	if consumeQuota && userQuota-priceData.Quota < 0 {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: "quota_not_enough",
-		}
+		reserved = true
 	}
 
 	midjResponseWithStatus, responseBody, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
+		if reserved {
+			// 请求未到达上游：释放预占，零净账变
+			if releaseErr := service.ReleasePerCallBilling(relayInfo); releaseErr != nil {
+				common.SysLog("error releasing mj submit billing: " + releaseErr.Error())
+			}
+		}
 		return &midjResponseWithStatus.Response
 	}
 	midjResponse := &midjResponseWithStatus.Response
 
 	defer func() {
-		if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
-			err := service.PostConsumeQuota(relayInfo, priceData.Quota, 0, true)
-			if err != nil {
-				common.SysLog("error consuming token remain quota: " + err.Error())
+		if !reserved {
+			return
+		}
+		if midjResponseWithStatus.StatusCode == 200 && consumeQuota {
+			relayInfo.FinalPreConsumedQuota = priceData.Quota
+			if err := service.SettlePerCallBilling(relayInfo, priceData.Quota); err != nil {
+				common.SysLog("error settling mj submit billing: " + err.Error())
 			}
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s，ID %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, midjRequest.Action, midjResponse.Result)
@@ -558,8 +566,11 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 				Group:     relayInfo.UsingGroup,
 				Other:     other,
 			})
-			model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, priceData.Quota)
-			model.UpdateChannelUsedQuota(relayInfo.ChannelId, priceData.Quota)
+		} else {
+			// 上游未成功（错误码/非 200/拒绝提交）：释放预占，零净账变
+			if releaseErr := service.ReleasePerCallBilling(relayInfo); releaseErr != nil {
+				common.SysLog("error releasing mj submit billing: " + releaseErr.Error())
+			}
 		}
 	}()
 
