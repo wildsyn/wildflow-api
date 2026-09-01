@@ -145,6 +145,9 @@ func GetAndValidateResponsesRequest(c *gin.Context) (*dto.OpenAIResponsesRequest
 	if exceedsMaxTokensLimit(request.MaxOutputTokens) {
 		return nil, errors.New("max_output_tokens is invalid")
 	}
+	if request.MaxOutputTokens == nil {
+		request.MaxOutputTokens = common.GetPointer(uint(defaultStandardPreConsumeMaxTokens))
+	}
 	return request, nil
 }
 
@@ -328,6 +331,12 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 	}
 	if textRequest.Model == "" {
 		return nil, errors.New("model is required")
+	}
+	if textRequest.MaxTokens == nil && textRequest.MaxCompletionTokens == nil &&
+		(relayMode == relayconstant.RelayModeChatCompletions ||
+			relayMode == relayconstant.RelayModeCompletions ||
+			relayMode == relayconstant.RelayModeEdits) {
+		textRequest.MaxTokens = common.GetPointer(uint(defaultStandardPreConsumeMaxTokens))
 	}
 	if textRequest.WebSearchOptions != nil {
 		if textRequest.WebSearchOptions.SearchContextSize != "" {
