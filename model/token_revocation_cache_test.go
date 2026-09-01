@@ -434,6 +434,70 @@ func TestTokenFieldUpdateCannotRestoreConcurrentDisable(t *testing.T) {
 	require.ErrorIs(t, err, ErrTokenInvalid)
 }
 
+// The revocation fence is intentionally finite. A stale ordinary edit that
+// only reaches the cache path after it expires must still refresh from the
+// disabled database row, never write the enabled snapshot it originally read.
+func TestTokenFieldUpdateCannotRestoreDisableAfterFenceExpiry(t *testing.T) {
+	token := newRevocableToken(t, "revoke-field-update-after-fence-expiry-key")
+	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+	require.NoError(t, cacheSetToken(*token))
+
+	staleEdit := &Token{}
+	require.NoError(t, DB.First(staleEdit, token.Id).Error)
+	staleEdit.Name = "submitted-after-fence-expiry"
+
+	disabling := &Token{}
+	require.NoError(t, DB.First(disabling, token.Id).Error)
+	previousStatus := disabling.Status
+	disabling.Status = common.TokenStatusDisabled
+	require.NoError(t, disabling.UpdateStatus(previousStatus))
+
+	server.FastForward(time.Duration(tokenRevocationTTLSeconds()+1) * time.Second)
+	require.NoError(t, staleEdit.Update())
+
+	var stored Token
+	require.NoError(t, DB.First(&stored, token.Id).Error)
+	assert.Equal(t, common.TokenStatusDisabled, stored.Status)
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenStatusDisabled, cached.Status)
+	_, err = ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+}
+
+// A queued database fill may execute long after the request that captured an
+// enabled snapshot. It must re-read the row when it runs, including after the
+// finite revocation fence has expired.
+func TestDelayedAsyncTokenCacheRefreshUsesCurrentDatabaseToken(t *testing.T) {
+	token := newRevocableToken(t, "revoke-delayed-fill-after-fence-expiry-key")
+	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+
+	release := make(chan struct{})
+	refreshResult := make(chan error, 1)
+	staleID, staleKey := token.Id, token.Key
+	goTokenCacheFill(func() {
+		<-release
+		refreshResult <- refreshTokenCacheFromDatabase(staleID, staleKey)
+	})
+
+	previousStatus := token.Status
+	token.Status = common.TokenStatusDisabled
+	require.NoError(t, token.UpdateStatus(previousStatus))
+	server.FastForward(time.Duration(tokenRevocationTTLSeconds()+1) * time.Second)
+
+	close(release)
+	waitTokenCacheFills()
+	require.NoError(t, <-refreshResult)
+
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenStatusDisabled, cached.Status)
+	_, err = ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+}
+
 func TestTokenReEnableRejectsStaleStatusVersionAfterConcurrentDisable(t *testing.T) {
 	token := newRevocableToken(t, "revoke-reenable-status-version-key")
 	useUserCacheMiniRedis(t)

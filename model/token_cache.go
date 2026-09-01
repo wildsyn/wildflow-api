@@ -84,6 +84,20 @@ return 1`
 	return nil
 }
 
+// refreshTokenCacheFromDatabase refreshes a token cache entry from the row
+// that exists when the refresh actually runs. Callers must not cache a Token
+// snapshot captured before an asynchronous delay: a concurrent revoke may
+// have committed while that snapshot was waiting, and its fence may later
+// expire. Reading again here preserves the database's current status even
+// after that TTL.
+func refreshTokenCacheFromDatabase(id int, key string) error {
+	var current Token
+	if err := DB.Where("id = ? AND "+commonKeyCol+" = ?", id, key).First(&current).Error; err != nil {
+		return err
+	}
+	return cacheSetTokenRespectingRevocation(current)
+}
+
 func cacheDeleteToken(key string) error {
 	err := common.RedisDelKey(tokenCacheKey(key))
 	if err != nil {
