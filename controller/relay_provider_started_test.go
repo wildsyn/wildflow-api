@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,12 +31,17 @@ const normalDispatchTestModel = "provider-started-normal-test"
 // boundary; a mark failure must leave its call counter at zero.
 func TestRelayProviderStartedFailClosed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	// The controller test process has no Redis fixture. Set these process-wide
+	// test defaults before any Relay worker exists, then leave them unchanged:
+	// detached metric workers may read them after a subtest returns.
+	common.RedisEnabled = false
 
 	cases := []struct {
-		name         string
-		install      func(t *testing.T, db *gorm.DB, requestID string)
-		wantProvider int32
-		wantStatus   int
+		name          string
+		install       func(t *testing.T, db *gorm.DB, requestID string)
+		wantProvider  int32
+		wantStatus    int
+		refundQueries int32
 	}{
 		{
 			name:         "successful marked dispatch reaches provider once",
@@ -48,7 +54,8 @@ func TestRelayProviderStartedFailClosed(t *testing.T) {
 				t.Helper()
 				require.NoError(t, db.Exec(fmt.Sprintf(`CREATE TRIGGER relay_remove_reservation AFTER INSERT ON billing_reservation_records WHEN NEW.request_id = '%s' BEGIN DELETE FROM billing_reservation_records WHERE request_id = NEW.request_id; END`, requestID)).Error)
 			},
-			wantStatus: http.StatusInternalServerError,
+			wantStatus:    http.StatusInternalServerError,
+			refundQueries: 2, // mark's CAS miss lookup, then the asynchronous refund lookup
 		},
 		{
 			name: "settled terminal competition",
@@ -56,7 +63,8 @@ func TestRelayProviderStartedFailClosed(t *testing.T) {
 				t.Helper()
 				require.NoError(t, db.Exec(fmt.Sprintf(`CREATE TRIGGER relay_settle_reservation AFTER INSERT ON billing_reservation_records WHEN NEW.request_id = '%s' BEGIN UPDATE billing_reservation_records SET state = 'settled' WHERE request_id = NEW.request_id; END`, requestID)).Error)
 			},
-			wantStatus: http.StatusInternalServerError,
+			wantStatus:    http.StatusInternalServerError,
+			refundQueries: 2,
 		},
 		{
 			name: "released CAS-zero competition",
@@ -64,7 +72,8 @@ func TestRelayProviderStartedFailClosed(t *testing.T) {
 				t.Helper()
 				require.NoError(t, db.Exec(fmt.Sprintf(`CREATE TRIGGER relay_release_reservation AFTER INSERT ON billing_reservation_records WHEN NEW.request_id = '%s' BEGIN UPDATE billing_reservation_records SET state = 'released' WHERE request_id = NEW.request_id; END`, requestID)).Error)
 			},
-			wantStatus: http.StatusInternalServerError,
+			wantStatus:    http.StatusInternalServerError,
+			refundQueries: 2,
 		},
 		{
 			name: "mark database error",
@@ -78,7 +87,8 @@ func TestRelayProviderStartedFailClosed(t *testing.T) {
 					}
 				}))
 			},
-			wantStatus: http.StatusInternalServerError,
+			wantStatus:    http.StatusInternalServerError,
+			refundQueries: 1,
 		},
 	}
 
@@ -107,6 +117,9 @@ func TestRelayProviderStartedFailClosed(t *testing.T) {
 			common.SetContextKey(ctx, constant.ContextKeyUserId, userID)
 			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
 			common.SetContextKey(ctx, constant.ContextKeyUsingGroup, "default")
+			// Keep the real billing path, but avoid an unrelated low-balance
+			// notification worker. The fixture user starts with this quota too.
+			common.SetContextKey(ctx, constant.ContextKeyUserQuota, 1_000)
 			common.SetContextKey(ctx, constant.ContextKeyOriginalModel, normalDispatchTestModel)
 			common.SetContextKey(ctx, constant.ContextKeyTokenId, tokenID)
 			common.SetContextKey(ctx, constant.ContextKeyTokenKey, tokenKey)
@@ -117,7 +130,16 @@ func TestRelayProviderStartedFailClosed(t *testing.T) {
 			ctx.Set("base_url", provider.URL)
 			ctx.Set("channel_key", "test-provider-key")
 
+			refundDone := waitForNormalRelayRefund(t, db, tc.refundQueries)
+
 			Relay(ctx, types.RelayFormatOpenAI)
+			if refundDone != nil {
+				select {
+				case <-refundDone:
+				case <-time.After(3 * time.Second):
+					t.Fatal("timed out waiting for the Relay refund worker")
+				}
+			}
 			assert.Equal(t, tc.wantProvider, providerCalls.Load())
 			assert.Equal(t, tc.wantStatus, recorder.Code)
 		})
@@ -133,13 +155,9 @@ func setupNormalRelayTestDB(t *testing.T) *gorm.DB {
 	sqlDB.SetMaxOpenConns(1)
 
 	oldDB, oldLogDB := model.DB, model.LOG_DB
-	oldRedis, oldLogConsume := common.RedisEnabled, common.LogConsumeEnabled
 	model.DB, model.LOG_DB = db, db
-	common.RedisEnabled = false
-	common.LogConsumeEnabled = false
 	t.Cleanup(func() {
 		model.DB, model.LOG_DB = oldDB, oldLogDB
-		common.RedisEnabled, common.LogConsumeEnabled = oldRedis, oldLogConsume
 		require.NoError(t, sqlDB.Close())
 	})
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Channel{}, &model.BillingReservationRecord{}))
@@ -155,6 +173,31 @@ func setupNormalRelayTestDB(t *testing.T) *gorm.DB {
 		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
 	})
 	return db
+}
+
+// waitForNormalRelayRefund observes the reservation queries that occur after
+// Relay has begun. Mark failures that reached the fallback lookup perform one
+// query before Refund's worker performs its own lookup; a direct update error
+// only has the latter. Waiting for that exact second query keeps global DB and
+// cache flags alive until the asynchronous refund has finished its DB work.
+func waitForNormalRelayRefund(t *testing.T, db *gorm.DB, queries int32) <-chan struct{} {
+	t.Helper()
+	if queries == 0 {
+		return nil
+	}
+	done := make(chan struct{})
+	var seen atomic.Int32
+	var once sync.Once
+	callbackName := "normal_relay_provider_started_test_wait_for_refund_" + t.Name()
+	require.NoError(t, db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "BillingReservationRecord" {
+			return
+		}
+		if seen.Add(1) == queries {
+			once.Do(func() { close(done) })
+		}
+	}))
+	return done
 }
 
 func seedNormalRelayBilling(t *testing.T, db *gorm.DB) (int, int, string) {

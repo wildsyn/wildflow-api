@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,13 +16,16 @@ import (
 )
 
 // seedReservationFixture 建立用户 + Key + 预占表，返回各自 id。
+var reservationFixtureSequence atomic.Uint64
+
 func seedReservationFixture(t *testing.T, userQuota, tokenQuota int) (int, int, string) {
 	t.Helper()
-	user := &User{Username: fmt.Sprintf("reservation-user-%s", t.Name()), Quota: userQuota, Group: "default", AffCode: fmt.Sprintf("reservation-aff-%s", t.Name())}
+	fixtureID := fmt.Sprintf("%s-%d", t.Name(), reservationFixtureSequence.Add(1))
+	user := &User{Username: fmt.Sprintf("reservation-user-%s", fixtureID), Quota: userQuota, Group: "default", AffCode: fmt.Sprintf("reservation-aff-%s", fixtureID)}
 	require.NoError(t, DB.Create(user).Error)
 	token := &Token{
 		UserId:      user.Id,
-		Key:         fmt.Sprintf("sk-reservation-%s", t.Name()),
+		Key:         fmt.Sprintf("sk-reservation-%s", fixtureID),
 		Name:        "reservation-token",
 		Status:      common.TokenStatusEnabled,
 		RemainQuota: tokenQuota,
@@ -314,78 +318,102 @@ func TestMarkProviderStartedFailsClosedForMissingAndTerminalRecords(t *testing.T
 }
 
 func TestProviderStartedConcurrentMarkSettleReleaseAndRecovery(t *testing.T) {
-	// Repeated marks are idempotent even when callers race. Once the state is
-	// provider_started, recovery may never refund it; only an explicit terminal
-	// operation can close the reservation.
+	// All contenders cross the same barrier: this deliberately does not wait for
+	// mark to finish before settle, explicit release, and stale recovery start.
+	// SQLite serializes the resulting writes, while the state machine decides
+	// which terminal transition wins.
 	userId, tokenId, tokenKey := seedReservationFixture(t, 2_000, 2_000)
-	const requestID = "req-provider-started-concurrent-settle"
+	const requestID = "req-provider-started-concurrent"
 	_, err := ReserveWalletBillingQuota(requestID, userId, tokenId, tokenKey, 400, false)
 	require.NoError(t, err)
+	require.NoError(t, DB.Model(&BillingReservationRecord{}).Where("request_id = ?", requestID).
+		UpdateColumn("updated_at", GetDBTimestamp()-7200).Error)
 
 	const markers = 8
 	start := make(chan struct{})
-	errs := make(chan error, markers)
+	markErrs := make(chan error, markers)
+	settleErrs := make(chan error, 1)
+	releaseErrs := make(chan error, 1)
+	type recoveryResult struct {
+		released int64
+		err      error
+	}
+	recoveryResults := make(chan recoveryResult, 1)
+	var ready sync.WaitGroup
 	var wg sync.WaitGroup
 	for range markers {
+		ready.Add(1)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			ready.Done()
 			<-start
-			errs <- MarkBillingReservationProviderStarted(requestID)
+			markErrs <- MarkBillingReservationProviderStarted(requestID)
 		}()
 	}
+	ready.Add(3)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-start
+		settleErrs <- SettleBillingReservation(requestID, 0)
+	}()
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-start
+		releaseErrs <- ReleaseBillingReservation(requestID, tokenKey)
+	}()
+	go func() {
+		defer wg.Done()
+		ready.Done()
+		<-start
+		released, recoveryErr := ReleaseStaleBillingReservations(60, 100)
+		recoveryResults <- recoveryResult{released: released, err: recoveryErr}
+	}()
+
+	ready.Wait()
 	close(start)
 	wg.Wait()
-	close(errs)
-	for markErr := range errs {
-		require.NoError(t, markErr)
+	close(markErrs)
+	for markErr := range markErrs {
+		if markErr != nil {
+			require.ErrorIs(t, markErr, ErrBillingReservationStateConflict)
+		}
+	}
+	require.NoError(t, <-settleErrs)
+	require.NoError(t, <-releaseErrs)
+	recovery := <-recoveryResults
+	require.NoError(t, recovery.err)
+	assert.LessOrEqual(t, recovery.released, int64(1), "one stale scan must never report more than one release")
+
+	var record BillingReservationRecord
+	require.NoError(t, DB.Where("request_id = ?", requestID).First(&record).Error)
+	switch record.State {
+	case BillingReservationStateSettled:
+		assert.Equal(t, 1_600, reservationUserQuota(t, userId), "settle retains the one reservation charge")
+		remain, used := reservationTokenState(t, tokenId)
+		assert.Equal(t, 1_600, remain)
+		assert.Equal(t, 400, used)
+	case BillingReservationStateReleased:
+		assert.Equal(t, 2_000, reservationUserQuota(t, userId), "a release refunds exactly once")
+		remain, used := reservationTokenState(t, tokenId)
+		assert.Equal(t, 2_000, remain)
+		assert.Equal(t, 0, used)
+	default:
+		t.Fatalf("concurrent terminal operations left non-terminal state %q", record.State)
 	}
 
-	// Make the record recovery-eligible. Concurrent recovery still has to skip
-	// provider_started while settle is allowed to commit the terminal state.
-	require.NoError(t, DB.Model(&BillingReservationRecord{}).Where("request_id = ?", requestID).
-		UpdateColumn("updated_at", GetDBTimestamp()-7200).Error)
-	recoveryDone := make(chan struct{})
-	var released int64
-	var recoveryErr error
-	go func() {
-		defer close(recoveryDone)
-		released, recoveryErr = ReleaseStaleBillingReservations(60, 100)
-	}()
+	// A late sender must fail closed after either terminal outcome. Replays of
+	// settle/release are no-ops: neither may revive the terminal state or alter
+	// its quota outcome.
+	require.ErrorIs(t, MarkBillingReservationProviderStarted(requestID), ErrBillingReservationStateConflict)
 	require.NoError(t, SettleBillingReservation(requestID, 0))
-	<-recoveryDone
-	require.NoError(t, recoveryErr)
-	assert.Equal(t, int64(0), released)
-	assert.Equal(t, 1_600, reservationUserQuota(t, userId), "recovery must not refund a provider-started reservation")
-
-	var settled BillingReservationRecord
-	require.NoError(t, DB.Where("request_id = ?", requestID).First(&settled).Error)
-	assert.Equal(t, BillingReservationStateSettled, settled.State)
-
-	// In contrast, an explicit known-failure release is allowed to win a race
-	// with recovery. Recovery remains a no-op and the refund happens exactly
-	// once through ReleaseBillingReservation.
-	const releaseRequestID = "req-provider-started-concurrent-release"
-	_, err = ReserveWalletBillingQuota(releaseRequestID, userId, tokenId, tokenKey, 300, false)
-	require.NoError(t, err)
-	require.NoError(t, MarkBillingReservationProviderStarted(releaseRequestID))
-	require.NoError(t, DB.Model(&BillingReservationRecord{}).Where("request_id = ?", releaseRequestID).
-		UpdateColumn("updated_at", GetDBTimestamp()-7200).Error)
-
-	recoveryDone = make(chan struct{})
-	go func() {
-		defer close(recoveryDone)
-		released, recoveryErr = ReleaseStaleBillingReservations(60, 100)
-	}()
-	require.NoError(t, ReleaseBillingReservation(releaseRequestID, tokenKey))
-	<-recoveryDone
-	require.NoError(t, recoveryErr)
-	assert.Equal(t, int64(0), released)
-	assert.Equal(t, 1_600, reservationUserQuota(t, userId), "only the explicit release refunds the second reservation")
-
-	var releasedRecord BillingReservationRecord
-	require.NoError(t, DB.Where("request_id = ?", releaseRequestID).First(&releasedRecord).Error)
-	assert.Equal(t, BillingReservationStateReleased, releasedRecord.State)
+	require.NoError(t, ReleaseBillingReservation(requestID, tokenKey))
+	var terminal BillingReservationRecord
+	require.NoError(t, DB.Where("request_id = ?", requestID).First(&terminal).Error)
+	assert.Equal(t, record.State, terminal.State)
 }
 
 func TestSettleBillingReservationFailureStaysRecoverable(t *testing.T) {

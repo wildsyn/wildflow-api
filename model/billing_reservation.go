@@ -461,6 +461,19 @@ func SettleBillingReservation(requestId string, delta int) error {
 			// 已终结：结算重放按幂等 no-op 处理（账变只会发生一次）。
 			return nil
 		}
+		// SQLite has no SELECT FOR UPDATE equivalent in lockForUpdate. Claim the
+		// terminal transition with a state CAS before applying any balance delta,
+		// so a concurrent explicit release or stale recovery cannot settle an old
+		// provider_started snapshot after it has already refunded the reservation.
+		transition := tx.Model(&BillingReservationRecord{}).
+			Where("id = ? AND state = ?", record.Id, record.State).
+			Update("state", BillingReservationStateSettled)
+		if transition.Error != nil {
+			return transition.Error
+		}
+		if transition.RowsAffected == 0 {
+			return nil
+		}
 		if delta != 0 {
 			var applyErr error
 			switch record.Source {
@@ -483,8 +496,7 @@ func SettleBillingReservation(requestId string, delta int) error {
 			}
 			cacheTokenDelta = -delta
 		}
-		record.State = BillingReservationStateSettled
-		return tx.Save(&record).Error
+		return nil
 	})
 	if err != nil {
 		return err
@@ -551,6 +563,19 @@ func releaseBillingReservation(requestId string, tokenKey string, reservedOnly b
 				return nil
 			}
 		}
+		// Claim the terminal release before refunding. This CAS is required in
+		// addition to lockForUpdate because SQLite deliberately omits FOR UPDATE;
+		// without it a release can refund a stale provider_started snapshot after
+		// a concurrent settle has already committed.
+		transition := tx.Model(&BillingReservationRecord{}).
+			Where("id = ? AND state = ?", record.Id, record.State).
+			Update("state", BillingReservationStateReleased)
+		if transition.Error != nil {
+			return transition.Error
+		}
+		if transition.RowsAffected == 0 {
+			return nil
+		}
 		switch record.Source {
 		case BillingReservationSourceWallet:
 			if err := tx.Model(&User{}).Where("id = ?", record.UserId).
@@ -574,8 +599,7 @@ func releaseBillingReservation(requestId string, tokenKey string, reservedOnly b
 			return err
 		}
 		cacheTokenDelta = int(record.Amount)
-		record.State = BillingReservationStateReleased
-		return tx.Save(&record).Error
+		return nil
 	})
 	if err != nil {
 		return err
