@@ -337,7 +337,11 @@ func TestInternalExamDualASROperationReadAllowsStandardRegisteredUserToken(t *te
 }
 
 func validVoxArtifactJSON(artifactID string, jobID string, characters int) string {
-	digest := fmt.Sprintf("%x", sha256.Sum256(validVoxArtifactPayload()))
+	return voxArtifactJSONWithPayload(artifactID, jobID, characters, validVoxArtifactPayload())
+}
+
+func voxArtifactJSONWithPayload(artifactID string, jobID string, characters int, payload []byte) string {
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
 	return fmt.Sprintf(
 		`{"id":%q,"job_id":%q,"media_type":"audio/mpeg","size_bytes":12,"sha256":%q,"metadata":{"codec":"mp3","bitrate":96000,"sample_rate":48000,"channels":1,"duration_ms":1200,"input_characters":%d,"completed_characters":%d,"segment_count":1,"completed_segment_count":1,"size_bytes":12,"sha256":%q,"voice":"default"}}`,
 		artifactID,
@@ -1372,6 +1376,18 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, hiddenArtifact.Code, hiddenArtifact.Body.String())
 	require.Equal(t, http.StatusNotFound, hiddenDownload.Code, hiddenDownload.Body.String())
 	assert.NotContains(t, hiddenDownload.Body.String(), "artifact-1")
+
+	for range wildFlowArtifactVerificationConcurrency {
+		wildFlowArtifactVerificationSlots <- struct{}{}
+	}
+	defer func() {
+		for range wildFlowArtifactVerificationConcurrency {
+			<-wildFlowArtifactVerificationSlots
+		}
+	}()
+	busyDownload := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-1/content", "", nil)
+	require.Equal(t, http.StatusServiceUnavailable, busyDownload.Code, busyDownload.Body.String())
+	assert.Contains(t, busyDownload.Body.String(), `"code":"artifact_download_busy"`)
 }
 
 func TestSucceededWildFlowJobReplayReturnsGoneAfterResultRetentionExpires(t *testing.T) {
@@ -1446,10 +1462,12 @@ func TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch(t *testing.
 		mediaType     string
 		contentLength string
 		body          []byte
+		artifactBody  []byte
 	}{
 		{name: "media type", mediaType: "audio/wav", contentLength: "12"},
 		{name: "content length", mediaType: "audio/mpeg", contentLength: "11"},
 		{name: "same length digest mismatch", mediaType: "audio/mpeg", contentLength: "12", body: []byte{'I', 'D', '3', 4, 0, 0, 0, 0, 0, 0, 0, 1}},
+		{name: "matching digest with invalid magic", mediaType: "audio/mpeg", contentLength: "12", body: []byte("not-an-mp3!!"), artifactBody: []byte("not-an-mp3!!")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1463,10 +1481,18 @@ func TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch(t *testing.
 				case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/jobs/job-download-mismatch":
 					jobReads++
 					w.Header().Set("Content-Type", "application/json")
-					_, _ = fmt.Fprintf(w, `{"job":{"id":"job-download-mismatch","state":"succeeded","artifacts":[%s]}}`, validVoxArtifactJSON("artifact-download-mismatch", "job-download-mismatch", 5))
+					artifactJSON := validVoxArtifactJSON("artifact-download-mismatch", "job-download-mismatch", 5)
+					if len(test.artifactBody) > 0 {
+						artifactJSON = voxArtifactJSONWithPayload("artifact-download-mismatch", "job-download-mismatch", 5, test.artifactBody)
+					}
+					_, _ = fmt.Fprintf(w, `{"job":{"id":"job-download-mismatch","state":"succeeded","artifacts":[%s]}}`, artifactJSON)
 				case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-download-mismatch":
 					w.Header().Set("Content-Type", "application/json")
-					_, _ = fmt.Fprintf(w, `{"artifact":%s}`, validVoxArtifactJSON("artifact-download-mismatch", "job-download-mismatch", 5))
+					artifactJSON := validVoxArtifactJSON("artifact-download-mismatch", "job-download-mismatch", 5)
+					if len(test.artifactBody) > 0 {
+						artifactJSON = voxArtifactJSONWithPayload("artifact-download-mismatch", "job-download-mismatch", 5, test.artifactBody)
+					}
+					_, _ = fmt.Fprintf(w, `{"artifact":%s}`, artifactJSON)
 				case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-download-mismatch/content":
 					w.Header().Set("Content-Type", test.mediaType)
 					w.Header().Set("Content-Length", test.contentLength)
