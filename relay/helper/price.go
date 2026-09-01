@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -100,7 +101,16 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	if !usePrice {
 		preConsumedPromptTokens := common.Max(promptTokens, common.PreConsumedQuota)
 		completionTokens := meta.MaxTokens
-		isTextCompletion := meta.TokenType != types.TokenTypeImage && meta.ImagePriceRatio == 0
+		isTextCompletion := false
+		switch info.RelayMode {
+		case relayconstant.RelayModeChatCompletions,
+			relayconstant.RelayModeCompletions,
+			relayconstant.RelayModeEdits,
+			relayconstant.RelayModeResponses,
+			relayconstant.RelayModeResponsesCompact,
+			relayconstant.RelayModeGemini:
+			isTextCompletion = meta.TokenType != types.TokenTypeImage && meta.ImagePriceRatio == 0
+		}
 		if completionTokens == 0 && isTextCompletion {
 			// Image requests are capped by their validated image multipliers rather
 			// than completion tokens, so no completion reservation belongs there.

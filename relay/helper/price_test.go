@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -161,6 +162,7 @@ func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *test
 		OriginModelName: "standard-hard-bound-model",
 		UserGroup:       "default",
 		UsingGroup:      "default",
+		RelayMode:       relayconstant.RelayModeChatCompletions,
 	}
 
 	priceData, err := ModelPriceHelper(ctx, info, common.PreConsumedQuota, &types.TokenCountMeta{})
@@ -169,6 +171,17 @@ func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *test
 	require.NoError(t, err)
 	assert.Equal(t, expected, priceData.QuotaToPreConsume,
 		"omitting max_tokens must reserve the full validator-bounded, completion-ratio-adjusted cost")
+
+	embeddingInfo := &relaycommon.RelayInfo{
+		OriginModelName: "standard-hard-bound-model",
+		UserGroup:       "default",
+		UsingGroup:      "default",
+		RelayMode:       relayconstant.RelayModeEmbeddings,
+	}
+	embeddingPrice, err := ModelPriceHelper(ctx, embeddingInfo, 10, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	assert.Equal(t, 62, embeddingPrice.QuotaToPreConsume,
+		"a no-completion endpoint must retain prompt-only pre-consume behavior")
 }
 
 func TestModelPriceHelperTieredRejectsPreConsumeOverflow(t *testing.T) {
