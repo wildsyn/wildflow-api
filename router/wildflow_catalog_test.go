@@ -56,6 +56,17 @@ func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T
 				"status":"unavailable"
 			},
 			{
+				"id":"Qwen/Qwen3.8-27B-FP8",
+				"display_name":"Qwen3.8-27B (FP8) 对话",
+				"kind":"chat",
+				"vendor":"Qwen",
+				"model_version_ref":"Qwen/Qwen3.8-27B-FP8",
+				"description":"通义千问 27B FP8 对话模型，支持中文问答、代码与思考模式，当前为团队内测。",
+				"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内测 · 暂不扣零售余额"},
+				"callable":false,
+				"status":"unavailable"
+			},
+			{
 				"id":"wildflow/exam-replay-dual-asr-v1",
 				"display_name":"直播回放双 ASR",
 				"kind":"asr",

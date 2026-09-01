@@ -511,12 +511,12 @@ func TestListModelsIncludesAuthorizedWildFlowJobModels(t *testing.T) {
 	ListModels(ctx, constant.ChannelTypeOpenAI)
 
 	payload := decodeListModelsPayload(t, recorder)
-	require.Len(t, payload.Data, 3)
+	require.Len(t, payload.Data, 4)
 	modelsByID := make(map[string]dto.OpenAIModels, len(payload.Data))
 	for _, item := range payload.Data {
 		modelsByID[item.Id] = item
 	}
-	for _, modelID := range []string{"VoxCPM2", "FLUX.2 [klein] 4B", service.WildFlowModelExamDualASR} {
+	for _, modelID := range []string{"VoxCPM2", "FLUX.2 [klein] 4B", "Qwen/Qwen3.8-27B-FP8", service.WildFlowModelExamDualASR} {
 		item, ok := modelsByID[modelID]
 		require.True(t, ok)
 		require.Equal(t, "wildflow", item.OwnedBy)
