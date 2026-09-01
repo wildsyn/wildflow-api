@@ -147,10 +147,13 @@ func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *test
 	gin.SetMode(gin.TestMode)
 
 	savedModelRatios := ratio_setting.ModelRatio2JSONString()
+	savedCompletionRatios := ratio_setting.CompletionRatio2JSONString()
 	t.Cleanup(func() {
 		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedModelRatios))
+		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(savedCompletionRatios))
 	})
-	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"standard-hard-bound-model":1}`))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"standard-hard-bound-model":0.125}`))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"standard-hard-bound-model":8}`))
 
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Set("group", "default")
@@ -162,8 +165,10 @@ func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *test
 
 	priceData, err := ModelPriceHelper(ctx, info, common.PreConsumedQuota, &types.TokenCountMeta{})
 	require.NoError(t, err)
-	assert.Equal(t, common.PreConsumedQuota+defaultStandardPreConsumeMaxTokens, priceData.QuotaToPreConsume,
-		"omitting max_tokens must reserve the full validator-bounded completion cost")
+	expected, err := common.QuotaFromFloatStrict(float64(common.PreConsumedQuota+defaultStandardPreConsumeMaxTokens*8) * 0.125)
+	require.NoError(t, err)
+	assert.Equal(t, expected, priceData.QuotaToPreConsume,
+		"omitting max_tokens must reserve the full validator-bounded, completion-ratio-adjusted cost")
 }
 
 func TestModelPriceHelperTieredRejectsPreConsumeOverflow(t *testing.T) {

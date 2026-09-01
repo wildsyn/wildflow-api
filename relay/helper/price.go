@@ -98,13 +98,13 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	var audioCompletionRatio float64
 	var freeModel bool
 	if !usePrice {
-		preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
-		if meta.MaxTokens != 0 {
-			preConsumedTokens += meta.MaxTokens
-		} else if meta.TokenType != types.TokenTypeImage && meta.ImagePriceRatio == 0 {
+		preConsumedPromptTokens := common.Max(promptTokens, common.PreConsumedQuota)
+		completionTokens := meta.MaxTokens
+		isTextCompletion := meta.TokenType != types.TokenTypeImage && meta.ImagePriceRatio == 0
+		if completionTokens == 0 && isTextCompletion {
 			// Image requests are capped by their validated image multipliers rather
 			// than completion tokens, so no completion reservation belongs there.
-			preConsumedTokens += defaultStandardPreConsumeMaxTokens
+			completionTokens = defaultStandardPreConsumeMaxTokens
 		}
 		var success bool
 		var matchName string
@@ -128,7 +128,14 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		audioRatio = ratio_setting.GetAudioRatio(info.OriginModelName)
 		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
 		ratio := modelRatio * groupRatioInfo.GroupRatio
-		quota, err := common.QuotaFromFloatStrict(float64(preConsumedTokens) * ratio)
+		// Keep the reservation formula aligned with text settlement: completion
+		// tokens have their own price multiplier. Omitting max_tokens therefore
+		// reserves the validator-bounded maximum before the Provider is called.
+		preConsumedQuotaBeforeRatio := float64(preConsumedPromptTokens)
+		if isTextCompletion {
+			preConsumedQuotaBeforeRatio += float64(completionTokens) * completionRatio
+		}
+		quota, err := common.QuotaFromFloatStrict(preConsumedQuotaBeforeRatio * ratio)
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}
