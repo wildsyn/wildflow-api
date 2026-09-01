@@ -2,7 +2,9 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,9 +12,11 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/glebarez/sqlite"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // seedReservationFixture 建立用户 + Key + 预占表，返回各自 id。
@@ -46,6 +50,35 @@ func reservationTokenState(t *testing.T, tokenId int) (remain int, used int) {
 	var token Token
 	require.NoError(t, DB.Where("id = ?", tokenId).First(&token).Error)
 	return token.RemainQuota, token.UsedQuota
+}
+
+func requireBillingReservationRelease(t *testing.T, requestID, tokenKey string) bool {
+	t.Helper()
+	released, err := ReleaseBillingReservation(requestID, tokenKey)
+	require.NoError(t, err)
+	return released
+}
+
+func isSQLiteBusy(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "database table is locked")
+}
+
+func setupConcurrentReservationTestDB(t *testing.T) {
+	t.Helper()
+	fixtureID := reservationFixtureSequence.Add(1)
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:billing-reservation-concurrent-%d?mode=memory&cache=shared&_pragma=busy_timeout(5000)", fixtureID)), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(4)
+
+	oldDB, oldLogDB := DB, LOG_DB
+	DB, LOG_DB = db, db
+	t.Cleanup(func() {
+		DB, LOG_DB = oldDB, oldLogDB
+		require.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(&User{}, &Token{}, &BillingReservationRecord{}))
 }
 
 func TestReserveWalletBillingQuotaAtomicBothBoundaries(t *testing.T) {
@@ -174,7 +207,7 @@ func TestSettleBillingReservationDeltaAndIdempotency(t *testing.T) {
 	assert.Equal(t, 1_000-550, reservationUserQuota(t, userId))
 
 	// settled 记录不可释放：释放是幂等 no-op，不退任何已消费的额度
-	require.NoError(t, ReleaseBillingReservation("req-settle", tokenKey))
+	assert.False(t, requireBillingReservationRelease(t, "req-settle", tokenKey))
 	assert.Equal(t, 1_000-550, reservationUserQuota(t, userId))
 	remain, used = reservationTokenState(t, tokenId)
 	assert.Equal(t, 1_000-550, remain)
@@ -199,14 +232,14 @@ func TestReleaseBillingReservationExactOnce(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 600, reservationUserQuota(t, userId))
 
-	require.NoError(t, ReleaseBillingReservation("req-release", tokenKey))
+	assert.True(t, requireBillingReservationRelease(t, "req-release", tokenKey))
 	assert.Equal(t, 1_000, reservationUserQuota(t, userId), "release must refund full reserve")
 	remain, used := reservationTokenState(t, tokenId)
 	assert.Equal(t, 1_000, remain)
 	assert.Equal(t, 0, used)
 
 	// 幂等：重复释放不重复退款
-	require.NoError(t, ReleaseBillingReservation("req-release", tokenKey))
+	assert.False(t, requireBillingReservationRelease(t, "req-release", tokenKey))
 	assert.Equal(t, 1_000, reservationUserQuota(t, userId))
 }
 
@@ -224,7 +257,7 @@ func TestAppendBillingReservationTopUpAtomically(t *testing.T) {
 	assert.Equal(t, 700, used)
 
 	// 追加额度计入预占总额：释放时全部退还
-	require.NoError(t, ReleaseBillingReservation("req-append", tokenKey))
+	assert.True(t, requireBillingReservationRelease(t, "req-append", tokenKey))
 	assert.Equal(t, 1_000, reservationUserQuota(t, userId))
 	remain, used = reservationTokenState(t, tokenId)
 	assert.Equal(t, 1_000, remain)
@@ -287,7 +320,7 @@ func TestReleaseStaleSkipsProviderStartedRecords(t *testing.T) {
 	assert.Equal(t, 600, reservationUserQuota(t, userId), "consumed-by-provider charge must not be refunded")
 
 	// 活跃进程的失败路径（Provider 明确失败/取消）可以释放 provider_started 记录
-	require.NoError(t, ReleaseBillingReservation("req-started-stale", tokenKey))
+	assert.True(t, requireBillingReservationRelease(t, "req-started-stale", tokenKey))
 	assert.Equal(t, 1_000, reservationUserQuota(t, userId))
 	remain, used := reservationTokenState(t, tokenId)
 	assert.Equal(t, 1_000, remain)
@@ -310,7 +343,7 @@ func TestMarkProviderStartedFailsClosedForMissingAndTerminalRecords(t *testing.T
 	require.ErrorIs(t, MarkBillingReservationProviderStarted("missing-request"), ErrBillingReservationNotFound)
 	_, err = ReserveWalletBillingQuota("req-mark-released", userId, tokenId, tokenKey, 100, false)
 	require.NoError(t, err)
-	require.NoError(t, ReleaseBillingReservation("req-mark-released", tokenKey))
+	assert.True(t, requireBillingReservationRelease(t, "req-mark-released", tokenKey))
 	require.ErrorIs(t, MarkBillingReservationProviderStarted("req-mark-released"), ErrBillingReservationStateConflict)
 	var rec BillingReservationRecord
 	require.NoError(t, DB.Where("request_id = ?", "req-mark").First(&rec).Error)
@@ -322,10 +355,12 @@ func TestProviderStartedConcurrentMarkSettleReleaseAndRecovery(t *testing.T) {
 	// mark to finish before settle, explicit release, and stale recovery start.
 	// SQLite serializes the resulting writes, while the state machine decides
 	// which terminal transition wins.
+	setupConcurrentReservationTestDB(t)
 	userId, tokenId, tokenKey := seedReservationFixture(t, 2_000, 2_000)
-	const requestID = "req-provider-started-concurrent"
-	_, err := ReserveWalletBillingQuota(requestID, userId, tokenId, tokenKey, 400, false)
+	requestID := fmt.Sprintf("req-provider-started-concurrent-%d", reservationFixtureSequence.Add(1))
+	reserved, err := ReserveWalletBillingQuota(requestID, userId, tokenId, tokenKey, 400, false)
 	require.NoError(t, err)
+	require.True(t, reserved, "the concurrent case must own a fresh reservation")
 	require.NoError(t, DB.Model(&BillingReservationRecord{}).Where("request_id = ?", requestID).
 		UpdateColumn("updated_at", GetDBTimestamp()-7200).Error)
 
@@ -333,7 +368,11 @@ func TestProviderStartedConcurrentMarkSettleReleaseAndRecovery(t *testing.T) {
 	start := make(chan struct{})
 	markErrs := make(chan error, markers)
 	settleErrs := make(chan error, 1)
-	releaseErrs := make(chan error, 1)
+	type releaseResult struct {
+		released bool
+		err      error
+	}
+	releaseResults := make(chan releaseResult, 1)
 	type recoveryResult struct {
 		released int64
 		err      error
@@ -363,7 +402,8 @@ func TestProviderStartedConcurrentMarkSettleReleaseAndRecovery(t *testing.T) {
 		defer wg.Done()
 		ready.Done()
 		<-start
-		releaseErrs <- ReleaseBillingReservation(requestID, tokenKey)
+		released, releaseErr := ReleaseBillingReservation(requestID, tokenKey)
+		releaseResults <- releaseResult{released: released, err: releaseErr}
 	}()
 	go func() {
 		defer wg.Done()
@@ -379,11 +419,13 @@ func TestProviderStartedConcurrentMarkSettleReleaseAndRecovery(t *testing.T) {
 	close(markErrs)
 	for markErr := range markErrs {
 		if markErr != nil {
-			require.ErrorIs(t, markErr, ErrBillingReservationStateConflict)
+			require.True(t, isSQLiteBusy(markErr) || errors.Is(markErr, ErrBillingReservationStateConflict), "unexpected mark error: %v", markErr)
 		}
 	}
-	require.NoError(t, <-settleErrs)
-	require.NoError(t, <-releaseErrs)
+	settleErr := <-settleErrs
+	require.True(t, settleErr == nil || isSQLiteBusy(settleErr), "unexpected settle error: %v", settleErr)
+	explicitRelease := <-releaseResults
+	require.True(t, explicitRelease.err == nil || isSQLiteBusy(explicitRelease.err), "unexpected explicit release error: %v", explicitRelease.err)
 	recovery := <-recoveryResults
 	require.NoError(t, recovery.err)
 	assert.LessOrEqual(t, recovery.released, int64(1), "one stale scan must never report more than one release")
@@ -392,11 +434,18 @@ func TestProviderStartedConcurrentMarkSettleReleaseAndRecovery(t *testing.T) {
 	require.NoError(t, DB.Where("request_id = ?", requestID).First(&record).Error)
 	switch record.State {
 	case BillingReservationStateSettled:
+		assert.False(t, explicitRelease.released)
+		assert.Equal(t, int64(0), recovery.released)
 		assert.Equal(t, 1_600, reservationUserQuota(t, userId), "settle retains the one reservation charge")
 		remain, used := reservationTokenState(t, tokenId)
 		assert.Equal(t, 1_600, remain)
 		assert.Equal(t, 400, used)
 	case BillingReservationStateReleased:
+		releasePaths := int(recovery.released)
+		if explicitRelease.released {
+			releasePaths++
+		}
+		assert.Equal(t, 1, releasePaths, "exactly one release path refunds the reservation")
 		assert.Equal(t, 2_000, reservationUserQuota(t, userId), "a release refunds exactly once")
 		remain, used := reservationTokenState(t, tokenId)
 		assert.Equal(t, 2_000, remain)
@@ -408,9 +457,15 @@ func TestProviderStartedConcurrentMarkSettleReleaseAndRecovery(t *testing.T) {
 	// A late sender must fail closed after either terminal outcome. Replays of
 	// settle/release are no-ops: neither may revive the terminal state or alter
 	// its quota outcome.
-	require.ErrorIs(t, MarkBillingReservationProviderStarted(requestID), ErrBillingReservationStateConflict)
+	var providerCalls atomic.Int32
+	if markErr := MarkBillingReservationProviderStarted(requestID); markErr == nil {
+		providerCalls.Add(1)
+	} else {
+		require.ErrorIs(t, markErr, ErrBillingReservationStateConflict)
+	}
+	assert.Equal(t, int32(0), providerCalls.Load(), "a terminal reservation must fail closed before provider dispatch")
 	require.NoError(t, SettleBillingReservation(requestID, 0))
-	require.NoError(t, ReleaseBillingReservation(requestID, tokenKey))
+	assert.False(t, requireBillingReservationRelease(t, requestID, tokenKey))
 	var terminal BillingReservationRecord
 	require.NoError(t, DB.Where("request_id = ?", requestID).First(&terminal).Error)
 	assert.Equal(t, record.State, terminal.State)
@@ -493,7 +548,7 @@ func TestCleanupBillingReservationRecordsRemovesOnlyTerminal(t *testing.T) {
 	_, err = ReserveWalletBillingQuota("req-cleanup-released", userId, tokenId, tokenKey, 100, false)
 	require.NoError(t, err)
 	require.NoError(t, SettleBillingReservation("req-cleanup-settled", 0))
-	require.NoError(t, ReleaseBillingReservation("req-cleanup-released", tokenKey))
+	assert.True(t, requireBillingReservationRelease(t, "req-cleanup-released", tokenKey))
 
 	// 把本测试产生的已终结记录回拨到默认清理窗口之前
 	// （UpdateColumn 绕过 UpdatedAt 自动填充，保证回拨生效）
@@ -584,7 +639,7 @@ func TestBillingReservationCacheDeltaSigns(t *testing.T) {
 	_, err = ReserveWalletBillingQuota("req-cache-3", userId, tokenId, tokenKey, 100, false)
 	require.NoError(t, err)
 	require.NoError(t, MarkBillingReservationProviderStarted("req-cache-3"))
-	require.NoError(t, ReleaseBillingReservation("req-cache-3", tokenKey))
+	assert.True(t, requireBillingReservationRelease(t, "req-cache-3", tokenKey))
 	userQuota, err = common.RDB.HGet(context.Background(), userKey, "Quota").Int64()
 	require.NoError(t, err)
 	assert.Equal(t, int64(450), userQuota, "reserve+release net zero on cache")

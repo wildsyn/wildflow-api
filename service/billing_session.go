@@ -167,7 +167,7 @@ func (s *BillingSession) Refund(c *gin.Context) {
 
 	gopool.Go(func() {
 		if hasRecord {
-			if err := model.ReleaseBillingReservation(requestId, tokenKey); err != nil &&
+			if _, err := model.ReleaseBillingReservation(requestId, tokenKey); err != nil &&
 				!errors.Is(err, model.ErrBillingReservationNotFound) {
 				common.SysLog("error releasing billing reservation: " + err.Error())
 			}

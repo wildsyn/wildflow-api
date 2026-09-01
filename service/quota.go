@@ -456,7 +456,7 @@ func SettlePerCallBilling(relayInfo *relaycommon.RelayInfo, quota int) error {
 // 幂等。无预占记录时按预扣量原路退还。
 func ReleasePerCallBilling(relayInfo *relaycommon.RelayInfo) error {
 	if relayInfo.RequestId != "" {
-		err := model.ReleaseBillingReservation(relayInfo.RequestId, relayInfo.TokenKey)
+		_, err := model.ReleaseBillingReservation(relayInfo.RequestId, relayInfo.TokenKey)
 		if !errors.Is(err, model.ErrBillingReservationNotFound) {
 			return err
 		}

@@ -2,6 +2,8 @@ package model
 
 import (
 	"errors"
+	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 
@@ -110,6 +112,21 @@ func validateBillingReservationArgs(requestId string, userId int, amount int64) 
 		return errors.New("amount must be >= 0")
 	}
 	return nil
+}
+
+// transactionWithBillingReservationRetry absorbs SQLite's transient table
+// locks when multiple connections race for a reservation terminal CAS. Other
+// dialects rely on their row locks and return their errors immediately.
+func transactionWithBillingReservationRetry(operation func() error) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = operation()
+		if err == nil || !common.UsingMainDatabase(common.DatabaseTypeSQLite) || !strings.Contains(err.Error(), "database table is locked") {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Millisecond)
+	}
+	return err
 }
 
 // claimBillingReservationTx 用 requestId 唯一键占位。claimed=false 表示该请求
@@ -449,54 +466,57 @@ func SettleBillingReservation(requestId string, delta int) error {
 	var cacheUserId int
 	var cacheUserDelta int
 	var cacheTokenDelta int
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		var record BillingReservationRecord
-		if err := lockForUpdate(tx).Where("request_id = ?", requestId).First(&record).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrBillingReservationNotFound
-			}
-			return err
-		}
-		if record.State == BillingReservationStateSettled || record.State == BillingReservationStateReleased {
-			// 已终结：结算重放按幂等 no-op 处理（账变只会发生一次）。
-			return nil
-		}
-		// SQLite has no SELECT FOR UPDATE equivalent in lockForUpdate. Claim the
-		// terminal transition with a state CAS before applying any balance delta,
-		// so a concurrent explicit release or stale recovery cannot settle an old
-		// provider_started snapshot after it has already refunded the reservation.
-		transition := tx.Model(&BillingReservationRecord{}).
-			Where("id = ? AND state = ?", record.Id, record.State).
-			Update("state", BillingReservationStateSettled)
-		if transition.Error != nil {
-			return transition.Error
-		}
-		if transition.RowsAffected == 0 {
-			return nil
-		}
-		if delta != 0 {
-			var applyErr error
-			switch record.Source {
-			case BillingReservationSourceWallet:
-				applyErr = adjustUserQuotaDeltaTx(tx, record.UserId, int64(delta))
-				if applyErr == nil {
-					cacheUserId = record.UserId
-					cacheUserDelta = -delta
+	err := transactionWithBillingReservationRetry(func() error {
+		cacheUserId, cacheUserDelta, cacheTokenDelta = 0, 0, 0
+		return DB.Transaction(func(tx *gorm.DB) error {
+			var record BillingReservationRecord
+			if err := lockForUpdate(tx).Where("request_id = ?", requestId).First(&record).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrBillingReservationNotFound
 				}
-			case BillingReservationSourceSubscription:
-				applyErr = postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, int64(delta))
+				return err
 			}
-			// 资金侧失败即整体回滚：不再继续调整 Key，保证账变原子。
-			if applyErr != nil {
-				return applyErr
+			if record.State == BillingReservationStateSettled || record.State == BillingReservationStateReleased {
+				// 已终结：结算重放按幂等 no-op 处理（账变只会发生一次）。
+				return nil
 			}
-			// Key 额度与资金同步差额：补扣可把 remain 扣为负（上限已在预占守住）。
-			if tokenErr := adjustTokenQuotaDeltaTx(tx, record.TokenId, int64(delta)); tokenErr != nil {
-				return tokenErr
+			// SQLite has no SELECT FOR UPDATE equivalent in lockForUpdate. Claim the
+			// terminal transition with a state CAS before applying any balance delta,
+			// so a concurrent explicit release or stale recovery cannot settle an old
+			// provider_started snapshot after it has already refunded the reservation.
+			transition := tx.Model(&BillingReservationRecord{}).
+				Where("id = ? AND state = ?", record.Id, record.State).
+				Update("state", BillingReservationStateSettled)
+			if transition.Error != nil {
+				return transition.Error
 			}
-			cacheTokenDelta = -delta
-		}
-		return nil
+			if transition.RowsAffected == 0 {
+				return nil
+			}
+			if delta != 0 {
+				var applyErr error
+				switch record.Source {
+				case BillingReservationSourceWallet:
+					applyErr = adjustUserQuotaDeltaTx(tx, record.UserId, int64(delta))
+					if applyErr == nil {
+						cacheUserId = record.UserId
+						cacheUserDelta = -delta
+					}
+				case BillingReservationSourceSubscription:
+					applyErr = postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, int64(delta))
+				}
+				// 资金侧失败即整体回滚：不再继续调整 Key，保证账变原子。
+				if applyErr != nil {
+					return applyErr
+				}
+				// Key 额度与资金同步差额：补扣可把 remain 扣为负（上限已在预占守住）。
+				if tokenErr := adjustTokenQuotaDeltaTx(tx, record.TokenId, int64(delta)); tokenErr != nil {
+					return tokenErr
+				}
+				cacheTokenDelta = -delta
+			}
+			return nil
+		})
 	})
 	if err != nil {
 		return err
@@ -530,87 +550,94 @@ func billingReservationTokenKey(requestId string) string {
 // 调用方是进程存活、已知本次结果的处理路径（Provider 明确失败/取消/请求
 // 未成功）。自动恢复任务必须使用 ReleaseUnsentBillingReservation（只释放
 // 可证明未发送的 reserved 记录），防止误退可能已被 Provider 接受的请求。
-// settled/released 为幂等 no-op；记录不存在时返回 ErrBillingReservationNotFound
+// 返回值表示本次调用是否实际完成 released 终态迁移；已 settled/released 的
+// 幂等调用返回 false, nil。记录不存在时返回 ErrBillingReservationNotFound
 // （调用方回退旧路径）。
-func ReleaseBillingReservation(requestId string, tokenKey string) error {
+func ReleaseBillingReservation(requestId string, tokenKey string) (bool, error) {
 	return releaseBillingReservation(requestId, tokenKey, false)
 }
 
 // ReleaseUnsentBillingReservation 仅供自动恢复任务使用：只释放仍处于
 // reserved（可证明 Provider 未触达）的记录。provider_started（结果未知）
-// 不释放，防止把已发送的请求退款。
-func ReleaseUnsentBillingReservation(requestId string, tokenKey string) error {
+// 不释放，防止把已发送的请求退款。返回值表示本次调用是否实际完成释放。
+func ReleaseUnsentBillingReservation(requestId string, tokenKey string) (bool, error) {
 	return releaseBillingReservation(requestId, tokenKey, true)
 }
 
-func releaseBillingReservation(requestId string, tokenKey string, reservedOnly bool) error {
+func releaseBillingReservation(requestId string, tokenKey string, reservedOnly bool) (bool, error) {
 	if requestId == "" {
-		return ErrBillingReservationNotFound
+		return false, ErrBillingReservationNotFound
 	}
 	var cacheUserId int
 	var cacheUserDelta int
 	var cacheTokenDelta int
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		var record BillingReservationRecord
-		if err := lockForUpdate(tx).Where("request_id = ?", requestId).First(&record).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrBillingReservationNotFound
-			}
-			return err
-		}
-		if record.State != BillingReservationStateReserved {
-			if reservedOnly || record.State != BillingReservationStateProviderStarted {
-				return nil
-			}
-		}
-		// Claim the terminal release before refunding. This CAS is required in
-		// addition to lockForUpdate because SQLite deliberately omits FOR UPDATE;
-		// without it a release can refund a stale provider_started snapshot after
-		// a concurrent settle has already committed.
-		transition := tx.Model(&BillingReservationRecord{}).
-			Where("id = ? AND state = ?", record.Id, record.State).
-			Update("state", BillingReservationStateReleased)
-		if transition.Error != nil {
-			return transition.Error
-		}
-		if transition.RowsAffected == 0 {
-			return nil
-		}
-		switch record.Source {
-		case BillingReservationSourceWallet:
-			if err := tx.Model(&User{}).Where("id = ?", record.UserId).
-				Update("quota", gorm.Expr("quota + ?", record.Amount)).Error; err != nil {
+	released := false
+	err := transactionWithBillingReservationRetry(func() error {
+		cacheUserId, cacheUserDelta, cacheTokenDelta = 0, 0, 0
+		released = false
+		return DB.Transaction(func(tx *gorm.DB) error {
+			var record BillingReservationRecord
+			if err := lockForUpdate(tx).Where("request_id = ?", requestId).First(&record).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrBillingReservationNotFound
+				}
 				return err
 			}
-			cacheUserId = record.UserId
-			cacheUserDelta = int(record.Amount)
-		case BillingReservationSourceSubscription:
-			// SubscriptionPreConsumeRecord 退还原始预占（幂等）；追加部分单独退还。
-			if err := refundSubscriptionPreConsumeTx(tx, requestId); err != nil {
-				return err
-			}
-			if record.TopUpAmount > 0 {
-				if err := postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, -record.TopUpAmount); err != nil {
-					return err
+			if record.State != BillingReservationStateReserved {
+				if reservedOnly || record.State != BillingReservationStateProviderStarted {
+					return nil
 				}
 			}
-		}
-		if err := refundTokenQuotaTx(tx, record.TokenId, record.Amount); err != nil {
-			return err
-		}
-		cacheTokenDelta = int(record.Amount)
-		return nil
+			// Claim the terminal release before refunding. This CAS is required in
+			// addition to lockForUpdate because SQLite deliberately omits FOR UPDATE;
+			// without it a release can refund a stale provider_started snapshot after
+			// a concurrent settle has already committed.
+			transition := tx.Model(&BillingReservationRecord{}).
+				Where("id = ? AND state = ?", record.Id, record.State).
+				Update("state", BillingReservationStateReleased)
+			if transition.Error != nil {
+				return transition.Error
+			}
+			if transition.RowsAffected == 0 {
+				return nil
+			}
+			released = true
+			switch record.Source {
+			case BillingReservationSourceWallet:
+				if err := tx.Model(&User{}).Where("id = ?", record.UserId).
+					Update("quota", gorm.Expr("quota + ?", record.Amount)).Error; err != nil {
+					return err
+				}
+				cacheUserId = record.UserId
+				cacheUserDelta = int(record.Amount)
+			case BillingReservationSourceSubscription:
+				// SubscriptionPreConsumeRecord 退还原始预占（幂等）；追加部分单独退还。
+				if err := refundSubscriptionPreConsumeTx(tx, requestId); err != nil {
+					return err
+				}
+				if record.TopUpAmount > 0 {
+					if err := postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, -record.TopUpAmount); err != nil {
+						return err
+					}
+				}
+			}
+			if err := refundTokenQuotaTx(tx, record.TokenId, record.Amount); err != nil {
+				return err
+			}
+			cacheTokenDelta = int(record.Amount)
+			return nil
+		})
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
-	if cacheUserDelta != 0 || cacheTokenDelta != 0 {
+	if released && (cacheUserDelta != 0 || cacheTokenDelta != 0) {
 		if tokenKey == "" {
 			tokenKey = billingReservationTokenKey(requestId)
 		}
 		syncBillingReservationCache(cacheUserId, tokenKey, cacheUserDelta, cacheTokenDelta)
 	}
-	return nil
+	return released, nil
 }
 
 // ReleaseStaleBillingReservations 恢复任务：仅释放仍处于 reserved（可证明
@@ -638,10 +665,13 @@ func ReleaseStaleBillingReservations(olderThanSeconds int64, limit int) (int64, 
 				tokenKey = token.Key
 			}
 		}
-		if err := ReleaseUnsentBillingReservation(record.RequestId, tokenKey); err != nil {
+		didRelease, err := ReleaseUnsentBillingReservation(record.RequestId, tokenKey)
+		if err != nil {
 			return released, err
 		}
-		released++
+		if didRelease {
+			released++
+		}
 	}
 	return released, nil
 }

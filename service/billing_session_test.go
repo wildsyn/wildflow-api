@@ -193,7 +193,8 @@ func TestBillingSessionRefundReleasesReservationExactlyOnce(t *testing.T) {
 	// Provider 失败：退款
 	session.Refund(ctx)
 	// ReleaseBillingReservation 由 Refund 的 gopool 异步执行，这里显式等待同一幂等结果
-	require.NoError(t, model.ReleaseBillingReservation(relayInfo.RequestId, tokenKey))
+	_, err := model.ReleaseBillingReservation(relayInfo.RequestId, tokenKey)
+	require.NoError(t, err)
 
 	assert.Equal(t, 1_000, sessionUserQuota(t, userId))
 	token, err := model.GetTokenById(tokenId)
@@ -345,7 +346,8 @@ func TestBillingSessionMarkProviderStartedGuardsRecovery(t *testing.T) {
 
 	// 活跃进程失败路径：可以释放（Provider 明确失败）
 	session.Refund(ctx)
-	require.NoError(t, model.ReleaseBillingReservation(relayInfo.RequestId, tokenKey))
+	_, err = model.ReleaseBillingReservation(relayInfo.RequestId, tokenKey)
+	require.NoError(t, err)
 	assert.Equal(t, 1_000, sessionUserQuota(t, userId))
 	token, err := model.GetTokenById(tokenId)
 	require.NoError(t, err)
