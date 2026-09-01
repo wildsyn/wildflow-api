@@ -186,17 +186,28 @@ func reserveTokenQuotaTx(tx *gorm.DB, tokenId int, amount int64, unlimitedToken 
 	return nil
 }
 
-// adjustTokenQuotaDeltaTx 结算差额调整 Key 额度：delta>0 补扣（允许把 remain
-// 扣为负，上限已在预占时守住），delta<0 退还。Key 已删除时静默跳过。
-func adjustTokenQuotaDeltaTx(tx *gorm.DB, tokenId int, delta int64) error {
+// adjustTokenQuotaDeltaTx 结算差额调整 Key 额度：delta>0 仍须满足非 unlimited
+// Key 的硬上限；delta<0 退还。资格不足时事务回滚，记录保持可重试状态。
+func adjustTokenQuotaDeltaTx(tx *gorm.DB, tokenId int, delta int64, unlimitedToken bool) error {
 	if tokenId <= 0 || delta == 0 {
 		return nil
 	}
 	if delta > 0 {
-		return tx.Model(&Token{}).Where("id = ?", tokenId).Updates(map[string]any{
+		query := tx.Model(&Token{}).Where("id = ?", tokenId)
+		if !unlimitedToken {
+			query = query.Where("remain_quota >= ?", delta)
+		}
+		res := query.Updates(map[string]any{
 			"remain_quota": gorm.Expr("remain_quota - ?", delta),
 			"used_quota":   gorm.Expr("used_quota + ?", delta),
-		}).Error
+		})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrInsufficientTokenQuota
+		}
+		return nil
 	}
 	return tx.Model(&Token{}).Where("id = ?", tokenId).Updates(map[string]any{
 		"remain_quota": gorm.Expr("remain_quota + ?", -delta),
@@ -204,16 +215,22 @@ func adjustTokenQuotaDeltaTx(tx *gorm.DB, tokenId int, delta int64) error {
 	}).Error
 }
 
-// adjustUserQuotaDeltaTx 结算差额调整账户余额：delta>0 无条件补扣（该请求已
-// 通过预占取得资格，欠费有界），delta<0 退还。仅用于结算/对账；预占与追加
-// 一律走条件扣减。
+// adjustUserQuotaDeltaTx 结算差额调整账户余额：delta>0 仍须取得余额资格；
+// 不足时必须回滚并保持预占记录未结算，不能以负余额终结请求。
 func adjustUserQuotaDeltaTx(tx *gorm.DB, userId int, delta int64) error {
 	if delta == 0 {
 		return nil
 	}
 	if delta > 0 {
-		return tx.Model(&User{}).Where("id = ?", userId).
-			Update("quota", gorm.Expr("quota - ?", delta)).Error
+		res := tx.Model(&User{}).Where("id = ? AND quota >= ?", userId, delta).
+			Update("quota", gorm.Expr("quota - ?", delta))
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrInsufficientUserQuota
+		}
+		return nil
 	}
 	return tx.Model(&User{}).Where("id = ?", userId).
 		Update("quota", gorm.Expr("quota + ?", -delta)).Error
@@ -509,8 +526,8 @@ func SettleBillingReservation(requestId string, delta int) error {
 				if applyErr != nil {
 					return applyErr
 				}
-				// Key 额度与资金同步差额：补扣可把 remain 扣为负（上限已在预占守住）。
-				if tokenErr := adjustTokenQuotaDeltaTx(tx, record.TokenId, int64(delta)); tokenErr != nil {
+				// Key 额度与资金同步差额：非 unlimited Key 必须再次满足硬上限。
+				if tokenErr := adjustTokenQuotaDeltaTx(tx, record.TokenId, int64(delta), record.UnlimitedToken); tokenErr != nil {
 					return tokenErr
 				}
 				cacheTokenDelta = -delta

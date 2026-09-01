@@ -214,6 +214,57 @@ func TestSettleBillingReservationDeltaAndIdempotency(t *testing.T) {
 	assert.Equal(t, 550, used)
 }
 
+func TestSettleBillingReservationPositiveDeltaFailsClosedAtBothHardCaps(t *testing.T) {
+	// A provider may have consumed more than the reservation only on a legacy or
+	// misconfigured path. Settlement must not convert that into account/Key debt:
+	// both ledgers remain unchanged and the provider_started record is retriable.
+	userId, tokenId, tokenKey := seedReservationFixture(t, 100, 100)
+	_, err := ReserveWalletBillingQuota("req-settle-hard-cap", userId, tokenId, tokenKey, 100, false)
+	require.NoError(t, err)
+	require.NoError(t, MarkBillingReservationProviderStarted("req-settle-hard-cap"))
+
+	err = SettleBillingReservation("req-settle-hard-cap", 50)
+	require.ErrorIs(t, err, ErrInsufficientUserQuota)
+	assert.Equal(t, 0, reservationUserQuota(t, userId), "positive settlement must not overdraw the account")
+	remain, used := reservationTokenState(t, tokenId)
+	assert.Equal(t, 0, remain, "positive settlement must not overdraw a bounded Key")
+	assert.Equal(t, 100, used)
+
+	var record BillingReservationRecord
+	require.NoError(t, DB.Where("request_id = ?", "req-settle-hard-cap").First(&record).Error)
+	assert.Equal(t, BillingReservationStateProviderStarted, record.State, "failed top-up must not terminate settlement")
+
+	// Once both sides are funded, a retry settles exactly once; replay is a no-op.
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", userId).Update("quota", 50).Error)
+	require.NoError(t, DB.Model(&Token{}).Where("id = ?", tokenId).Update("remain_quota", 50).Error)
+	require.NoError(t, SettleBillingReservation("req-settle-hard-cap", 50))
+	require.NoError(t, SettleBillingReservation("req-settle-hard-cap", 50))
+	assert.Equal(t, 0, reservationUserQuota(t, userId))
+	remain, used = reservationTokenState(t, tokenId)
+	assert.Equal(t, 0, remain)
+	assert.Equal(t, 150, used, "successful settlement is idempotent")
+	require.NoError(t, DB.Where("request_id = ?", "req-settle-hard-cap").First(&record).Error)
+	assert.Equal(t, BillingReservationStateSettled, record.State)
+}
+
+func TestSettleBillingReservationPositiveDeltaRollsBackWhenBoundedKeyIsShort(t *testing.T) {
+	userId, tokenId, tokenKey := seedReservationFixture(t, 200, 100)
+	_, err := ReserveWalletBillingQuota("req-settle-key-hard-cap", userId, tokenId, tokenKey, 100, false)
+	require.NoError(t, err)
+	require.NoError(t, MarkBillingReservationProviderStarted("req-settle-key-hard-cap"))
+
+	err = SettleBillingReservation("req-settle-key-hard-cap", 50)
+	require.ErrorIs(t, err, ErrInsufficientTokenQuota)
+	assert.Equal(t, 100, reservationUserQuota(t, userId), "failed Key top-up must roll back the account top-up")
+	remain, used := reservationTokenState(t, tokenId)
+	assert.Equal(t, 0, remain)
+	assert.Equal(t, 100, used)
+
+	var record BillingReservationRecord
+	require.NoError(t, DB.Where("request_id = ?", "req-settle-key-hard-cap").First(&record).Error)
+	assert.Equal(t, BillingReservationStateProviderStarted, record.State)
+}
+
 func TestSettleBillingReservationRefundsOverestimate(t *testing.T) {
 	userId, tokenId, tokenKey := seedReservationFixture(t, 1_000, 1_000)
 	_, err := ReserveWalletBillingQuota("req-settle-refund", userId, tokenId, tokenKey, 400, false)
