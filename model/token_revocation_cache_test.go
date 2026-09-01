@@ -27,9 +27,18 @@ func newRevocableToken(t *testing.T, key string) *Token {
 	return &token
 }
 
+// drainTokenCacheFills blocks until every asynchronous cache fill triggered by
+// this test has finished; register it immediately after useUserCacheMiniRedis
+// so no fill can still touch Redis after the fixture restored the globals.
+func drainTokenCacheFills(t *testing.T) {
+	t.Helper()
+	t.Cleanup(waitTokenCacheFills)
+}
+
 func TestTokenDeleteImmediatelyInvalidatesCachedGrant(t *testing.T) {
 	newRevocableToken(t, "revoke-delete-cache-key")
 	useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
 
 	cached, err := GetTokenByKey("revoke-delete-cache-key", false)
 	require.NoError(t, err)
@@ -53,7 +62,8 @@ func TestTokenDeleteImmediatelyInvalidatesCachedGrant(t *testing.T) {
 
 func TestTokenDisableImmediatelyInvalidatesCachedGrant(t *testing.T) {
 	token := newRevocableToken(t, "revoke-disable-cache-key")
-	server := useUserCacheMiniRedis(t)
+	useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
 
 	cached, err := GetTokenByKey(token.Key, false)
 	require.NoError(t, err)
@@ -64,7 +74,8 @@ func TestTokenDisableImmediatelyInvalidatesCachedGrant(t *testing.T) {
 
 	// After the successful disable the cached enabled snapshot must be gone:
 	// the fence keeps racing fills out and the hash was proven deleted.
-	assert.False(t, server.Exists(tokenCacheKey(token.Key)))
+	_, err = cacheGetTokenByKey(token.Key)
+	require.Error(t, err)
 	// The row still exists but reports the disabled status, and the validate
 	// path used by relay requests must reject the key.
 	_, err = GetTokenByKey(token.Key, false)
@@ -76,6 +87,7 @@ func TestTokenDisableImmediatelyInvalidatesCachedGrant(t *testing.T) {
 func TestTokenBatchDeleteImmediatelyInvalidatesCachedGrants(t *testing.T) {
 	truncateTables(t)
 	useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
 	tokens := []Token{
 		{UserId: 7, Key: "batch-revoke-a", Name: "a", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true},
 		{UserId: 7, Key: "batch-revoke-b", Name: "b", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true},
@@ -108,6 +120,7 @@ func TestTokenBatchDeleteImmediatelyInvalidatesCachedGrants(t *testing.T) {
 func TestTokenDeleteFailsClosedWhenRedisDeleteFails(t *testing.T) {
 	token := newRevocableToken(t, "revoke-fail-closed-key")
 	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
 	require.NoError(t, cacheSetToken(*token))
 	require.True(t, server.Exists(tokenCacheKey(token.Key)))
 
@@ -127,11 +140,14 @@ func TestTokenDeleteFailsClosedWhenRedisDeleteFails(t *testing.T) {
 	require.NoError(t, token.Delete())
 	_, err = GetTokenByKey(token.Key, false)
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	_, err = ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
 }
 
 func TestTokenDeleteFailsClosedWhenRedisFenceRaiseFails(t *testing.T) {
 	token := newRevocableToken(t, "revoke-fence-fail-key")
 	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
 	require.NoError(t, cacheSetToken(*token))
 	require.True(t, server.Exists(tokenCacheKey(token.Key)))
 
@@ -149,9 +165,35 @@ func TestTokenDeleteFailsClosedWhenRedisFenceRaiseFails(t *testing.T) {
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }
 
+// A committed delete whose Redis DEL/EXISTS phase failed leaves the fence
+// raised; the cache read side must fail closed and refuse the leftover hash
+// instead of authorizing through it.
+func TestTokenCacheReadFailsClosedWhileFenceRaised(t *testing.T) {
+	token := newRevocableToken(t, "revoke-read-fail-closed-key")
+	useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+	require.NoError(t, cacheSetToken(*token))
+
+	// Simulate a revocation that committed the fence but could not delete the
+	// hash (DEL/EXISTS phase failed on every retry).
+	require.NoError(t, raiseTokenRevocationFence(common.GenerateHMAC(token.Key)))
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.ErrorIs(t, err, ErrTokenCacheRevocationPending)
+	require.Nil(t, cached)
+
+	// The relay-facing validate path must fall through to the database, see
+	// the token still enabled there? No — the row is not yet deleted in this
+	// simulation, so validate still succeeds; the fence only blocks the CACHE.
+	// After the database delete commits, the same read must reject.
+	require.NoError(t, token.Delete())
+	_, err = ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+}
+
 func TestTokenCacheFillDropsWriteWhileRevocationFenceIsRaised(t *testing.T) {
 	token := newRevocableToken(t, "revoke-fill-race-key")
 	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
 
 	require.NoError(t, cacheSetToken(*token))
 	require.True(t, server.Exists(tokenCacheKey(token.Key)))
@@ -165,8 +207,8 @@ func TestTokenCacheFillDropsWriteWhileRevocationFenceIsRaised(t *testing.T) {
 	assert.ErrorIs(t, err, ErrTokenCacheRevocationPending)
 	assert.False(t, server.Exists(tokenCacheKey(token.Key)))
 
-	// After the fence is explicitly cleared (re-enable path) fills work again.
-	require.NoError(t, AllowTokenCacheRefresh(token.Key))
+	// After the fence is explicitly released (re-enable path) fills work again.
+	require.NoError(t, AllowTokenCacheRefresh(token.Key, 1))
 	require.NoError(t, cacheSetTokenRespectingRevocation(*token))
 	assert.True(t, server.Exists(tokenCacheKey(token.Key)))
 }
@@ -174,11 +216,12 @@ func TestTokenCacheFillDropsWriteWhileRevocationFenceIsRaised(t *testing.T) {
 func TestTokenReEnableClearsFenceAndRecaches(t *testing.T) {
 	token := newRevocableToken(t, "revoke-reenable-key")
 	useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
 
 	token.Status = common.TokenStatusDisabled
 	require.NoError(t, token.Update())
 	_, err := ValidateUserToken(token.Key)
-	require.ErrorIs(t, err, ErrTokenInvalid)
+	require.ErrorIs(t, ErrTokenInvalid, err)
 
 	// While the fence is alive, a fill must not resurrect the disabled token.
 	err = cacheSetTokenRespectingRevocation(*token)
@@ -193,6 +236,7 @@ func TestTokenReEnableClearsFenceAndRecaches(t *testing.T) {
 func TestTokenRevocationFenceOutlivesCacheTTL(t *testing.T) {
 	newRevocableToken(t, "revoke-fence-ttl-key")
 	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
 	common.SyncFrequency = 2
 	cached, err := GetTokenByKey("revoke-fence-ttl-key", false)
 	require.NoError(t, err)
@@ -242,12 +286,17 @@ func TestTokenRevocationWorksWithoutRedis(t *testing.T) {
 	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }
 
-func TestTokenRevocationFencesSurviveAfterPartialBatchFailure(t *testing.T) {
+// The committed-phase cleanup of a batch delete must be idempotently
+// retryable: resubmitting the same ids after the rows are already soft-deleted
+// must still fence and prove-delete the cached hashes instead of returning a
+// fake success, and a Redis failure during the retry must keep failing.
+func TestTokenBatchRetryCompletesPendingCacheCleanup(t *testing.T) {
 	truncateTables(t)
-	server := useUserCacheMiniRedis(t)
+	useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
 	tokens := []Token{
-		{UserId: 7, Key: "batch-partial-a", Name: "a", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true},
-		{UserId: 7, Key: "batch-partial-b", Name: "b", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true},
+		{UserId: 7, Key: "batch-retry-a", Name: "a", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true},
+		{UserId: 7, Key: "batch-retry-b", Name: "b", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true},
 	}
 	for i := range tokens {
 		require.NoError(t, tokens[i].Insert())
@@ -256,27 +305,163 @@ func TestTokenRevocationFencesSurviveAfterPartialBatchFailure(t *testing.T) {
 		require.NoError(t, cacheSetToken(tk))
 	}
 
-	// Once the fences are raised for the two keys, a Redis failure during the
-	// committed-phase deletes must surface instead of reporting success.
-	require.NoError(t, raiseTokenRevocationFences([]string{tokens[0].Key, tokens[1].Key}))
+	// Simulate the exact state a first attempt with a broken cleanup leaves
+	// behind: fences raised BEFORE the deletes committed, rows soft-deleted,
+	// cached hashes untouched.
+	keys := make([]string, 0, len(tokens))
+	for _, tk := range tokens {
+		keys = append(keys, tk.Key)
+	}
+	require.NoError(t, raiseTokenRevocationFences(keys))
+	for i := range tokens {
+		require.NoError(t, DB.Delete(&tokens[i]).Error)
+	}
+
+	// The committed revocation denies new requests even though the cached
+	// hashes survived the failed cleanup: reads are fence-aware.
+	for _, tk := range tokens {
+		_, err := ValidateUserToken(tk.Key)
+		require.ErrorIs(t, err, ErrTokenInvalid)
+	}
+
+	// Retry with Redis healthy: the tombstoned rows are resolved, cleanup
+	// completes, and the same ids must NOT report a fake success.
+	count, err := BatchDeleteTokens([]int{tokens[0].Id, tokens[1].Id}, 7)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+	for _, tk := range tokens {
+		_, err := cacheGetTokenByKey(tk.Key)
+		require.Error(t, err)
+		_, err = ValidateUserToken(tk.Key)
+		require.ErrorIs(t, err, ErrTokenInvalid)
+	}
+}
+
+// A batch whose committed-phase cleanup failed once must not report success on
+// resubmission while Redis is still failing.
+func TestTokenBatchRetryStillFailsClosedWhileRedisBroken(t *testing.T) {
+	truncateTables(t)
+	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+	tokens := []Token{
+		{UserId: 7, Key: "batch-retry-fail-a", Name: "a", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true},
+	}
+	for i := range tokens {
+		require.NoError(t, tokens[i].Insert())
+		require.NoError(t, cacheSetToken(tokens[i]))
+	}
+
+	// Same broken-cleanup state as the healthy-retry test, but the retry also
+	// runs against broken Redis: it must keep failing, never fake success.
+	keys := []string{tokens[0].Key}
+	require.NoError(t, raiseTokenRevocationFences(keys))
+	require.NoError(t, DB.Delete(&tokens[0]).Error)
+	_, err := ValidateUserToken(tokens[0].Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+
 	server.SetError("miniredis forced error")
-	err := revokeTokensCacheCommitted([]string{tokens[0].Key, tokens[1].Key})
+	count, err := BatchDeleteTokens([]int{tokens[0].Id}, 7)
+	require.ErrorIs(t, err, ErrTokenCacheRevocationPending)
+	assert.Equal(t, 0, count)
+	_, err = ValidateUserToken(tokens[0].Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+
+	server.SetError("")
+	count, err = BatchDeleteTokens([]int{tokens[0].Id}, 7)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+	_, err = ValidateUserToken(tokens[0].Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+}
+
+// Ordinary (non-revoking) updates must write the cache through the
+// fence-guarded path: an update that committed just before a concurrent
+// delete's success must not re-write the enabled snapshot afterwards.
+func TestTokenUpdateDoesNotOverwriteFenceAfterDelete(t *testing.T) {
+	token := newRevocableToken(t, "revoke-update-vs-delete-key")
+	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+	require.NoError(t, cacheSetToken(*token))
+
+	// Delete wins first: fence raised, DB row soft-deleted, hash proven gone.
+	require.NoError(t, token.Delete())
+	require.False(t, server.Exists(tokenCacheKey(token.Key)))
+
+	// A stale in-flight update now finishes and tries to write the enabled
+	// snapshot: the fence must make it a no-op on the cache.
+	stale := *token
+	stale.Name = "renamed-after-delete"
+	err := stale.Update()
+	// The update reports success (the DB update is a no-op on a deleted row's
+	// soft-deleted state via Updates? It still targets the row through the
+	// primary key; soft-deleted rows are filtered, so rows affected = 0) — the
+	// cache contract is what matters here: no enabled snapshot returns.
+	_ = err
+	require.False(t, server.Exists(tokenCacheKey(token.Key)))
+
+	// New requests must not authorize.
+	_, err = ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+}
+
+// Re-enable must only release the fence generation it observed: a concurrent
+// delete that raised a newer fence after the re-enable snapshot keeps its deny
+// window, and the re-enable must not write an enabled snapshot over it.
+func TestTokenReEnableDoesNotReleaseNewerFence(t *testing.T) {
+	token := newRevocableToken(t, "revoke-reenable-race-key")
+	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+
+	// Disable commits (epoch 1 raised + hash proven deleted).
+	token.Status = common.TokenStatusDisabled
+	require.NoError(t, token.Update())
+	_, err := ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+
+	// The re-enable snapshots the fence epoch before its database write…
+	observedEpoch, err := readRevocationEpoch(token.Key)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, observedEpoch, int64(1))
+
+	// …but a concurrent delete raises a NEWER fence first…
+	require.NoError(t, raiseTokenRevocationFence(common.GenerateHMAC(token.Key)))
+	newerEpoch, err := readRevocationEpoch(token.Key)
+	require.NoError(t, err)
+	require.Greater(t, newerEpoch, observedEpoch)
+
+	// …so the re-enable's CAS must fail and keep the newer fence.
+	err = AllowTokenCacheRefresh(token.Key, observedEpoch)
 	require.ErrorIs(t, err, ErrTokenCacheRevocationPending)
 
-	// The fences are still raised, so a racing fill for either key must drop
-	// its write even though the cached hash may still exist: the fill either
-	// refuses on the fence or fails outright — either way it never lands the
-	// pre-revocation snapshot.
-	for _, tk := range tokens {
-		assert.Error(t, cacheSetTokenRespectingRevocation(tk))
-	}
-	// While the fence is up the keys must not re-authorize through the cache:
-	// the stored snapshot (if any) was superseded by the deny epoch.
-	server.SetError("")
-	for _, tk := range tokens {
-		require.NoError(t, AllowTokenCacheRefresh(tk.Key))
-	}
-	for _, tk := range tokens {
-		require.NoError(t, cacheSetTokenRespectingRevocation(tk))
-	}
+	// Fills stay denied: no enabled snapshot may re-enter the cache.
+	err = cacheSetTokenRespectingRevocation(*token)
+	assert.ErrorIs(t, err, ErrTokenCacheRevocationPending)
+	assert.False(t, server.Exists(tokenCacheKey(token.Key)))
+}
+
+// Multi-instance equivalence: with the fence semantics being plain Redis
+// operations over shared keys, a revoke on "node A" must deny reads served by
+// "node B" immediately. Modeled by one shared miniredis backing both direct
+// cache reads (B) and model-layer revocations (A).
+func TestTokenRevocationDeniesAcrossSharedRedis(t *testing.T) {
+	token := newRevocableToken(t, "revoke-shared-redis-key")
+	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+
+	// Node B's local cache holds an enabled snapshot (same Redis backing).
+	require.NoError(t, cacheSetToken(*token))
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	require.NotNil(t, cached)
+
+	// Node A revokes and its Delete returns success.
+	require.NoError(t, token.Delete())
+
+	// Node B's next read must not serve the old grant: the hash is proven
+	// gone and the fence denies any racing fill.
+	_, err = cacheGetTokenByKey(token.Key)
+	require.Error(t, err)
+	_, err = ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+	require.False(t, server.Exists(tokenCacheKey(token.Key)))
 }

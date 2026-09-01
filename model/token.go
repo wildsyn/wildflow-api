@@ -275,7 +275,7 @@ func GetTokenById(id int) (*Token, error) {
 	var err error = nil
 	err = DB.First(&token, "id = ?", id).Error
 	if shouldUpdateRedis(true, err) {
-		gopool.Go(func() {
+		goTokenCacheFill(func() {
 			if err := cacheSetTokenRespectingRevocation(token); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) {
 				common.SysLog("failed to update user status cache: " + err.Error())
 			}
@@ -290,7 +290,7 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 		// dropped when a revocation fence was raised meanwhile, so a fill that
 		// raced a concurrent delete/disable cannot resurrect the cached grant.
 		if shouldUpdateRedis(fromDB, err) && token != nil {
-			gopool.Go(func() {
+			goTokenCacheFill(func() {
 				if err := cacheSetTokenRespectingRevocation(*token); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) {
 					common.SysLog("failed to update user status cache: " + err.Error())
 				}
@@ -322,20 +322,24 @@ func (token *Token) Update() (err error) {
 	// A status change to disabled is a revocation: raise the fence before the
 	// database write so a racing cache fill on any node cannot outlive it, and
 	// fail the update if the fence cannot be proven. Leaving a revoked state
-	// clears the fence so normal caching can resume.
+	// releases only the fence generation observed here — a concurrent revoke
+	// that raised a newer fence wins and keeps its deny window.
+	var observedEpoch int64
 	if common.RedisEnabled {
 		if revoking {
 			if err := raiseTokenRevocationFences([]string{token.Key}); err != nil {
 				return err
 			}
-		} else if token.Status == common.TokenStatusEnabled {
-			if err := AllowTokenCacheRefresh(token.Key); err != nil {
-				common.SysLog("failed to clear token revocation fence on re-enable: " + err.Error())
+		} else {
+			observedEpoch, err = readRevocationEpoch(token.Key)
+			if err != nil {
+				return fmt.Errorf("%w: read fence failed: %v", ErrTokenCacheRevocationPending, err)
 			}
 		}
 	}
-	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token).Error
+	result := DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token)
+	err = result.Error
 	if err != nil {
 		return err
 	}
@@ -346,9 +350,32 @@ func (token *Token) Update() (err error) {
 			common.SysLog("failed to invalidate token cache after disable: " + revokeErr.Error())
 			return revokeErr
 		}
-	}
-	if shouldUpdateRedis(true, err) && !revoking {
-		if cacheErr := cacheSetToken(*token); cacheErr != nil {
+	} else if shouldUpdateRedis(true, err) {
+		// A zero-row update means the row no longer exists (soft-deleted by a
+		// concurrent revoke that won the race): nothing was committed, so no
+		// fence may be released and no snapshot may enter the cache.
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		if token.Status == common.TokenStatusEnabled {
+			// Re-enable committed: release the fence generation observed before
+			// the database write. If a concurrent revoke raised a newer fence,
+			// the CAS fails and the deny window stays; the re-enable must not
+			// overwrite it.
+			if err := AllowTokenCacheRefresh(token.Key, observedEpoch); err != nil {
+				if !errors.Is(err, ErrTokenCacheRevocationPending) {
+					common.SysLog("failed to clear token revocation fence on re-enable: " + err.Error())
+					return err
+				}
+				// A newer fence outlives this re-enable: the key stays denied
+				// until its epoch expires, which the concurrent revoker owns.
+				common.SysLog("token re-enable raced a newer revocation fence; fence kept for " + token.Key)
+				return nil
+			}
+		}
+		// Fence-guarded write: an ordinary update racing a concurrent revoke
+		// must not re-write an enabled snapshot over the revoker's fence.
+		if cacheErr := cacheSetTokenRespectingRevocation(*token); cacheErr != nil && !errors.Is(cacheErr, ErrTokenCacheRevocationPending) {
 			common.SysLog("failed to update token cache: " + cacheErr.Error())
 			if deleteErr := cacheDeleteToken(token.Key); deleteErr != nil {
 				common.SysLog("failed to invalidate token cache after update: " + deleteErr.Error())
@@ -361,7 +388,7 @@ func (token *Token) Update() (err error) {
 func (token *Token) SelectUpdate() (err error) {
 	defer func() {
 		if shouldUpdateRedis(true, err) {
-			gopool.Go(func() {
+			goTokenCacheFill(func() {
 				err := cacheSetTokenRespectingRevocation(*token)
 				if err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) {
 					common.SysLog("failed to update token cache: " + err.Error())
@@ -506,6 +533,11 @@ func CountUserTokens(userId int) (int64, error) {
 }
 
 // BatchDeleteTokens 删除指定用户的一组令牌，返回成功删除数量
+//
+// Idempotent under retry: ids whose rows were already soft-deleted by a prior
+// attempt (e.g. one whose cache cleanup failed) are still resolved through the
+// soft-delete tombstones, so the fence-and-prove cache cleanup completes and
+// the retry cannot report success while a revoked key still authorizes.
 func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	if len(ids) == 0 {
 		return 0, errors.New("ids 不能为空！")
@@ -520,7 +552,27 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	}
 
 	if len(tokens) == 0 {
+		// Nothing live to delete — but a previous attempt of the same batch may
+		// have committed the deletes and failed the cache cleanup. Resolve the
+		// tombstones so the cleanup still runs before reporting success.
+		if err := tx.Unscoped().Select("id", "user_id", commonKeyCol).
+			Where("user_id = ? AND id IN (?)", userId, ids).Find(&tokens).Error; err != nil {
+			tx.Rollback()
+			return 0, err
+		}
 		tx.Rollback()
+		if len(tokens) == 0 {
+			return 0, nil
+		}
+		keys := make([]string, 0, len(tokens))
+		for _, t := range tokens {
+			if t.Key != "" {
+				keys = append(keys, t.Key)
+			}
+		}
+		if err := RevokeTokensCacheRetry(keys); err != nil {
+			return 0, err
+		}
 		return 0, nil
 	}
 

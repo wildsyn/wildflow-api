@@ -181,6 +181,12 @@ func RedisHGetObj(key string, obj interface{}) error {
 		return fmt.Errorf("key %s not found in Redis", key)
 	}
 
+	return RedisDecodeHash(result, obj)
+}
+
+// RedisDecodeHash decodes a Redis hash (field name → string value) into the
+// exported fields of obj, which must be a pointer to a struct.
+func RedisDecodeHash(result map[string]string, obj interface{}) error {
 	// Handle both pointer and non-pointer values
 	val := reflect.ValueOf(obj)
 	if val.Kind() != reflect.Ptr {
