@@ -298,6 +298,8 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 		meta.MaxTokens = int(lo.FromPtrOr(r.MaxOutputTokens, uint(0)))
 	case *dto.ClaudeRequest:
 		meta.MaxTokens = int(lo.FromPtr(r.MaxTokens))
+	case *dto.GeminiChatRequest:
+		meta.MaxTokens = int(lo.FromPtr(r.GenerationConfig.MaxOutputTokens))
 	case *dto.ImageRequest:
 		// Pricing for image requests depends on ImagePriceRatio; safe to compute even when CountToken is disabled.
 		return r.GetTokenCountMeta()
