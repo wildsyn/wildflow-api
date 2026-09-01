@@ -135,7 +135,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -146,11 +146,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -187,7 +187,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -198,11 +198,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -260,7 +260,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -271,11 +271,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -333,7 +333,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -344,11 +344,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -395,7 +395,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -406,11 +406,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -533,7 +533,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -544,11 +544,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -657,7 +657,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -668,11 +668,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -822,7 +822,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -833,11 +833,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -926,7 +926,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -937,11 +937,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1001,7 +1001,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1012,11 +1012,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1092,7 +1092,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1103,11 +1103,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1155,7 +1155,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1166,11 +1166,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1246,7 +1246,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1257,11 +1257,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1309,7 +1309,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1320,11 +1320,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1453,7 +1453,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1464,11 +1464,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1533,7 +1533,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1544,11 +1544,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1596,7 +1596,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1607,11 +1607,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1691,7 +1691,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1702,11 +1702,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1838,7 +1838,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1849,11 +1849,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1911,7 +1911,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1922,11 +1922,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -1973,7 +1973,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1984,11 +1984,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2035,7 +2035,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2046,11 +2046,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2149,7 +2149,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2160,11 +2160,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2238,7 +2238,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2249,11 +2249,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2301,7 +2301,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2312,11 +2312,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2363,7 +2363,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2374,11 +2374,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2425,7 +2425,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2436,11 +2436,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2492,7 +2492,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2503,11 +2503,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2544,7 +2544,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2555,11 +2555,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2604,7 +2604,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2615,11 +2615,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2667,7 +2667,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2678,11 +2678,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2730,7 +2730,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2741,11 +2741,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2793,7 +2793,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2804,11 +2804,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2845,7 +2845,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2856,11 +2856,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2915,7 +2915,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2926,11 +2926,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -2978,7 +2978,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2989,11 +2989,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -3039,7 +3039,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -3050,11 +3050,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -3102,7 +3102,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -3113,11 +3113,11 @@
             "headers": {}
           },
           "403": {
-            "description": "IP 不在该 Key 的 allow_ips 白名单内（code=access_denied，不泄露白名单内容）。",
+            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
                 }
               }
             },
@@ -5422,7 +5422,7 @@
       },
       "TokenAuthError": {
         "type": "object",
-        "description": "API Key 认证失败的响应。code 为稳定机器码：token_not_provided / token_not_found / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回，用于说明失败原因。HTTP 状态码均为 401。",
+        "description": "API Key 认证失败的响应。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回，用于说明失败原因。HTTP 状态码均为 401。",
         "properties": {
           "error": {
             "type": "object",
@@ -5445,11 +5445,43 @@
                 "type": "string",
                 "enum": [
                   "token_not_provided",
-                  "token_not_found",
                   "token_invalid",
                   "token_expired",
                   "token_disabled",
                   "token_quota_exhausted"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "TokenAuthForbiddenError": {
+        "type": "object",
+        "description": "已通过 API Key 认证后的 TokenAuth 授权拒绝响应。allow_ips 白名单拒绝使用 access_denied；客户端 IP 无法解析、用户禁用、分组不可用等现有分支使用空 code。HTTP 状态码均为 403。",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string",
+                "description": "本地化人话提示（含 request id）"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "new_api_error"
+                ]
+              },
+              "param": {
+                "type": "string",
+                "nullable": true
+              },
+              "code": {
+                "type": "string",
+                "nullable": true,
+                "enum": [
+                  "",
+                  "access_denied"
                 ]
               }
             }

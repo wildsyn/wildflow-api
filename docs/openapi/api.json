@@ -3870,7 +3870,7 @@
         ],
         "responses": {
           "200": {
-            "description": "成功（撤销语义：删除成功后新请求立即拒绝）",
+            "description": "成功。删除先提交数据库；撤销 fence 会在缓存清理或刷新竞态期间强制 TokenAuth 回退到数据库权威状态。Redis 不可用或缓存清理失败时请求拒绝而非继续授权。",
             "content": {
               "application/json": {
                 "schema": {
@@ -3955,7 +3955,7 @@
       "get": {
         "summary": "获取令牌使用情况",
         "deprecated": false,
-        "description": "🔑 需要令牌认证（TokenAuthReadOnly）。返回当前令牌的用量概览。401 响应带稳定 code（token_not_provided / token_not_found / token_disabled），未提供与不存在的 Key 使用相同人话提示以防探测。",
+        "description": "🔑 需要令牌认证（TokenAuthReadOnly）。返回当前令牌的用量概览。401 响应带稳定 code（token_not_provided / token_invalid / token_disabled）；不存在 Key 与普通无效 Key 使用同一完整响应以防探测。",
         "tags": [
           "令牌管理"
         ],
@@ -5691,7 +5691,7 @@
           "remain_quota": {
             "type": "integer",
             "minimum": 0,
-            "description": "剩余额度；unlimited_quota=false 时必填且不可为负。并发请求也不会突破该硬上限，耗尽后新请求返回 401 token_quota_exhausted"
+            "description": "剩余额度；unlimited_quota=false 时必填且不可为负。额度预占在数据库事务内作条件扣减，已合并的原子预占实现保证并发请求不会突破该硬上限；耗尽后新请求返回 401 token_quota_exhausted。"
           },
           "unlimited_quota": {
             "type": "boolean",
@@ -5881,10 +5881,10 @@
             "type": "string",
             "enum": [
               "token_not_provided",
-              "token_not_found",
+              "token_invalid",
               "token_disabled"
             ],
-            "description": "token_not_provided=未提供；token_not_found=Key 不存在（与人话提示一致，不可探测）；token_disabled=该 Key 已被禁用（仅对真实存在的 Key 返回）。"
+            "description": "token_not_provided=未提供；token_invalid=不存在或普通无效 Key（完整响应不可探测）；token_disabled=该 Key 已被禁用（仅对真实存在的 Key 返回）。"
           },
           "message": {
             "type": "string",

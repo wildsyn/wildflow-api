@@ -95,13 +95,19 @@ func TestTokenAuthRejectsUnknownKeyWithoutLeakingExistence(t *testing.T) {
 	setupTokenAuthTest(t)
 	user := createTokenAuthUser(t)
 	createTokenAuthToken(t, user.Id, "existingkey0001", nil)
+	createTokenAuthToken(t, user.Id, "ordinaryinvalid1", func(token *model.Token) {
+		token.Status = 99
+	})
 
 	unknownResponse, unknownBody := serveTokenAuthRequest(t, "missingkey00001")
+	invalidResponse, invalidBody := serveTokenAuthRequest(t, "ordinaryinvalid1")
 	assert.Equal(t, http.StatusUnauthorized, unknownResponse.Code)
-	assert.Equal(t, "token_not_found", unknownBody.Error.Code)
-	// Both an unknown key and a malformed key must produce the same generic
-	// human message, so callers cannot distinguish "no such key" from other
-	// invalid states beyond the machine code.
+	assert.Equal(t, http.StatusUnauthorized, invalidResponse.Code)
+	assert.Equal(t, "token_invalid", unknownBody.Error.Code)
+	assert.Equal(t, invalidBody.Error.Code, unknownBody.Error.Code)
+	// A missing key and a real key in an ordinary invalid state must have an
+	// indistinguishable complete response, including the machine code.
+	assert.JSONEq(t, invalidResponse.Body.String(), unknownResponse.Body.String())
 	assert.Contains(t, unknownBody.Error.Message, common.TranslateMessage(nil, "token.invalid"))
 }
 

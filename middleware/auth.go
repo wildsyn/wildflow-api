@@ -300,9 +300,10 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusUnauthorized, gin.H{
 					"success": false,
-					// Same generic message as other unknown-key paths so the
-					// read-only endpoints cannot be used to probe key existence.
-					"code":    types.ErrorCodeTokenNotFound,
+					// Unknown keys and ordinary invalid keys share the complete
+					// external response, so read-only endpoints cannot be used to
+					// probe key existence.
+					"code":    types.ErrorCodeTokenInvalid,
 					"message": common.TranslateMessage(c, i18n.MsgTokenInvalid),
 				})
 			} else {
@@ -435,7 +436,7 @@ func TokenAuth() func(c *gin.Context) {
 					common.TranslateMessage(c, i18n.MsgTokenNotProvided), types.ErrorCodeTokenNotProvided)
 			case errors.Is(err, model.ErrTokenNotFound):
 				abortWithOpenAiMessage(c, http.StatusUnauthorized,
-					common.TranslateMessage(c, i18n.MsgTokenInvalid), types.ErrorCodeTokenNotFound)
+					common.TranslateMessage(c, i18n.MsgTokenInvalid), types.ErrorCodeTokenInvalid)
 			case errors.Is(err, model.ErrTokenExpired):
 				abortWithOpenAiMessage(c, http.StatusUnauthorized,
 					common.TranslateMessage(c, i18n.MsgTokenExpired), types.ErrorCodeTokenExpired)

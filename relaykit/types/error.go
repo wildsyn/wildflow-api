@@ -66,12 +66,12 @@ const (
 	ErrorCodeAccessDenied          ErrorCode = "access_denied"
 
 	// token auth error codes: stable machine codes for relay requests
-	// authenticated with an API key. token_not_found, token_not_provided and
-	// token_invalid all share the generic "invalid token" human message so an
-	// unauthorized caller cannot probe key existence; token_expired,
+	// authenticated with an API key. token_not_provided and token_invalid use
+	// the generic "invalid token" response; unknown and ordinary invalid keys
+	// both use token_invalid so an unauthorized caller cannot probe key
+	// existence. token_expired,
 	// token_disabled and token_quota_exhausted are only returned for keys the
 	// caller already demonstrated possession of.
-	ErrorCodeTokenNotFound       ErrorCode = "token_not_found"
 	ErrorCodeTokenNotProvided    ErrorCode = "token_not_provided"
 	ErrorCodeTokenInvalid        ErrorCode = "token_invalid"
 	ErrorCodeTokenExpired        ErrorCode = "token_expired"
