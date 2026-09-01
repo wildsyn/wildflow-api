@@ -203,6 +203,26 @@ func ApiError(c *gin.Context, err error) {
 	})
 }
 
+// ApiErrorMsgWithStatus writes the same failure envelope as ApiErrorMsg but
+// with a real HTTP status, so API clients can react to validation (400),
+// not-found (404) and bad-parameter (400) outcomes without parsing messages.
+func ApiErrorMsgWithStatus(c *gin.Context, status int, msg string) {
+	c.JSON(status, gin.H{
+		"success": false,
+		"message": msg,
+	})
+}
+
+// ApiErrorI18nWithStatus is ApiErrorI18n with an explicit HTTP status. See
+// ApiErrorMsgWithStatus for why management endpoints use it.
+func ApiErrorI18nWithStatus(c *gin.Context, status int, key string, args ...map[string]any) {
+	msg := TranslateMessage(c, key, args...)
+	c.JSON(status, gin.H{
+		"success": false,
+		"message": msg,
+	})
+}
+
 func ApiErrorMsg(c *gin.Context, msg string) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": false,

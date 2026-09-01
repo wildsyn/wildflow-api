@@ -65,6 +65,19 @@ const (
 	ErrorCodeConvertRequestFailed  ErrorCode = "convert_request_failed"
 	ErrorCodeAccessDenied          ErrorCode = "access_denied"
 
+	// token auth error codes: stable machine codes for relay requests
+	// authenticated with an API key. token_not_provided has its own missing-key
+	// message; unknown and ordinary invalid keys both use token_invalid with the
+	// same response so an unauthorized caller cannot probe key
+	// existence. token_expired,
+	// token_disabled and token_quota_exhausted are only returned for keys the
+	// caller already demonstrated possession of.
+	ErrorCodeTokenNotProvided    ErrorCode = "token_not_provided"
+	ErrorCodeTokenInvalid        ErrorCode = "token_invalid"
+	ErrorCodeTokenExpired        ErrorCode = "token_expired"
+	ErrorCodeTokenDisabled       ErrorCode = "token_disabled"
+	ErrorCodeTokenQuotaExhausted ErrorCode = "token_quota_exhausted"
+
 	// request error
 	ErrorCodeBadRequestBody ErrorCode = "bad_request_body"
 

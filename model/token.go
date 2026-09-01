@@ -83,25 +83,23 @@ func (token *Token) GetMaskedKey() string {
 }
 
 func (token *Token) GetIpLimits() []string {
-	// delete empty spaces
-	//split with \n
-	ipLimits := make([]string, 0)
 	if token.AllowIps == nil {
-		return ipLimits
+		return nil
 	}
-	cleanIps := strings.ReplaceAll(*token.AllowIps, " ", "")
-	if cleanIps == "" {
-		return ipLimits
-	}
-	ips := strings.Split(cleanIps, "\n")
-	for _, ip := range ips {
-		ip = strings.TrimSpace(ip)
-		ip = strings.ReplaceAll(ip, ",", "")
-		if ip != "" {
-			ipLimits = append(ipLimits, ip)
+	// Must share the splitter with write-time validation
+	// (common.ValidateIPCIDRList) so a comma/newline list that passed
+	// validation is enforced with exactly the same entries. Entries that are
+	// not valid IP/CIDR (legacy rows written before validation existed) are
+	// skipped instead of being merged into a bogus address that could never
+	// match and would silently reject legitimate callers.
+	limits := common.SplitIPCIDRList(*token.AllowIps)
+	entries := make([]string, 0, len(limits))
+	for _, entry := range limits {
+		if common.IsValidIPOrCIDR(entry) {
+			entries = append(entries, entry)
 		}
 	}
-	return ipLimits
+	return entries
 }
 
 func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
@@ -224,9 +222,16 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	}
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
-		if token.Status == common.TokenStatusExhausted ||
-			token.Status == common.TokenStatusExpired ||
-			token.Status != common.TokenStatusEnabled {
+		if token.Status == common.TokenStatusDisabled {
+			return token, fmt.Errorf("%w: %w", ErrTokenInvalid, ErrTokenDisabled)
+		}
+		if token.Status == common.TokenStatusExpired {
+			return token, fmt.Errorf("%w: %w", ErrTokenInvalid, ErrTokenExpired)
+		}
+		if token.Status == common.TokenStatusExhausted {
+			return token, fmt.Errorf("%w: %w", ErrTokenInvalid, ErrTokenQuotaExhausted)
+		}
+		if token.Status != common.TokenStatusEnabled {
 			return token, ErrTokenInvalid
 		}
 		if token.ExpiredTime != -1 && token.ExpiredTime < common.GetTimestamp() {
@@ -237,7 +242,7 @@ func ValidateUserToken(key string) (token *Token, err error) {
 					common.SysLog("failed to update token status" + err.Error())
 				}
 			}
-			return token, ErrTokenInvalid
+			return token, fmt.Errorf("%w: %w", ErrTokenInvalid, ErrTokenExpired)
 		}
 		if !token.UnlimitedQuota && token.RemainQuota <= 0 {
 			if !common.RedisEnabled {
@@ -247,13 +252,13 @@ func ValidateUserToken(key string) (token *Token, err error) {
 					common.SysLog("failed to update token status" + err.Error())
 				}
 			}
-			return token, ErrTokenInvalid
+			return token, fmt.Errorf("%w: %w", ErrTokenInvalid, ErrTokenQuotaExhausted)
 		}
 		return token, nil
 	}
 	common.SysLog("ValidateUserToken: failed to get token: " + err.Error())
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, ErrTokenInvalid
+		return nil, fmt.Errorf("%w: %w", ErrTokenInvalid, ErrTokenNotFound)
 	}
 	return nil, fmt.Errorf("%w: %v", ErrDatabase, err)
 }
