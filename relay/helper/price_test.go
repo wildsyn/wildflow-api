@@ -182,6 +182,30 @@ func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *test
 	require.NoError(t, err)
 	assert.Equal(t, 62, embeddingPrice.QuotaToPreConsume,
 		"a no-completion endpoint must retain prompt-only pre-consume behavior")
+
+	geminiEmbeddingInfo := &relaycommon.RelayInfo{
+		OriginModelName: "standard-hard-bound-model",
+		UserGroup:       "default",
+		UsingGroup:      "default",
+		RelayFormat:     types.RelayFormatGemini,
+		RequestURLPath:  "/v1beta/models/gemini-embedding-001:batchEmbedContents",
+	}
+	geminiEmbeddingPrice, err := ModelPriceHelper(ctx, geminiEmbeddingInfo, 10, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	assert.Equal(t, 62, geminiEmbeddingPrice.QuotaToPreConsume,
+		"Gemini batch embedding must not reserve a completion allowance")
+
+	geminiGenerationInfo := &relaycommon.RelayInfo{
+		OriginModelName: "standard-hard-bound-model",
+		UserGroup:       "default",
+		UsingGroup:      "default",
+		RelayFormat:     types.RelayFormatGemini,
+		RequestURLPath:  "/v1beta/models/gemini-embedding-001:generateContent?trace=EMBED",
+	}
+	geminiGenerationPrice, err := ModelPriceHelper(ctx, geminiGenerationInfo, common.PreConsumedQuota, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	assert.Equal(t, expected, geminiGenerationPrice.QuotaToPreConsume,
+		"Gemini generation must reserve completion capacity even when its query contains embed")
 }
 
 func TestModelPriceHelperTieredRejectsPreConsumeOverflow(t *testing.T) {
