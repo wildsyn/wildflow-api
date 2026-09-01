@@ -163,13 +163,34 @@ func TestTokenAuthErrorCodesDocumentedInRelayOpenAPI(t *testing.T) {
 						} `json:"error"`
 					} `json:"properties"`
 				} `json:"TokenAuthForbiddenError"`
+				DashboardAuthError struct {
+					Properties struct {
+						Code struct {
+							Enum []string `json:"enum"`
+						} `json:"code"`
+					} `json:"properties"`
+				} `json:"DashboardAuthError"`
+				VideoProxyForbiddenError struct {
+					Properties struct {
+						Error struct {
+							Properties struct {
+								Type struct {
+									Enum []string `json:"enum"`
+								} `json:"type"`
+							} `json:"properties"`
+						} `json:"error"`
+					} `json:"properties"`
+				} `json:"VideoProxyForbiddenError"`
 			} `json:"schemas"`
 		} `json:"components"`
 		Paths map[string]map[string]struct {
 			Responses map[string]struct {
 				Content map[string]struct {
 					Schema struct {
-						Ref string `json:"$ref"`
+						Ref   string `json:"$ref"`
+						OneOf []struct {
+							Ref string `json:"$ref"`
+						} `json:"oneOf"`
 					} `json:"schema"`
 				} `json:"content"`
 			} `json:"responses"`
@@ -190,25 +211,48 @@ func TestTokenAuthErrorCodesDocumentedInRelayOpenAPI(t *testing.T) {
 	assert.True(t, doc.Components.Schemas.TokenAuthForbiddenError.Properties.Error.Properties.Code.Nullable)
 	assert.ElementsMatch(t, []string{"", string(types.ErrorCodeAccessDenied)},
 		doc.Components.Schemas.TokenAuthForbiddenError.Properties.Error.Properties.Code.Enum)
+	assert.ElementsMatch(t, []string{"AUTH_TOKEN_EXPIRED", "AUTH_SESSION_REVOKED", "AUTH_UNAUTHORIZED"},
+		doc.Components.Schemas.DashboardAuthError.Properties.Code.Enum)
+	assert.Equal(t, []string{"server_error"},
+		doc.Components.Schemas.VideoProxyForbiddenError.Properties.Error.Properties.Type.Enum)
 
-	// 401 (token auth failure) and 403 (TokenAuth authorization failure) must
-	// be documented with their distinct schemas on EVERY operation relay.json
-	// describes. Every path in relay.json sits behind TokenAuth (each op also
-	// declares BearerAuth security), so iterate the document instead of a
-	// hand-maintained list — a list can drift when new routes are added and
-	// silently skip exactly the paths that need the contract.
+	// Most relay operations sit behind TokenAuth. The video content operation is
+	// intentionally different: it also accepts dashboard JWTs and can reject a
+	// resolved video URL through SSRF protection. Keep that real route-specific
+	// response surface explicit instead of forcing it into TokenAuth schemas.
 	require.NotEmpty(t, doc.Paths, "docs/openapi/relay.json must document relay paths")
 	for path, ops := range doc.Paths {
 		require.NotEmpty(t, ops, "relay.json must document at least one operation for %s", path)
 		for method, op := range ops {
 			require.Contains(t, op.Responses, "401", "%s %s must document 401", method, path)
 			require.Contains(t, op.Responses, "403", "%s %s must document 403", method, path)
+			if path == "/v1/videos/{task_id}/content" && method == "get" {
+				assert.ElementsMatch(t, []string{
+					"#/components/schemas/TokenAuthError",
+					"#/components/schemas/DashboardAuthError",
+				}, schemaRefs(op.Responses["401"].Content["application/json"].Schema.OneOf), "%s %s", method, path)
+				assert.ElementsMatch(t, []string{
+					"#/components/schemas/TokenAuthForbiddenError",
+					"#/components/schemas/VideoProxyForbiddenError",
+				}, schemaRefs(op.Responses["403"].Content["application/json"].Schema.OneOf), "%s %s", method, path)
+				continue
+			}
 			assert.Equal(t, "#/components/schemas/TokenAuthError",
 				op.Responses["401"].Content["application/json"].Schema.Ref, "%s %s", method, path)
 			assert.Equal(t, "#/components/schemas/TokenAuthForbiddenError",
 				op.Responses["403"].Content["application/json"].Schema.Ref, "%s %s", method, path)
 		}
 	}
+}
+
+func schemaRefs(schemas []struct {
+	Ref string `json:"$ref"`
+}) []string {
+	refs := make([]string, 0, len(schemas))
+	for _, schema := range schemas {
+		refs = append(refs, schema.Ref)
+	}
+	return refs
 }
 
 // TestTokenAuthForbiddenResponsesMatchRelayOpenAPI verifies real 403 bodies

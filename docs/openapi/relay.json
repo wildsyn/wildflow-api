@@ -135,7 +135,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -187,7 +187,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -260,7 +260,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -333,7 +333,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -395,7 +395,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -533,7 +533,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -657,7 +657,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -822,7 +822,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -926,7 +926,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1001,22 +1001,36 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "此端点接受 API Key 或 dashboard JWT。API Key 认证失败时，token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在。dashboard JWT 认证失败时返回扁平的 dashboard auth 错误。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthError"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TokenAuthError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DashboardAuthError"
+                    }
+                  ]
                 }
               }
             },
             "headers": {}
           },
           "403": {
-            "description": "TokenAuth 授权拒绝：allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 403 分支返回空 code，不泄露限制详情。",
+            "description": "API Key 已认证后的 TokenAuth 授权拒绝，或视频代理的 SSRF 拒绝。allow_ips 白名单拒绝时 code=access_denied；用户、分组或客户端 IP 解析等其他 TokenAuth 403 分支返回空 code。SSRF 拒绝返回 OpenAI 风格的 server_error。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenAuthForbiddenError"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TokenAuthForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/VideoProxyForbiddenError"
+                    }
+                  ]
                 }
               }
             },
@@ -1092,7 +1106,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1155,7 +1169,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1246,7 +1260,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1309,7 +1323,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1453,7 +1467,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1533,7 +1547,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1596,7 +1610,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1691,7 +1705,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1838,7 +1852,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1911,7 +1925,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -1973,7 +1987,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2035,7 +2049,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2149,7 +2163,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2238,7 +2252,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2301,7 +2315,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2363,7 +2377,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2425,7 +2439,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2492,7 +2506,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2544,7 +2558,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2604,7 +2618,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2667,7 +2681,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2730,7 +2744,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2793,7 +2807,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2845,7 +2859,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2915,7 +2929,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -2978,7 +2992,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -3039,7 +3053,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -3102,7 +3116,7 @@
             "headers": {}
           },
           "401": {
-            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
+            "description": "API Key 认证失败。code 为稳定机器码：token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回。",
             "content": {
               "application/json": {
                 "schema": {
@@ -5422,7 +5436,7 @@
       },
       "TokenAuthError": {
         "type": "object",
-        "description": "API Key 认证失败的响应。code 为稳定机器码：token_not_provided / token_invalid 共用同一句人话提示，未授权调用者无法据此探测 Key 是否存在；token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回，用于说明失败原因。HTTP 状态码均为 401。",
+        "description": "API Key 认证失败的响应。token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在。token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回，用于说明失败原因。HTTP 状态码均为 401。",
         "properties": {
           "error": {
             "type": "object",
@@ -5482,6 +5496,49 @@
                 "enum": [
                   "",
                   "access_denied"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "DashboardAuthError": {
+        "type": "object",
+        "description": "dashboard JWT 认证失败的扁平响应。仅用于同时接受 dashboard JWT 和 API Key 的端点；HTTP 状态码为 401。",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "AUTH_TOKEN_EXPIRED",
+              "AUTH_SESSION_REVOKED",
+              "AUTH_UNAUTHORIZED"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "VideoProxyForbiddenError": {
+        "type": "object",
+        "description": "视频代理在 SSRF 防护拒绝目标 URL 时的 OpenAI 风格响应。HTTP 状态码为 403。",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "server_error"
                 ]
               }
             }
