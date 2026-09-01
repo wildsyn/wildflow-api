@@ -78,6 +78,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError *types.NewAPIError
 		ws          *websocket.Conn
 	)
+	type providerOutcome uint8
+	const (
+		providerUnsent providerOutcome = iota
+		providerUnknown
+		providerExplicitFailure
+	)
+	providerResult := providerUnsent
 
 	if relayFormat == types.RelayFormatOpenAIRealtime {
 		var err error
@@ -175,7 +182,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			newAPIError = service.NormalizeViolationFeeError(newAPIError)
 			if relayInfo.Billing != nil {
-				relayInfo.Billing.Refund(c)
+				switch providerResult {
+				case providerUnsent:
+					relayInfo.Billing.RefundUnsent(c)
+				case providerExplicitFailure:
+					relayInfo.Billing.Refund(c)
+				}
 			}
 			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
 		}
@@ -226,6 +238,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				break
 			}
 		}
+		providerResult = providerUnknown
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -242,13 +255,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			relayInfo.LastError = nil
 			return
 		}
+		if newAPIError.IsProviderFailure() {
+			providerResult = providerExplicitFailure
+		}
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if providerResult == providerUnknown || !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
 	}

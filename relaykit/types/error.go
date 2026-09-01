@@ -101,14 +101,31 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
+	Err             error
+	RelayError      any
+	providerFailure bool
+	skipRetry       bool
+	recordErrorLog  *bool
+	errorType       ErrorType
+	errorCode       ErrorCode
+	StatusCode      int
+	Metadata        json.RawMessage
+}
+
+// MarkProviderFailure records that an upstream HTTP response explicitly
+// rejected the request. Transport failures and malformed successful responses
+// intentionally do not set this bit: they leave Provider side effects unknown.
+func (e *NewAPIError) MarkProviderFailure() *NewAPIError {
+	if e != nil {
+		e.providerFailure = true
+	}
+	return e
+}
+
+// IsProviderFailure reports whether the relay received an explicit upstream
+// failure response, so the caller can safely release a pre-consumption.
+func (e *NewAPIError) IsProviderFailure() bool {
+	return e != nil && e.providerFailure
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.
