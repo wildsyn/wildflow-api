@@ -3,8 +3,10 @@ package router
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/xeipuuv/gojsonschema"
 	"gorm.io/gorm"
 )
 
@@ -107,6 +110,16 @@ func expiredVideoContentDashboardToken(t *testing.T) string {
 	return token
 }
 
+func requireVideoContentResponseMatchesOpenAPI(t *testing.T, status string, body []byte) {
+	t.Helper()
+	documentPath, err := filepath.Abs("../docs/openapi/relay.json")
+	require.NoError(t, err)
+	responseSchema := fmt.Sprintf("file://%s#/paths/~1v1~1videos~1{task_id}~1content/get/responses/%s/content/application~1json/schema", documentPath, status)
+	result, err := gojsonschema.Validate(gojsonschema.NewReferenceLoader(responseSchema), gojsonschema.NewBytesLoader(body))
+	require.NoError(t, err)
+	assert.Truef(t, result.Valid(), "OpenAPI %s response schema rejected handler body: %v", status, result.Errors())
+}
+
 func TestVideoContentRouteResponsesMatchOpenAPIAuthContract(t *testing.T) {
 	setupVideoContentContractDB(t)
 	gin.SetMode(gin.TestMode)
@@ -117,6 +130,7 @@ func TestVideoContentRouteResponsesMatchOpenAPIAuthContract(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, missingResponse.Code)
 	assert.Equal(t, "token_not_provided", missingBody.Error.Code)
 	assert.Equal(t, "new_api_error", missingBody.Error.Type)
+	requireVideoContentResponseMatchesOpenAPI(t, "401", missingResponse.Body.Bytes())
 
 	previousSecret := common.SessionSecret
 	common.SessionSecret = "video-content-contract-session-secret"
@@ -130,16 +144,23 @@ func TestVideoContentRouteResponsesMatchOpenAPIAuthContract(t *testing.T) {
 	assert.False(t, dashboardBody.Success)
 	assert.Equal(t, "AUTH_UNAUTHORIZED", dashboardBody.Code)
 	require.NotEmpty(t, dashboardBody.Message)
+	requireVideoContentResponseMatchesOpenAPI(t, "401", dashboardResponse.Body.Bytes())
 
 	expiredResponse, expiredBody := serveVideoContentRequest(router, "Bearer "+expiredVideoContentDashboardToken(t))
 	require.Equal(t, http.StatusUnauthorized, expiredResponse.Code)
 	assert.False(t, expiredBody.Success)
 	assert.Equal(t, "AUTH_TOKEN_EXPIRED", expiredBody.Code)
 	require.NotEmpty(t, expiredBody.Message)
+	requireVideoContentResponseMatchesOpenAPI(t, "401", expiredResponse.Body.Bytes())
 
 	token := addVideoContentContractToken(t)
 	ssrfResponse, ssrfBody := serveVideoContentRequest(router, "Bearer "+token.Key)
 	require.Equal(t, http.StatusForbidden, ssrfResponse.Code)
 	assert.Equal(t, "server_error", ssrfBody.Error.Type)
-	assert.Contains(t, ssrfBody.Error.Message, "request blocked:")
+	assert.Equal(t, "Request blocked", ssrfBody.Error.Message)
+	assert.NotContains(t, ssrfBody.Error.Message, "127.0.0.1")
+	assert.NotContains(t, ssrfBody.Error.Message, "localhost")
+	assert.NotContains(t, ssrfBody.Error.Message, "private")
+	assert.NotContains(t, ssrfBody.Error.Message, "allow")
+	requireVideoContentResponseMatchesOpenAPI(t, "403", ssrfResponse.Body.Bytes())
 }

@@ -5437,9 +5437,17 @@
       "TokenAuthError": {
         "type": "object",
         "description": "API Key 认证失败的响应。token_not_provided 使用独立的人话提示；不存在的 Key 与普通无效 Key 均返回 token_invalid 和相同提示，未授权调用者无法据此探测 Key 是否存在。token_expired / token_disabled / token_quota_exhausted 仅在提供的 Key 真实存在时返回，用于说明失败原因。HTTP 状态码均为 401。",
+        "required": [
+          "error"
+        ],
         "properties": {
           "error": {
             "type": "object",
+            "required": [
+              "message",
+              "type",
+              "code"
+            ],
             "properties": {
               "message": {
                 "type": "string",
@@ -5472,9 +5480,17 @@
       "TokenAuthForbiddenError": {
         "type": "object",
         "description": "已通过 API Key 认证后的 TokenAuth 授权拒绝响应。allow_ips 白名单拒绝使用 access_denied；客户端 IP 无法解析、用户禁用、分组不可用等现有分支使用空 code。HTTP 状态码均为 403。",
+        "required": [
+          "error"
+        ],
         "properties": {
           "error": {
             "type": "object",
+            "required": [
+              "message",
+              "type",
+              "code"
+            ],
             "properties": {
               "message": {
                 "type": "string",
@@ -5505,6 +5521,11 @@
       "DashboardAuthError": {
         "type": "object",
         "description": "dashboard JWT 认证失败的扁平响应。仅用于同时接受 dashboard JWT 和 API Key 的端点；HTTP 状态码为 401。",
+        "required": [
+          "success",
+          "code",
+          "message"
+        ],
         "properties": {
           "success": {
             "type": "boolean",
@@ -5528,9 +5549,16 @@
       "VideoProxyForbiddenError": {
         "type": "object",
         "description": "视频代理在 SSRF 防护拒绝目标 URL 时的 OpenAI 风格响应。HTTP 状态码为 403。",
+        "required": [
+          "error"
+        ],
         "properties": {
           "error": {
             "type": "object",
+            "required": [
+              "message",
+              "type"
+            ],
             "properties": {
               "message": {
                 "type": "string"
