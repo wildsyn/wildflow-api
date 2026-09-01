@@ -325,7 +325,7 @@ func (*recordingBillingSettler) Refund(*gin.Context) {}
 
 func (*recordingBillingSettler) NeedsRefund() bool { return false }
 
-func (*recordingBillingSettler) MarkProviderStarted(*gin.Context) {}
+func (*recordingBillingSettler) MarkProviderStarted(*gin.Context) error { return nil }
 
 func (s *recordingBillingSettler) GetPreConsumedQuota() int {
 	return s.preConsumedQuota

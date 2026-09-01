@@ -407,7 +407,9 @@ func AppendBillingReservation(requestId string, delta int) error {
 
 // MarkBillingReservationProviderStarted 在 Provider 请求发出前调用：此后结果
 // 未知，恢复任务不得自动释放；仅结算或显式人工对账可以收口。
-// 幂等：重复标记或对已推进状态的记录是 no-op。
+// 幂等：重复标记 provider_started 是 no-op。缺记录、已释放/已结算或 CAS
+// 未命中且未能证明是重复标记时返回错误；调用方必须 fail closed，绝不能触达
+// Provider 后再留下 reserved 记录供恢复任务退款。
 func MarkBillingReservationProviderStarted(requestId string) error {
 	if requestId == "" {
 		return ErrBillingReservationNotFound
@@ -418,7 +420,21 @@ func MarkBillingReservationProviderStarted(requestId string) error {
 	if res.Error != nil {
 		return res.Error
 	}
-	return nil
+	if res.RowsAffected > 0 {
+		return nil
+	}
+
+	var record BillingReservationRecord
+	if err := DB.Select("state").Where("request_id = ?", requestId).First(&record).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrBillingReservationNotFound
+		}
+		return err
+	}
+	if record.State == BillingReservationStateProviderStarted {
+		return nil
+	}
+	return ErrBillingReservationStateConflict
 }
 
 // SettleBillingReservation 幂等结算：delta = 实际用量 - 预占。

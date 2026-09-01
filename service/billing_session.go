@@ -92,18 +92,18 @@ func (s *BillingSession) hasReservation() bool {
 // MarkProviderStarted 在 Provider 请求即将发出前调用：把预占记录推进到
 // provider_started（结果未知），此后恢复任务不得自动释放，防止把可能已被
 // Provider 接受的请求退款。幂等；无记录（免费模型/信任为 0）时是 no-op。
-// 标记失败只记录日志：记录保持 reserved 最多被恢复任务按陈旧窗口退款，
-// 属可接受的对账边界，不阻塞请求。
-func (s *BillingSession) MarkProviderStarted(c *gin.Context) {
+// 标记失败必须阻止请求，避免 Provider 已收到请求但记录仍为 reserved，随后被
+// 恢复任务错误退款。
+func (s *BillingSession) MarkProviderStarted(c *gin.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.settled || s.refunded || !s.hasReservation() {
-		return
+		return nil
 	}
 	if err := model.MarkBillingReservationProviderStarted(s.relayInfo.RequestId); err != nil {
-		common.SysLog(fmt.Sprintf("error marking billing reservation provider_started (request=%s): %s",
-			s.relayInfo.RequestId, err.Error()))
+		return fmt.Errorf("mark billing reservation provider_started (request=%s): %w", s.relayInfo.RequestId, err)
 	}
+	return nil
 }
 
 // settleWithoutRecord 无预占记录的差额结算：资金来源和令牌额度分两步提交，

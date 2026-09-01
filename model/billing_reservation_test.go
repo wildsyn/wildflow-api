@@ -290,7 +290,7 @@ func TestReleaseStaleSkipsProviderStartedRecords(t *testing.T) {
 	assert.Equal(t, 0, used)
 }
 
-func TestMarkProviderStartedIdempotentAndTerminalStates(t *testing.T) {
+func TestMarkProviderStartedFailsClosedForMissingAndTerminalRecords(t *testing.T) {
 	userId, tokenId, tokenKey := seedReservationFixture(t, 1_000, 1_000)
 	_, err := ReserveWalletBillingQuota("req-mark", userId, tokenId, tokenKey, 100, false)
 	require.NoError(t, err)
@@ -301,8 +301,13 @@ func TestMarkProviderStartedIdempotentAndTerminalStates(t *testing.T) {
 	require.NoError(t, MarkBillingReservationProviderStarted("req-mark"))
 
 	require.NoError(t, SettleBillingReservation("req-mark", 0))
-	// settled 后再标记：no-op，不改变状态
-	require.NoError(t, MarkBillingReservationProviderStarted("req-mark"))
+	// settled 或不存在记录都不能当作成功：发送入口必须停止 Provider 请求。
+	require.ErrorIs(t, MarkBillingReservationProviderStarted("req-mark"), ErrBillingReservationStateConflict)
+	require.ErrorIs(t, MarkBillingReservationProviderStarted("missing-request"), ErrBillingReservationNotFound)
+	_, err = ReserveWalletBillingQuota("req-mark-released", userId, tokenId, tokenKey, 100, false)
+	require.NoError(t, err)
+	require.NoError(t, ReleaseBillingReservation("req-mark-released", tokenKey))
+	require.ErrorIs(t, MarkBillingReservationProviderStarted("req-mark-released"), ErrBillingReservationStateConflict)
 	var rec BillingReservationRecord
 	require.NoError(t, DB.Where("request_id = ?", "req-mark").First(&rec).Error)
 	assert.Equal(t, BillingReservationStateSettled, rec.State)

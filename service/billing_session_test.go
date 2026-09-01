@@ -39,11 +39,11 @@ func sessionUserQuota(t *testing.T, userId int) int {
 
 func newSessionRelayInfo(userId, tokenId int, tokenKey string, unlimited bool) *relaycommon.RelayInfo {
 	return &relaycommon.RelayInfo{
-		RequestId:      "req-" + tokenKey,
-		UserId:         userId,
-		TokenId:        tokenId,
-		TokenKey:       tokenKey,
-		TokenUnlimited: unlimited,
+		RequestId:       "req-" + tokenKey,
+		UserId:          userId,
+		TokenId:         tokenId,
+		TokenKey:        tokenKey,
+		TokenUnlimited:  unlimited,
 		OriginModelName: "gpt-test",
 	}
 }
@@ -330,7 +330,7 @@ func TestBillingSessionMarkProviderStartedGuardsRecovery(t *testing.T) {
 	require.Equal(t, 600, sessionUserQuota(t, userId))
 
 	// 模拟 Provider 请求即将发出
-	session.MarkProviderStarted(ctx)
+	require.NoError(t, session.MarkProviderStarted(ctx))
 
 	// 把记录回拨过陈旧窗口，模拟崩溃后重启
 	require.NoError(t, model.DB.Model(&model.BillingReservationRecord{}).

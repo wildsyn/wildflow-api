@@ -217,10 +217,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
-		// Provider 请求即将发出：预占记录推进到 provider_started（结果未知），
-		// 此后恢复任务不得自动释放，防止把可能已被 Provider 接受的请求退款。
+		// 所有普通 Relay 发送入口在调用 adaptor 前都必须先持久化
+		// provider_started。错误/缺记录/状态竞争时 fail closed，避免恢复任务
+		// 把可能已经发送的请求当作 reserved 退款。
 		if relayInfo.Billing != nil {
-			relayInfo.Billing.MarkProviderStarted(c)
+			if err := relayInfo.Billing.MarkProviderStarted(c); err != nil {
+				newAPIError = types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+				break
+			}
 		}
 
 		switch relayFormat {
@@ -559,12 +563,6 @@ func RelayTask(c *gin.Context) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
-
-		// Provider 请求即将发出：预占记录推进到 provider_started（结果未知），
-		// 此后恢复任务不得自动释放，防止把可能已被 Provider 接受的任务退款。
-		if relayInfo.Billing != nil {
-			relayInfo.Billing.MarkProviderStarted(c)
-		}
 
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {
