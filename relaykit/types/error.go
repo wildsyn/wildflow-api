@@ -287,6 +287,9 @@ func NewError(err error, errorCode ErrorCode, ops ...NewAPIErrorOptions) *NewAPI
 	var newErr *NewAPIError
 	// 保留深层传递的 new err
 	if errors.As(err, &newErr) {
+		if errors.Is(err, ErrProviderNotDispatched) {
+			newErr.providerUnsent = true
+		}
 		for _, op := range ops {
 			op(newErr)
 		}
@@ -310,6 +313,9 @@ func NewOpenAIError(err error, errorCode ErrorCode, statusCode int, ops ...NewAP
 	var newErr *NewAPIError
 	// 保留深层传递的 new err
 	if errors.As(err, &newErr) {
+		if errors.Is(err, ErrProviderNotDispatched) {
+			newErr.providerUnsent = true
+		}
 		if newErr.RelayError == nil {
 			openaiError := OpenAIError{
 				Message: newErr.Error(),

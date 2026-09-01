@@ -255,6 +255,19 @@ func TestRelayUnsentProviderSetupFailureReleasesReservation(t *testing.T) {
 	}, time.Second, 10*time.Millisecond, "a locally rejected Provider setup must refund exactly once")
 }
 
+func TestIsProvablyUnsentRelayError(t *testing.T) {
+	for _, code := range []types.ErrorCode{
+		types.ErrorCodeInvalidApiType,
+		types.ErrorCodeChannelModelMappedError,
+		types.ErrorCodeChannelParamOverrideInvalid,
+		types.ErrorCodeChannelHeaderOverrideInvalid,
+		types.ErrorCodeConvertRequestFailed,
+	} {
+		assert.True(t, isProvablyUnsentRelayError(types.NewError(errors.New("local request setup failed"), code)), code)
+	}
+	assert.False(t, isProvablyUnsentRelayError(types.NewError(errors.New("transport failed"), types.ErrorCodeDoRequestFailed)))
+}
+
 func assertUnknownReservationAccounting(t *testing.T, db *gorm.DB, requestID string, userID, tokenID int) {
 	t.Helper()
 	var reservation model.BillingReservationRecord

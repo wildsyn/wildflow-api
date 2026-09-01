@@ -257,7 +257,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		if newAPIError.IsProviderFailure() {
 			providerResult = providerExplicitFailure
-		} else if newAPIError.IsProviderUnsent() {
+		} else if newAPIError.IsProviderUnsent() || isProvablyUnsentRelayError(newAPIError) {
 			providerResult = providerUnsent
 		}
 
@@ -280,6 +280,26 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		gopool.Go(func() {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
+	}
+}
+
+// isProvablyUnsentRelayError covers handler-local request construction that
+// precedes every HTTP/WS adaptor call. These stable error codes are emitted
+// while mapping, converting, or overriding the outbound request; no Provider
+// transport has been attempted yet, so releasing the reservation is safe.
+func isProvablyUnsentRelayError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	switch err.GetErrorCode() {
+	case types.ErrorCodeInvalidApiType,
+		types.ErrorCodeChannelModelMappedError,
+		types.ErrorCodeChannelParamOverrideInvalid,
+		types.ErrorCodeChannelHeaderOverrideInvalid,
+		types.ErrorCodeConvertRequestFailed:
+		return true
+	default:
+		return false
 	}
 }
 
