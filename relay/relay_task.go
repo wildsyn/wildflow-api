@@ -216,7 +216,15 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
 	}
 
-	// 9. 发送请求
+	// 9. ForcePreConsume 的预占刚在本函数完成。必须在真实首次 DoRequest
+	// 之前持久化 provider_started；失败时绝不能触达 Provider。
+	if info.Billing != nil {
+		if err := info.Billing.MarkProviderStarted(c); err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "mark_provider_started_failed", http.StatusInternalServerError)
+		}
+	}
+
+	// 10. 发送请求
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
@@ -226,7 +234,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
 
-	// 10. 返回 OtherRatios 给下游（header 必须在 DoResponse 写 body 之前设置）
+	// 11. 返回 OtherRatios 给下游（header 必须在 DoResponse 写 body 之前设置）
 	otherRatios := info.PriceData.OtherRatios()
 	if otherRatios == nil {
 		otherRatios = map[string]float64{}
@@ -234,13 +242,13 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	ratiosJSON, _ := common.Marshal(otherRatios)
 	c.Header("X-New-Api-Other-Ratios", string(ratiosJSON))
 
-	// 11. 解析响应
+	// 12. 解析响应
 	upstreamTaskID, taskData, taskErr := adaptor.DoResponse(c, resp, info)
 	if taskErr != nil {
 		return nil, taskErr
 	}
 
-	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
+	// 13. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
 	finalQuota := info.PriceData.Quota
 	if adjustedRatios := adaptor.AdjustBillingOnSubmit(info, taskData); len(adjustedRatios) > 0 {
 		if adjustedQuota, ok := recalcQuotaFromRatios(info, adjustedRatios); ok {
