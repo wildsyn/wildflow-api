@@ -257,6 +257,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		if newAPIError.IsProviderFailure() {
 			providerResult = providerExplicitFailure
+		} else if newAPIError.IsProviderUnsent() {
+			providerResult = providerUnsent
 		}
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)

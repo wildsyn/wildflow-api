@@ -202,6 +202,59 @@ func TestRelayUnknownProviderOutcomeKeepsReservationAndBlocksRequestReplay(t *te
 	assertUnknownReservationAccounting(t, db, requestID, userID, tokenID)
 }
 
+// TestRelayUnsentProviderSetupFailureReleasesReservation verifies that a
+// malformed upstream URL fails while building the request, before any HTTP
+// transport attempt. That is a provably unsent result and must release both
+// account and Key reservations.
+func TestRelayUnsentProviderSetupFailureReleasesReservation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	common.RedisEnabled = false
+	db := setupNormalRelayTestDB(t)
+	requestID := fmt.Sprintf("normal-provider-unsent-%d", time.Now().UnixNano())
+	userID, tokenID, tokenKey := seedNormalRelayBilling(t, db)
+
+	var providerCalls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(provider.Close)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"provider-started-normal-test","messages":[{"role":"user","content":"hello"}]}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(ctx, common.RequestIdKey, requestID)
+	common.SetContextKey(ctx, constant.ContextKeyUserId, userID)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyUserQuota, 1_000)
+	common.SetContextKey(ctx, constant.ContextKeyOriginalModel, normalDispatchTestModel)
+	common.SetContextKey(ctx, constant.ContextKeyTokenId, tokenID)
+	common.SetContextKey(ctx, constant.ContextKeyTokenKey, tokenKey)
+	common.SetContextKey(ctx, constant.ContextKeyUserSetting, dto.UserSetting{BillingPreference: "wallet_only"})
+	ctx.Set("channel_id", 1)
+	ctx.Set("channel_type", constant.ChannelTypeOpenAI)
+	ctx.Set("channel_name", "malformed-local-provider")
+	ctx.Set("base_url", "://not-a-valid-upstream-url")
+	ctx.Set("channel_key", "test-provider-key")
+
+	Relay(ctx, types.RelayFormatOpenAI)
+	require.Equal(t, http.StatusInternalServerError, recorder.Code)
+	assert.Equal(t, int32(0), providerCalls.Load())
+
+	require.Eventually(t, func() bool {
+		var reservation model.BillingReservationRecord
+		if db.Where("request_id = ?", requestID).First(&reservation).Error != nil || reservation.State != model.BillingReservationStateReleased {
+			return false
+		}
+		var user model.User
+		var token model.Token
+		return db.First(&user, userID).Error == nil && db.First(&token, tokenID).Error == nil &&
+			user.Quota == 1_000 && token.RemainQuota == 1_000 && token.UsedQuota == 0
+	}, time.Second, 10*time.Millisecond, "a locally rejected Provider setup must refund exactly once")
+}
+
 func assertUnknownReservationAccounting(t *testing.T, db *gorm.DB, requestID string, userID, tokenID int) {
 	t.Helper()
 	var reservation model.BillingReservationRecord
