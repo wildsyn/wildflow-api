@@ -31,6 +31,7 @@ var (
 	ErrTokenExpired        = errors.New("token expired")
 	ErrTokenDisabled       = errors.New("token disabled")
 	ErrTokenQuotaExhausted = errors.New("token quota exhausted")
+	ErrTokenStatusChanged  = errors.New("token status changed concurrently")
 )
 
 // Redemption errors

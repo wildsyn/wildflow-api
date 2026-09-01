@@ -21,4 +21,9 @@ type BillingSettler interface {
 
 	// Reserve 将预扣额度补到目标值；若目标值不高于当前预扣额度则不做任何事。
 	Reserve(targetQuota int) error
+
+	// MarkProviderStarted 在 Provider 请求即将发出前调用：把预占记录推进到
+	// provider_started（结果未知），此后恢复任务不得自动释放。幂等；无预占
+	// 记录时是 no-op。标记失败时调用方必须停止 Provider 请求。
+	MarkProviderStarted(c *gin.Context) error
 }

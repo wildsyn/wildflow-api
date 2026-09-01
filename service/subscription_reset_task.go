@@ -18,6 +18,9 @@ const (
 	subscriptionResetTickInterval = 1 * time.Minute
 	subscriptionResetBatchSize    = 300
 	subscriptionCleanupInterval   = 30 * time.Minute
+	// billingReservationStaleSeconds 超过该窗口仍为 reserved 的预占视为结果未知，
+	// 由恢复任务释放。该值必须大于最长的在途请求时长。
+	billingReservationStaleSeconds int64 = 3600
 )
 
 var (
@@ -83,6 +86,18 @@ func runSubscriptionQuotaResetOnce() {
 	}
 	lastCleanup := time.Unix(subscriptionCleanupLast.Load(), 0)
 	if time.Since(lastCleanup) >= subscriptionCleanupInterval {
+		// 释放结果未知（进程崩溃/重启）的陈旧预占，并清理已终结的记录。
+		// 释放幂等：重复执行不会重复退款；已 settled 的记录不会被误退。
+		if n, err := model.ReleaseStaleBillingReservations(billingReservationStaleSeconds, 100); err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("billing reservation recovery failed: %v", err))
+		} else if n > 0 {
+			logger.LogWarn(ctx, fmt.Sprintf("billing reservation recovery: released=%d", n))
+		}
+		if _, err := model.CleanupBillingReservationRecords(7 * 24 * 3600); err == nil {
+			// fallthrough: cleanup failure is retried on the next window
+		} else {
+			logger.LogWarn(ctx, fmt.Sprintf("billing reservation cleanup failed: %v", err))
+		}
 		if _, err := model.CleanupSubscriptionPreConsumeRecords(7 * 24 * 3600); err == nil {
 			subscriptionCleanupLast.Store(time.Now().Unix())
 		}

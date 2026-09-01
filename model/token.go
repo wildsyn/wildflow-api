@@ -16,6 +16,7 @@ type Token struct {
 	UserId             int            `json:"user_id" gorm:"index"`
 	Key                string         `json:"key" gorm:"type:varchar(128);uniqueIndex"`
 	Status             int            `json:"status" gorm:"default:1"`
+	StatusVersion      int64          `json:"-"`
 	Name               string         `json:"name" gorm:"index" `
 	CreatedTime        int64          `json:"created_time" gorm:"bigint"`
 	AccessedTime       int64          `json:"accessed_time" gorm:"bigint"`
@@ -280,8 +281,9 @@ func GetTokenById(id int) (*Token, error) {
 	var err error = nil
 	err = DB.First(&token, "id = ?", id).Error
 	if shouldUpdateRedis(true, err) {
-		gopool.Go(func() {
-			if err := cacheSetToken(token); err != nil {
+		tokenID, tokenKey := token.Id, token.Key
+		goTokenCacheFill(func() {
+			if err := refreshTokenCacheFromDatabase(tokenID, tokenKey); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) && !errors.Is(err, gorm.ErrRecordNotFound) {
 				common.SysLog("failed to update user status cache: " + err.Error())
 			}
 		})
@@ -291,10 +293,14 @@ func GetTokenById(id int) (*Token, error) {
 
 func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 	defer func() {
-		// Update Redis cache asynchronously on successful DB read
+		// Update Redis cache asynchronously from the row that still exists when
+		// the fill runs. The fill must not use this read's snapshot: a revoke can
+		// commit while it is queued, and the finite revocation fence may expire
+		// before it reaches Redis.
 		if shouldUpdateRedis(fromDB, err) && token != nil {
-			gopool.Go(func() {
-				if err := cacheSetToken(*token); err != nil {
+			tokenID, tokenKey := token.Id, token.Key
+			goTokenCacheFill(func() {
+				if err := refreshTokenCacheFromDatabase(tokenID, tokenKey); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) && !errors.Is(err, gorm.ErrRecordNotFound) {
 					common.SysLog("failed to update user status cache: " + err.Error())
 				}
 			})
@@ -319,27 +325,105 @@ func (token *Token) Insert() error {
 	return err
 }
 
-// Update Make sure your token's fields is completed, because this will update non-zero values
+// Update updates editable token fields. Status is deliberately excluded: a
+// stale ordinary edit must never re-enable a token that was disabled after the
+// edit read its snapshot. Status transitions use UpdateStatus instead.
 func (token *Token) Update() (err error) {
-	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token).Error
+	result := DB.Model(token).Select("name", "expired_time", "remain_quota", "unlimited_quota",
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token)
+	err = result.Error
+	if err != nil {
+		return err
+	}
 	if shouldUpdateRedis(true, err) {
-		if cacheErr := cacheSetToken(*token); cacheErr != nil {
+		// A zero-row update means the row no longer exists (soft-deleted by a
+		// concurrent revoke that won the race): nothing was committed, so no
+		// stale snapshot may enter the cache.
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		// Refresh from the committed row, not this caller's stale snapshot. The
+		// fence protects the immediate race; the database re-read also protects
+		// a delayed ordinary edit after the finite fence TTL has elapsed.
+		if cacheErr := refreshTokenCacheFromDatabase(token.Id, token.Key); cacheErr != nil && !errors.Is(cacheErr, ErrTokenCacheRevocationPending) {
 			common.SysLog("failed to update token cache: " + cacheErr.Error())
 			if deleteErr := cacheDeleteToken(token.Key); deleteErr != nil {
 				common.SysLog("failed to invalidate token cache after update: " + deleteErr.Error())
 			}
 		}
 	}
-	return err
+	return nil
+}
+
+// UpdateStatus performs a status-only transition using the status and version
+// the caller originally read. A concurrent status change therefore wins
+// instead of being overwritten by a stale enable request. Re-enabling releases
+// only the fence epoch observed before the database compare-and-swap.
+func (token *Token) UpdateStatus(previousStatus int) error {
+	revoking := common.RedisEnabled && token.Status != common.TokenStatusEnabled
+	var observedEpoch int64
+	var err error
+	if common.RedisEnabled {
+		if revoking {
+			if err := raiseTokenRevocationFences([]string{token.Key}); err != nil {
+				return err
+			}
+		} else if previousStatus != common.TokenStatusEnabled {
+			observedEpoch, err = readRevocationEpoch(token.Key)
+			if err != nil {
+				return fmt.Errorf("%w: read fence failed: %v", ErrTokenCacheRevocationPending, err)
+			}
+		}
+	}
+
+	result := DB.Model(&Token{}).
+		Where("id = ? AND user_id = ? AND status = ? AND COALESCE(status_version, 0) = ?", token.Id, token.UserId, previousStatus, token.StatusVersion).
+		Updates(map[string]any{
+			"status":         token.Status,
+			"status_version": gorm.Expr("COALESCE(status_version, 0) + ?", 1),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrTokenStatusChanged
+	}
+	token.StatusVersion++
+
+	if revoking {
+		if err := revokeTokensCacheCommitted([]string{token.Key}); err != nil {
+			common.SysLog("failed to invalidate token cache after status revoke: " + err.Error())
+			return err
+		}
+		return nil
+	}
+	if token.Status == common.TokenStatusEnabled && previousStatus != common.TokenStatusEnabled {
+		if err := AllowTokenCacheRefresh(token.Key, observedEpoch); err != nil {
+			if !errors.Is(err, ErrTokenCacheRevocationPending) {
+				common.SysLog("failed to clear token revocation fence on re-enable: " + err.Error())
+				return err
+			}
+			// A newer revocation owns the deny window. Do not cache the enabled
+			// snapshot and, crucially, do not remove its fence.
+			common.SysLog("token re-enable raced a newer revocation fence; fence kept for " + token.Key)
+			return nil
+		}
+	}
+	if shouldUpdateRedis(true, nil) {
+		if err := cacheSetTokenRespectingRevocation(*token); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) {
+			common.SysLog("failed to update token cache after status change: " + err.Error())
+		}
+	}
+	return nil
 }
 
 func (token *Token) SelectUpdate() (err error) {
 	defer func() {
 		if shouldUpdateRedis(true, err) {
-			gopool.Go(func() {
-				err := cacheSetToken(*token)
-				if err != nil {
+			tokenID, tokenKey := token.Id, token.Key
+			goTokenCacheFill(func() {
+				err := refreshTokenCacheFromDatabase(tokenID, tokenKey)
+				if err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) && !errors.Is(err, gorm.ErrRecordNotFound) {
 					common.SysLog("failed to update token cache: " + err.Error())
 				}
 			})
@@ -350,18 +434,25 @@ func (token *Token) SelectUpdate() (err error) {
 }
 
 func (token *Token) Delete() (err error) {
-	defer func() {
-		if shouldUpdateRedis(true, err) {
-			gopool.Go(func() {
-				err := cacheDeleteToken(token.Key)
-				if err != nil {
-					common.SysLog("failed to delete token cache: " + err.Error())
-				}
-			})
+	// Fail-closed revocation: raise the revocation fence BEFORE the database
+	// delete so a racing cache fill on any node cannot outlive it. If Redis
+	// fails, the delete aborts so the caller never sees success while a stale
+	// grant could still authorize requests.
+	if common.RedisEnabled {
+		if err := raiseTokenRevocationFences([]string{token.Key}); err != nil {
+			return err
 		}
-	}()
+	}
 	err = DB.Delete(token).Error
-	return err
+	if err != nil {
+		return err
+	}
+	if common.RedisEnabled {
+		if err := revokeTokensCacheCommitted([]string{token.Key}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (token *Token) IsModelLimitsEnabled() bool {
@@ -475,6 +566,11 @@ func CountUserTokens(userId int) (int64, error) {
 }
 
 // BatchDeleteTokens 删除指定用户的一组令牌，返回成功删除数量
+//
+// Idempotent under retry: ids whose rows were already soft-deleted by a prior
+// attempt (e.g. one whose cache cleanup failed) are still resolved through the
+// soft-delete tombstones, so the fence-and-prove cache cleanup completes and
+// the retry cannot report success while a revoked key still authorizes.
 func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	if len(ids) == 0 {
 		return 0, errors.New("ids 不能为空！")
@@ -488,6 +584,48 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 		return 0, err
 	}
 
+	if len(tokens) == 0 {
+		// Nothing live to delete — but a previous attempt of the same batch may
+		// have committed the deletes and failed the cache cleanup. Resolve the
+		// tombstones so the cleanup still runs before reporting success.
+		if err := tx.Unscoped().Select("id", "user_id", commonKeyCol).
+			Where("user_id = ? AND id IN (?)", userId, ids).Find(&tokens).Error; err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+		tx.Rollback()
+		if len(tokens) == 0 {
+			return 0, nil
+		}
+		keys := make([]string, 0, len(tokens))
+		for _, t := range tokens {
+			if t.Key != "" {
+				keys = append(keys, t.Key)
+			}
+		}
+		if err := RevokeTokensCacheRetry(keys); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	}
+
+	// Raise the revocation fences before the delete commits so every cache fill
+	// that raced this batch is poisoned. A fence failure aborts the whole batch
+	// with nothing changed — the caller never gets success while a deleted key
+	// could still authorize through a stale cache entry.
+	keys := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if t.Key != "" {
+			keys = append(keys, t.Key)
+		}
+	}
+	if common.RedisEnabled {
+		if err := raiseTokenRevocationFences(keys); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+	}
+
 	if err := tx.Where("user_id = ? AND id IN (?)", userId, ids).Delete(&Token{}).Error; err != nil {
 		tx.Rollback()
 		return 0, err
@@ -497,12 +635,10 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 		return 0, err
 	}
 
-	if common.RedisEnabled {
-		gopool.Go(func() {
-			for _, t := range tokens {
-				_ = cacheDeleteToken(t.Key)
-			}
-		})
+	// After commit: prove every cached hash is gone synchronously. Same
+	// fail-closed contract as DeleteTokenById; fences stay raised on failure.
+	if err := revokeTokensCacheCommitted(keys); err != nil {
+		return len(tokens), err
 	}
 
 	return len(tokens), nil

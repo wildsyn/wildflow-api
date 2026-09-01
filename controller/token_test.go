@@ -554,6 +554,35 @@ func TestUpdateTokenMasksKeyInResponse(t *testing.T) {
 	}
 }
 
+func TestUpdateTokenIgnoresStatusWithoutStatusOnly(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	token := seedToken(t, db, 1, "disabled-token", "disabled1234token5678")
+	require.NoError(t, db.Model(token).Update("status", common.TokenStatusDisabled).Error)
+
+	body := map[string]any{
+		"id":                   token.Id,
+		"name":                 "ordinary-edit",
+		"status":               common.TokenStatusEnabled,
+		"expired_time":         -1,
+		"remain_quota":         100,
+		"unlimited_quota":      true,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+	}
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 1)
+	UpdateToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	require.True(t, response.Success, response.Message)
+
+	var stored model.Token
+	require.NoError(t, db.First(&stored, token.Id).Error)
+	require.Equal(t, common.TokenStatusDisabled, stored.Status)
+	require.Equal(t, "ordinary-edit", stored.Name)
+}
+
 func TestGetTokenKeyRequiresOwnershipAndReturnsFullKey(t *testing.T) {
 	db := setupTokenControllerTestDB(t)
 	token := seedToken(t, db, 1, "owned-token", "owner1234token5678")

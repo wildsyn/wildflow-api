@@ -14,7 +14,9 @@ import (
 type FundingSource interface {
 	// Source 返回资金来源标识："wallet" 或 "subscription"
 	Source() string
-	// PreConsume 从该资金来源预扣 amount 额度
+	// PreConsume 从该资金来源预扣 amount 额度。
+	// 实现在 model 层原子事务内执行条件扣减：额度不足时返回错误且零账变，
+	// 并发/多实例下不会把余额扣成负数（Key 硬上限由同一事务内的调用方保证）。
 	PreConsume(amount int) error
 	// Settle 根据差额调整资金来源（正数补扣，负数退还）
 	Settle(delta int) error
@@ -33,6 +35,9 @@ type WalletFunding struct {
 
 func (w *WalletFunding) Source() string { return BillingSourceWallet }
 
+// PreConsume 无条件扣减账户余额。仅用于没有预占记录的兜底路径（异步任务、
+// requestId 为空的旧会话）：这些请求在 NewBillingSession 里已先通过余额
+// 资格检查，且 Settle 补扣遵循同一无条件合同。带预占记录的会话不会走到这里。
 func (w *WalletFunding) PreConsume(amount int) error {
 	if amount <= 0 {
 		return nil
