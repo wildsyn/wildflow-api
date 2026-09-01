@@ -616,7 +616,12 @@ func TestRetrieveModelHidesForbiddenWildFlowJobModel(t *testing.T) {
 
 func TestWildFlowModelDirectoryKeepsRuntimeAndTenantVisibilityConsistent(t *testing.T) {
 	withSelfUseModeEnabled(t)
-	setupModelListControllerTestDB(t)
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "default", Model: "VoxCPM2", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "FLUX.2 [klein] 4B", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: service.WildFlowModelExamDualASR, ChannelId: 1, Enabled: true},
+	}).Error)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/internal/v1/catalog", r.URL.Path)
 		require.Equal(t, "Bearer multi-tenant-test-token", r.Header.Get("Authorization"))
@@ -655,11 +660,18 @@ func TestWildFlowModelDirectoryKeepsRuntimeAndTenantVisibilityConsistent(t *test
 
 			ListModels(ctx, constant.ChannelTypeOpenAI)
 
-			ids := decodeListModelsResponse(t, recorder)
+			payload := decodeListModelsPayload(t, recorder)
+			ids := make(map[string]dto.OpenAIModels, len(payload.Data))
+			for _, item := range payload.Data {
+				ids[item.Id] = item
+			}
 			require.Len(t, ids, 1)
 			for modelID := range allowed {
 				if byID[modelID].Callable {
-					assert.Contains(t, ids, modelID)
+					item, ok := ids[modelID]
+					require.True(t, ok)
+					assert.Equal(t, "wildflow", item.OwnedBy)
+					assert.Equal(t, []types.EndpointType{types.EndpointTypeWildFlowJobs}, item.SupportedEndpointTypes)
 				} else {
 					assert.NotContains(t, ids, modelID)
 				}
@@ -677,6 +689,56 @@ func TestWildFlowModelDirectoryKeepsRuntimeAndTenantVisibilityConsistent(t *test
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
 	assert.Equal(t, "model_not_found", payload.Error.Code)
+}
+
+func TestCanonicalWildFlowModelIDCannotBypassRuntimeFailClosed(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	db := setupModelListControllerTestDB(t)
+
+	for _, testCase := range []struct {
+		name    string
+		modelID string
+		status  int
+		body    string
+	}{
+		{name: "runtime unavailable", modelID: "VoxCPM2", status: http.StatusServiceUnavailable},
+		{name: "wrong runtime version", modelID: "VoxCPM2", status: http.StatusOK, body: `{"data":[{"id":"VoxCPM2","model_version_ref":"unexpected/version","callable":true}]}`},
+		{name: "runtime not callable", modelID: "FLUX.2 [klein] 4B", status: http.StatusOK, body: `{"data":[{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":false}]}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			require.NoError(t, db.Where("model = ?", testCase.modelID).Delete(&model.Ability{}).Error)
+			require.NoError(t, db.Create(&model.Ability{Group: "default", Model: testCase.modelID, ChannelId: 1, Enabled: true}).Error)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(testCase.status)
+				_, _ = w.Write([]byte(testCase.body))
+			}))
+			t.Cleanup(server.Close)
+			t.Setenv("WILDFLOW_INFERENCE_URL", server.URL)
+			t.Setenv("WILDFLOW_INTERNAL_TOKEN", "fail-closed-test-token")
+
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+			common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{testCase.modelID: true})
+			ListModels(ctx, constant.ChannelTypeOpenAI)
+			assert.NotContains(t, decodeListModelsResponse(t, recorder), testCase.modelID)
+
+			retrieveRecorder := httptest.NewRecorder()
+			retrieveCtx, _ := gin.CreateTestContext(retrieveRecorder)
+			retrieveCtx.Request = httptest.NewRequest(http.MethodGet, "/v1/models/test", nil)
+			retrieveCtx.Params = gin.Params{{Key: "model", Value: testCase.modelID}}
+			common.SetContextKey(retrieveCtx, constant.ContextKeyTokenModelLimitEnabled, true)
+			common.SetContextKey(retrieveCtx, constant.ContextKeyTokenModelLimit, map[string]bool{testCase.modelID: true})
+			RetrieveModel(retrieveCtx, constant.ChannelTypeOpenAI)
+			var payload struct {
+				Error types.OpenAIError `json:"error"`
+			}
+			require.NoError(t, common.Unmarshal(retrieveRecorder.Body.Bytes(), &payload))
+			assert.Equal(t, "model_not_found", payload.Error.Code)
+		})
+	}
 }
 
 func TestCheckUpdatePasswordRequiresCurrentPassword(t *testing.T) {
