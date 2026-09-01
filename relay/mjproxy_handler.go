@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -221,9 +222,16 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	requestURL := getMjRequestPath(c.Request.URL.String())
 	baseURL := c.GetString("base_url")
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
+	// Provider 请求即将发出：预占推进到 provider_started（结果未知），此后
+	// 恢复任务不得自动释放。
+	if err := model.MarkBillingReservationProviderStarted(info.RequestId); err != nil &&
+		!errors.Is(err, model.ErrBillingReservationNotFound) {
+		common.SysLog("error marking mj swap face reservation provider_started: " + err.Error())
+	}
 	mjResp, _, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
-		// 请求未到达上游或失败：释放预占，零净账变
+		// 请求未到达上游或失败：释放预占，零净账变（provider_started 记录由
+		// ReleaseUnknownBillingReservation 显式对账，这里保持可恢复状态）。
 		if releaseErr := service.ReleasePerCallBilling(info); releaseErr != nil {
 			common.SysLog("error releasing mj swap face billing: " + releaseErr.Error())
 		}
@@ -532,10 +540,20 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		reserved = true
 	}
 
+	// Provider 请求即将发出：预占推进到 provider_started（结果未知），此后
+	// 恢复任务不得自动释放。
+	if reserved {
+		if err := model.MarkBillingReservationProviderStarted(relayInfo.RequestId); err != nil &&
+			!errors.Is(err, model.ErrBillingReservationNotFound) {
+			common.SysLog("error marking mj submit reservation provider_started: " + err.Error())
+		}
+	}
+
 	midjResponseWithStatus, responseBody, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
 		if reserved {
-			// 请求未到达上游：释放预占，零净账变
+			// 请求未到达上游：释放预占，零净账变（provider_started 记录由
+			// 显式对账收口，这里保持可恢复状态）。
 			if releaseErr := service.ReleasePerCallBilling(relayInfo); releaseErr != nil {
 				common.SysLog("error releasing mj submit billing: " + releaseErr.Error())
 			}

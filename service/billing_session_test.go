@@ -254,9 +254,11 @@ func TestBillingSessionReserveTopUpTokenBoundaryRollsBack(t *testing.T) {
 	assert.Equal(t, 300, token.UsedQuota)
 }
 
-func TestBillingSessionForcePreConsumeUsesRecordlessPath(t *testing.T) {
+func TestBillingSessionForcePreConsumeUsesRecoverableRecord(t *testing.T) {
 	truncate(t)
-	// 异步任务：不创建预占记录（由 task 行合同保证），但预扣仍是条件扣减
+	// 异步任务（ForcePreConsume）与普通请求共用同一预占记录：预占在单事务内
+	// 取得双边界资格，触达 Provider 前崩溃由恢复任务自动退款，触达后进入
+	// provider_started 不被自动误退。
 	userId, tokenId, tokenKey := seedBillingSessionFixture(t, 1_000, 1_000)
 	relayInfo := newSessionRelayInfo(userId, tokenId, tokenKey, false)
 	relayInfo.ForcePreConsume = true
@@ -269,14 +271,83 @@ func TestBillingSessionForcePreConsumeUsesRecordlessPath(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(nil)
 	require.Nil(t, session.preConsume(ctx, 400))
 	assert.Equal(t, 600, sessionUserQuota(t, userId))
+	// 预占记录存在（可恢复账本），处于 reserved
+	require.NoError(t, model.MarkBillingReservationProviderStarted(relayInfo.RequestId))
 
-	// 无预占记录：结算走 funding + 令牌差额路径
+	// Provider 触达后崩溃前：结算按记录幂等推进
 	require.NoError(t, session.Settle(300))
 	assert.Equal(t, 700, sessionUserQuota(t, userId))
 	token, err := model.GetTokenById(tokenId)
 	require.NoError(t, err)
 	assert.Equal(t, 700, token.RemainQuota)
 
-	// 记录确实不存在（异步任务路径不建账）
-	require.ErrorIs(t, model.SettleBillingReservation(relayInfo.RequestId, 0), model.ErrBillingReservationNotFound)
+	// 恢复任务不触碰 provider_started/settled 的记录：显式结算后无残留账变
+	released, err := model.ReleaseStaleBillingReservations(0, 100)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), released)
+	assert.Equal(t, 700, sessionUserQuota(t, userId))
+}
+
+func TestBillingSessionReserveTopUpAccountBoundaryFailsClosed(t *testing.T) {
+	truncate(t)
+	// 复审 High-1 场景：重试切换到更贵分组、追加预占时账户余额不足 ——
+	// 整体回滚、零账变，请求不得继续发往 Provider（fail closed）。
+	userId, tokenId, tokenKey := seedBillingSessionFixture(t, 500, 5_000)
+	relayInfo := newSessionRelayInfo(userId, tokenId, tokenKey, false)
+	session := &BillingSession{
+		relayInfo: relayInfo,
+		funding:   &WalletFunding{userId: userId},
+	}
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(nil)
+	require.Nil(t, session.preConsume(ctx, 400))
+	require.Equal(t, 100, sessionUserQuota(t, userId))
+
+	// 追加 300 超出账户剩余（100）：失败，账户与 Key 均零账变
+	err := session.Reserve(700)
+	require.NotNil(t, err, "append must fail closed when account cannot cover the delta")
+	assert.Equal(t, 100, sessionUserQuota(t, userId), "account must never go negative on append")
+	token, err := model.GetTokenById(tokenId)
+	require.NoError(t, err)
+	assert.Equal(t, 5_000-400, token.RemainQuota, "token must roll back when account append fails")
+}
+
+func TestBillingSessionMarkProviderStartedGuardsRecovery(t *testing.T) {
+	truncate(t)
+	// Provider 触达后进程崩溃：记录为 provider_started，恢复任务不得退款；
+	// 活跃进程的失败路径（已知结果）仍可释放。
+	userId, tokenId, tokenKey := seedBillingSessionFixture(t, 1_000, 1_000)
+	relayInfo := newSessionRelayInfo(userId, tokenId, tokenKey, false)
+	session := &BillingSession{
+		relayInfo: relayInfo,
+		funding:   &WalletFunding{userId: userId},
+	}
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(nil)
+	require.Nil(t, session.preConsume(ctx, 400))
+	require.Equal(t, 600, sessionUserQuota(t, userId))
+
+	// 模拟 Provider 请求即将发出
+	session.MarkProviderStarted(ctx)
+
+	// 把记录回拨过陈旧窗口，模拟崩溃后重启
+	require.NoError(t, model.DB.Model(&model.BillingReservationRecord{}).
+		Where("request_id = ?", relayInfo.RequestId).
+		UpdateColumn("updated_at", model.GetDBTimestamp()-7200).Error)
+
+	// 恢复任务：不释放 provider_started 记录
+	released, err := model.ReleaseStaleBillingReservations(60, 100)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), released)
+	assert.Equal(t, 600, sessionUserQuota(t, userId), "provider-reached charge must not be auto-refunded")
+
+	// 活跃进程失败路径：可以释放（Provider 明确失败）
+	session.Refund(ctx)
+	require.NoError(t, model.ReleaseBillingReservation(relayInfo.RequestId, tokenKey))
+	assert.Equal(t, 1_000, sessionUserQuota(t, userId))
+	token, err := model.GetTokenById(tokenId)
+	require.NoError(t, err)
+	assert.Equal(t, 1_000, token.RemainQuota)
 }

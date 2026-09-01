@@ -1311,7 +1311,8 @@ func preConsumeUserSubscriptionTx(tx *gorm.DB, requestId string, userId int, amo
 	if tx == nil || userId <= 0 || strings.TrimSpace(requestId) == "" || amount <= 0 {
 		return nil, errors.New("invalid subscription pre-consume args")
 	}
-	now := GetDBTimestamp()
+	// 事务内使用同一连接读取数据库时钟（连接池/事务一致性）。
+	now := getDBTimestampOn(tx)
 	result := &SubscriptionPreConsumeResult{}
 	var existing SubscriptionPreConsumeRecord
 	query := tx.Where("request_id = ?", requestId).Limit(1).Find(&existing)

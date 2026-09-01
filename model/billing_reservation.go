@@ -2,7 +2,6 @@ package model
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
 
@@ -16,28 +15,39 @@ import (
 // 两者必须同时满足才允许调用 Provider。资格取得通过同一个数据库事务内的
 // 条件 UPDATE（WHERE quota >= amount）完成：并发、多实例下都不会把余额或
 // Key 剩余额度扣成负数；任一边界不足时整体回滚，零账变、零 Provider 调用。
+// 追加（重试切换更贵分组）与初次预占使用同一合同：账户与 Key 在同一事务内
+// 条件扣减，任一不足整体回滚。
 //
 // 生命周期（以 requestId 为幂等键，状态单向推进）：
-//   reserved -> settled  结算：delta = 实际用量 - 预占；delta>0 无条件补扣
-//                        （差额即估算误差，受请求校验上界约束，欠费有界），
-//                        delta<0 退还。结算失败保留预占记录，不会重复扣费。
-//   reserved -> released 释放：Provider 未调用/明确失败/取消时退还全部预占
-//                        （含追加部分），幂等，恰好一次。
-//   reserved -> released 恢复：结果未知（进程崩溃/重启）的陈旧预占由恢复任务
-//                        释放，同样幂等，不会重复退款；已 settled 的记录不释放，
-//                        已发生的消费不会被恢复任务误退。
+//   reserved -> provider_started   Provider 请求即将发出前由调用方标记，
+//                                  之后结果未知；恢复任务不得自动释放该状态。
+//   provider_started -> settled    结算：delta = 实际用量 - 预占；delta>0
+//                                  补扣、delta<0 退还。资金或 Key 任一差额
+//                                  调整失败时结算整体回滚（记录保持
+//                                  provider_started），调用方可重试或由对账
+//                                  收口；不会终结成"部分结算"。
+//   reserved -> released           释放：可证明未发送（Provider 未触达）时
+//                                  退还全部预占（含追加部分），恰好一次。
+//   provider_started -> released   进程存活且已知本次结果的处理路径
+//                                  （Provider 明确失败/取消/请求未成功）
+//                                  释放；自动恢复任务不触碰该状态，结果
+//                                  未知的记录由人工对账收口。
 //
-// 异步任务（ForcePreConsume）的可靠性由 task 行 + RefundTaskQuota/
-// RecalculateTaskQuota 的既有合同保证，不创建预占记录，避免双重账本；
-// 其预扣仍走原子条件扣减，只是没有可恢复记录。
+// 异步任务（ForcePreConsume）与普通请求使用同一预占记录：Provider 提交前
+// 同样原子取得双边界资格，Provider 触达前崩溃由恢复任务自动退款，触达后
+// 崩溃进入 provider_started 不可自动退款；task 行的 RefundTaskQuota/
+// RecalculateTaskQuota 继续负责任务结果侧的结算与退款。
 //
 // 本表只是请求级预占/幂等记录，与 SubscriptionPreConsumeRecord 同一可靠性
 // 合同；账户余额与 Key 额度仍是唯一账本，这里不复制任何余额。
 
 const (
 	BillingReservationStateReserved = "reserved"
-	BillingReservationStateSettled  = "settled"
-	BillingReservationStateReleased = "released"
+	// BillingReservationStateProviderStarted 表示 Provider 请求可能已发出：
+	// 结果未知。恢复任务不得自动释放该状态的记录。
+	BillingReservationStateProviderStarted = "provider_started"
+	BillingReservationStateSettled         = "settled"
+	BillingReservationStateReleased        = "released"
 
 	BillingReservationSourceWallet       = "wallet"
 	BillingReservationSourceSubscription = "subscription"
@@ -56,6 +66,9 @@ var (
 	// ErrBillingReservationNotFound 表示该请求没有预占记录（异步任务路径或
 	// 旧数据）；调用方据此回退到无记录的账务路径。
 	ErrBillingReservationNotFound = errors.New("billing reservation not found")
+	// ErrBillingReservationStateConflict 表示记录状态与操作不兼容（如对
+	// released 记录结算）。调用方不得重试同操作。
+	ErrBillingReservationStateConflict = errors.New("billing reservation state conflict")
 )
 
 type BillingReservationRecord struct {
@@ -175,7 +188,8 @@ func adjustTokenQuotaDeltaTx(tx *gorm.DB, tokenId int, delta int64) error {
 }
 
 // adjustUserQuotaDeltaTx 结算差额调整账户余额：delta>0 无条件补扣（该请求已
-// 通过预占取得资格，欠费有界），delta<0 退还。
+// 通过预占取得资格，欠费有界），delta<0 退还。仅用于结算/对账；预占与追加
+// 一律走条件扣减。
 func adjustUserQuotaDeltaTx(tx *gorm.DB, userId int, delta int64) error {
 	if delta == 0 {
 		return nil
@@ -199,6 +213,8 @@ func refundTokenQuotaTx(tx *gorm.DB, tokenId int, amount int64) error {
 	}).Error
 }
 
+// syncBillingReservationCache 把数据库账变同步到 Redis 缓存。
+// HINCRBY 语义：数据库扣减 N → 缓存传 -N；数据库退还 N → 缓存传 +N。
 func syncBillingReservationCache(userId int, tokenKey string, userDelta int, tokenDelta int) {
 	if userId > 0 && userDelta != 0 {
 		if err := cacheIncrUserQuota(userId, int64(userDelta)); err != nil {
@@ -296,8 +312,8 @@ func ReserveSubscriptionBillingQuota(requestId string, userId, tokenId int, toke
 	return result, reserved, nil
 }
 
-// ReserveUserQuota 独立的条件性账户扣减，用于没有预占记录的路径（异步任务
-// 预扣、WSS 增量计费）。并发下不会把余额扣成负数。
+// ReserveUserQuota 独立的条件性账户扣减，用于没有预占记录的路径（WSS 增量
+// 计费等）。并发下不会把余额扣成负数。
 func ReserveUserQuota(userId int, amount int) error {
 	if userId <= 0 || amount <= 0 {
 		return nil
@@ -308,7 +324,7 @@ func ReserveUserQuota(userId int, amount int) error {
 	if err != nil {
 		return err
 	}
-	if err := cacheIncrUserQuota(userId, int64(-amount)); err != nil {
+	if err := cacheIncrUserQuota(userId, -int64(amount)); err != nil {
 		common.SysLog("failed to sync user reserve cache: " + err.Error())
 	}
 	return nil
@@ -334,9 +350,9 @@ func ReserveTokenQuota(tokenId int, tokenKey string, amount int, unlimitedToken 
 }
 
 // AppendBillingReservation 对已存在的预占追加额度（重试切换到更贵的分组时）。
-// 记录、资金与 Key 扣减在同一事务内完成：钱包部分沿用既有合同——无条件扣减、
-// 不足部分进入欠费（有界）；订阅部分与 Key 部分是条件扣减，任一失败整体回滚
-// （钱包也不会被扣）。记录不存在时返回 ErrBillingReservationNotFound。
+// 记录、资金与 Key 扣减在同一事务内完成：账户余额与 Key 额度都是条件扣减，
+// 任一不足整体回滚、零账变（不会调用 Provider——追加发生在发送前）。
+// 记录不存在时返回 ErrBillingReservationNotFound。
 func AppendBillingReservation(requestId string, delta int) error {
 	if delta <= 0 {
 		return nil
@@ -345,7 +361,6 @@ func AppendBillingReservation(requestId string, delta int) error {
 		return ErrBillingReservationNotFound
 	}
 	var cacheUserId int
-	var cacheUserDelta int
 	var cacheTokenDelta int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var record BillingReservationRecord
@@ -356,15 +371,15 @@ func AppendBillingReservation(requestId string, delta int) error {
 			return err
 		}
 		if record.State != BillingReservationStateReserved {
-			return nil
+			// provider_started 及之后不允许追加：Provider 可能已收到请求。
+			return ErrBillingReservationStateConflict
 		}
 		switch record.Source {
 		case BillingReservationSourceWallet:
-			if err := adjustUserQuotaDeltaTx(tx, record.UserId, int64(delta)); err != nil {
+			if err := reserveUserQuotaTx(tx, record.UserId, int64(delta)); err != nil {
 				return err
 			}
 			cacheUserId = record.UserId
-			cacheUserDelta = delta
 		case BillingReservationSourceSubscription:
 			if err := postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, int64(delta)); err != nil {
 				return err
@@ -381,20 +396,36 @@ func AppendBillingReservation(requestId string, delta int) error {
 	if err != nil {
 		return err
 	}
-	if cacheUserDelta != 0 || cacheTokenDelta != 0 {
-		tokenKey := ""
-		if cacheTokenDelta != 0 {
-			tokenKey = billingReservationTokenKey(requestId)
-		}
-		syncBillingReservationCache(cacheUserId, tokenKey, cacheUserDelta, cacheTokenDelta)
+	if cacheUserId > 0 {
+		syncBillingReservationCache(cacheUserId, "", -delta, 0)
+	}
+	if cacheTokenDelta != 0 {
+		syncBillingReservationCache(0, billingReservationTokenKey(requestId), 0, -cacheTokenDelta)
+	}
+	return nil
+}
+
+// MarkBillingReservationProviderStarted 在 Provider 请求发出前调用：此后结果
+// 未知，恢复任务不得自动释放；仅结算或显式人工对账可以收口。
+// 幂等：重复标记或对已推进状态的记录是 no-op。
+func MarkBillingReservationProviderStarted(requestId string) error {
+	if requestId == "" {
+		return ErrBillingReservationNotFound
+	}
+	res := DB.Model(&BillingReservationRecord{}).
+		Where("request_id = ? AND state = ?", requestId, BillingReservationStateReserved).
+		Update("state", BillingReservationStateProviderStarted)
+	if res.Error != nil {
+		return res.Error
 	}
 	return nil
 }
 
 // SettleBillingReservation 幂等结算：delta = 实际用量 - 预占。
-// delta>0 无条件补扣（欠费有界），delta<0 退还。即使差额调整失败（如订阅余额
-// 溢出），记录也会标记为 settled 保留预占扣减并记录告警——已发生的消费不能被
-// 恢复任务误退。记录不存在时返回 ErrBillingReservationNotFound（调用方回退）。
+// delta>0 补扣、delta<0 退还。资金或 Key 任一差额调整失败时整体回滚并返回
+// 错误——记录保持在 reserved/provider_started，调用方可重试，或由对账收口；
+// 不会终结成"部分结算"。重放（已 settled）与记录不存在分别返回幂等成功与
+// ErrBillingReservationNotFound。
 func SettleBillingReservation(requestId string, delta int) error {
 	if requestId == "" {
 		return ErrBillingReservationNotFound
@@ -410,7 +441,8 @@ func SettleBillingReservation(requestId string, delta int) error {
 			}
 			return err
 		}
-		if record.State != BillingReservationStateReserved {
+		if record.State == BillingReservationStateSettled || record.State == BillingReservationStateReleased {
+			// 已终结：结算重放按幂等 no-op 处理（账变只会发生一次）。
 			return nil
 		}
 		if delta != 0 {
@@ -420,23 +452,20 @@ func SettleBillingReservation(requestId string, delta int) error {
 				applyErr = adjustUserQuotaDeltaTx(tx, record.UserId, int64(delta))
 				if applyErr == nil {
 					cacheUserId = record.UserId
+					cacheUserDelta = -delta
 				}
 			case BillingReservationSourceSubscription:
 				applyErr = postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, int64(delta))
 			}
+			// 资金侧失败即整体回滚：不再继续调整 Key，保证账变原子。
+			if applyErr != nil {
+				return applyErr
+			}
 			// Key 额度与资金同步差额：补扣可把 remain 扣为负（上限已在预占守住）。
 			if tokenErr := adjustTokenQuotaDeltaTx(tx, record.TokenId, int64(delta)); tokenErr != nil {
-				common.SysLog(fmt.Sprintf("billing reservation settle token delta failed (request=%s, delta=%d): %s",
-					requestId, delta, tokenErr.Error()))
-			} else if applyErr == nil {
-				cacheTokenDelta = delta
+				return tokenErr
 			}
-			if applyErr != nil {
-				common.SysLog(fmt.Sprintf("billing reservation settle delta failed (request=%s, source=%s, delta=%d): %s",
-					requestId, record.Source, delta, applyErr.Error()))
-			} else {
-				cacheUserDelta = delta
-			}
+			cacheTokenDelta = -delta
 		}
 		record.State = BillingReservationStateSettled
 		return tx.Save(&record).Error
@@ -468,11 +497,25 @@ func billingReservationTokenKey(requestId string) string {
 	return token.Key
 }
 
-// ReleaseBillingReservation 幂等释放预占：Provider 未调用、明确失败、取消或
-// 结果未知恢复时退还全部预占（含追加部分），恰好一次。
-// 已 settled 的记录不释放（消费已发生），防止重复退款。
-// 记录不存在时返回 ErrBillingReservationNotFound（调用方回退旧路径）。
+// ReleaseBillingReservation 幂等释放预占：退还全部预占（含追加部分）并推进
+// released，恰好一次。允许从 reserved 与 provider_started 两个状态释放——
+// 调用方是进程存活、已知本次结果的处理路径（Provider 明确失败/取消/请求
+// 未成功）。自动恢复任务必须使用 ReleaseUnsentBillingReservation（只释放
+// 可证明未发送的 reserved 记录），防止误退可能已被 Provider 接受的请求。
+// settled/released 为幂等 no-op；记录不存在时返回 ErrBillingReservationNotFound
+// （调用方回退旧路径）。
 func ReleaseBillingReservation(requestId string, tokenKey string) error {
+	return releaseBillingReservation(requestId, tokenKey, false)
+}
+
+// ReleaseUnsentBillingReservation 仅供自动恢复任务使用：只释放仍处于
+// reserved（可证明 Provider 未触达）的记录。provider_started（结果未知）
+// 不释放，防止把已发送的请求退款。
+func ReleaseUnsentBillingReservation(requestId string, tokenKey string) error {
+	return releaseBillingReservation(requestId, tokenKey, true)
+}
+
+func releaseBillingReservation(requestId string, tokenKey string, reservedOnly bool) error {
 	if requestId == "" {
 		return ErrBillingReservationNotFound
 	}
@@ -488,7 +531,9 @@ func ReleaseBillingReservation(requestId string, tokenKey string) error {
 			return err
 		}
 		if record.State != BillingReservationStateReserved {
-			return nil
+			if reservedOnly || record.State != BillingReservationStateProviderStarted {
+				return nil
+			}
 		}
 		switch record.Source {
 		case BillingReservationSourceWallet:
@@ -528,8 +573,9 @@ func ReleaseBillingReservation(requestId string, tokenKey string) error {
 	return nil
 }
 
-// ReleaseStaleBillingReservations 恢复任务：释放结果未知（进程崩溃/重启）的
-// 陈旧预占。释放幂等，重复执行不会重复退款。返回释放的记录数。
+// ReleaseStaleBillingReservations 恢复任务：仅释放仍处于 reserved（可证明
+// Provider 未触达）且超过陈旧窗口的预占。provider_started（结果未知）不释放，
+// 防止把已发送的请求退款。释放幂等，重复执行不会重复退款。返回释放的记录数。
 func ReleaseStaleBillingReservations(olderThanSeconds int64, limit int) (int64, error) {
 	if olderThanSeconds < billingReservationStaleFloorSeconds {
 		olderThanSeconds = billingReservationStaleFloorSeconds
@@ -552,7 +598,7 @@ func ReleaseStaleBillingReservations(olderThanSeconds int64, limit int) (int64, 
 				tokenKey = token.Key
 			}
 		}
-		if err := ReleaseBillingReservation(record.RequestId, tokenKey); err != nil {
+		if err := ReleaseUnsentBillingReservation(record.RequestId, tokenKey); err != nil {
 			return released, err
 		}
 		released++
@@ -561,6 +607,7 @@ func ReleaseStaleBillingReservations(olderThanSeconds int64, limit int) (int64, 
 }
 
 // CleanupBillingReservationRecords 清理已终结的预占记录，保持表规模有界。
+// provider_started 的记录必须先经结算/人工对账收口，不参与自动清理。
 func CleanupBillingReservationRecords(olderThanSeconds int64) (int64, error) {
 	if olderThanSeconds <= 0 {
 		olderThanSeconds = 7 * 24 * 3600

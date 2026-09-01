@@ -217,6 +217,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
+		// Provider 请求即将发出：预占记录推进到 provider_started（结果未知），
+		// 此后恢复任务不得自动释放，防止把可能已被 Provider 接受的请求退款。
+		if relayInfo.Billing != nil {
+			relayInfo.Billing.MarkProviderStarted(c)
+		}
+
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
 			newAPIError = relay.WssHelper(c, relayInfo)
@@ -553,6 +559,12 @@ func RelayTask(c *gin.Context) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+
+		// Provider 请求即将发出：预占记录推进到 provider_started（结果未知），
+		// 此后恢复任务不得自动释放，防止把可能已被 Provider 接受的任务退款。
+		if relayInfo.Billing != nil {
+			relayInfo.Billing.MarkProviderStarted(c)
+		}
 
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {

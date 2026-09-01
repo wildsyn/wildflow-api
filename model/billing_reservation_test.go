@@ -1,11 +1,15 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -207,7 +211,7 @@ func TestAppendBillingReservationTopUpAtomically(t *testing.T) {
 	_, err := ReserveWalletBillingQuota("req-append", userId, tokenId, tokenKey, 400, false)
 	require.NoError(t, err)
 
-	// 追加 300：钱包无条件扣减（欠费合同），Key 条件扣减
+	// 追加 300：账户与 Key 同事务条件扣减
 	require.NoError(t, AppendBillingReservation("req-append", 300))
 	// 1000 - 400 - 300 = 300
 	assert.Equal(t, 300, reservationUserQuota(t, userId))
@@ -234,6 +238,113 @@ func TestAppendBillingReservationTokenBoundaryRollsBackWallet(t *testing.T) {
 	remain, used := reservationTokenState(t, tokenId)
 	assert.Equal(t, 200, remain)
 	assert.Equal(t, 300, used)
+}
+
+func TestAppendBillingReservationInsufficientAccountRollsBackToken(t *testing.T) {
+	// 账户余额不足以追加：整体回滚，Key 零账变，请求不得继续发往 Provider
+	userId, tokenId, tokenKey := seedReservationFixture(t, 1_000, 5_000)
+	_, err := ReserveWalletBillingQuota("req-append-acct", userId, tokenId, tokenKey, 800, false)
+	require.NoError(t, err)
+	require.Equal(t, 200, reservationUserQuota(t, userId))
+
+	require.ErrorIs(t, AppendBillingReservation("req-append-acct", 300), ErrInsufficientUserQuota)
+	assert.Equal(t, 200, reservationUserQuota(t, userId), "account must not go negative on append")
+	remain, used := reservationTokenState(t, tokenId)
+	assert.Equal(t, 5_000-800, remain, "token must roll back when account append fails")
+	assert.Equal(t, 800, used)
+}
+
+func TestAppendBillingReservationAfterProviderStartedRejected(t *testing.T) {
+	userId, tokenId, tokenKey := seedReservationFixture(t, 1_000, 1_000)
+	_, err := ReserveWalletBillingQuota("req-append-started", userId, tokenId, tokenKey, 400, false)
+	require.NoError(t, err)
+	require.NoError(t, MarkBillingReservationProviderStarted("req-append-started"))
+
+	// provider_started（Provider 可能已收到请求）不允许追加
+	require.ErrorIs(t, AppendBillingReservation("req-append-started", 100), ErrBillingReservationStateConflict)
+	assert.Equal(t, 600, reservationUserQuota(t, userId))
+	remain, used := reservationTokenState(t, tokenId)
+	assert.Equal(t, 600, remain)
+	assert.Equal(t, 400, used)
+}
+
+func TestReleaseStaleSkipsProviderStartedRecords(t *testing.T) {
+	// Provider 触达后崩溃：记录停在 provider_started，恢复任务不得退款
+	userId, tokenId, tokenKey := seedReservationFixture(t, 1_000, 1_000)
+	_, err := ReserveWalletBillingQuota("req-started-stale", userId, tokenId, tokenKey, 400, false)
+	require.NoError(t, err)
+	require.NoError(t, MarkBillingReservationProviderStarted("req-started-stale"))
+	require.NoError(t, DB.Model(&BillingReservationRecord{}).Where("request_id = ?", "req-started-stale").
+		UpdateColumn("updated_at", GetDBTimestamp()-7200).Error)
+
+	released, err := ReleaseStaleBillingReservations(60, 100)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), released, "provider_started records must never be auto-released")
+	assert.Equal(t, 600, reservationUserQuota(t, userId), "consumed-by-provider charge must not be refunded")
+
+	// 活跃进程的失败路径（Provider 明确失败/取消）可以释放 provider_started 记录
+	require.NoError(t, ReleaseBillingReservation("req-started-stale", tokenKey))
+	assert.Equal(t, 1_000, reservationUserQuota(t, userId))
+	remain, used := reservationTokenState(t, tokenId)
+	assert.Equal(t, 1_000, remain)
+	assert.Equal(t, 0, used)
+}
+
+func TestMarkProviderStartedIdempotentAndTerminalStates(t *testing.T) {
+	userId, tokenId, tokenKey := seedReservationFixture(t, 1_000, 1_000)
+	_, err := ReserveWalletBillingQuota("req-mark", userId, tokenId, tokenKey, 100, false)
+	require.NoError(t, err)
+
+	require.NoError(t, MarkBillingReservationProviderStarted("req-mark"))
+	_ = tokenKey
+	// 幂等：重复标记 no-op
+	require.NoError(t, MarkBillingReservationProviderStarted("req-mark"))
+
+	require.NoError(t, SettleBillingReservation("req-mark", 0))
+	// settled 后再标记：no-op，不改变状态
+	require.NoError(t, MarkBillingReservationProviderStarted("req-mark"))
+	var rec BillingReservationRecord
+	require.NoError(t, DB.Where("request_id = ?", "req-mark").First(&rec).Error)
+	assert.Equal(t, BillingReservationStateSettled, rec.State)
+}
+
+func TestSettleBillingReservationFailureStaysRecoverable(t *testing.T) {
+	// 结算差额调整失败（订阅溢出）：整体回滚，记录保持 provider_started 可重试，
+	// 不得终结成"部分结算"
+	require.NoError(t, DB.AutoMigrate(&SubscriptionPreConsumeRecord{}))
+	userId, tokenId, tokenKey := seedReservationFixture(t, 1_000, 1_000)
+	plan := &SubscriptionPlan{Title: "settle-fail", DurationUnit: SubscriptionDurationMonth, DurationValue: 1, TotalAmount: 100}
+	require.NoError(t, DB.Create(plan).Error)
+	sub := &UserSubscription{
+		UserId:      userId,
+		PlanId:      plan.Id,
+		AmountTotal: 100,
+		AmountUsed:  90,
+		Status:      "active",
+		StartTime:   time.Now().Unix(),
+		EndTime:     time.Now().Add(24 * time.Hour).Unix(),
+	}
+	require.NoError(t, DB.Create(sub).Error)
+
+	_, reserved, err := ReserveSubscriptionBillingQuota("req-settle-fail", userId, tokenId, tokenKey, 10, false)
+	require.NoError(t, err)
+	require.True(t, reserved)
+	require.NoError(t, MarkBillingReservationProviderStarted("req-settle-fail"))
+
+	// 实际用量超过订阅剩余（100-90=10，实际 20）：delta=+10 溢出 → 失败
+	settleErr := SettleBillingReservation("req-settle-fail", 10)
+	require.Error(t, settleErr, "overflowing subscription delta must fail settlement")
+
+	// 记录保持 provider_started（可恢复状态）：账变未收口
+	var rec BillingReservationRecord
+	require.NoError(t, DB.Where("request_id = ?", "req-settle-fail").First(&rec).Error)
+	assert.Equal(t, BillingReservationStateProviderStarted, rec.State)
+	assert.Equal(t, 1_000, reservationUserQuota(t, userId), "wallet untouched by subscription settle failure")
+
+	// 重试结算合法差额（实际用量等于预占）：成功收口
+	require.NoError(t, SettleBillingReservation("req-settle-fail", 0))
+	require.NoError(t, DB.Where("request_id = ?", "req-settle-fail").First(&rec).Error)
+	assert.Equal(t, BillingReservationStateSettled, rec.State)
 }
 
 func TestReleaseStaleBillingReservationsRecoversAfterCrash(t *testing.T) {
@@ -305,4 +416,71 @@ func TestReserveWalletBillingQuotaRejectsInvalidArgs(t *testing.T) {
 
 	_, err = ReserveWalletBillingQuota("req-negative", userId, tokenId, tokenKey, -1, false)
 	require.Error(t, err)
+}
+
+// TestBillingReservationCacheDeltaSigns 验证缓存同步的 HINCRBY 符号合同：
+// 数据库扣减 N（预占/补扣）→ 缓存余额必须减少 N（HINCRBY -N）；
+// 数据库退还 N（释放/退差）→ 缓存余额必须增加 N（HINCRBY +N）。
+// 符号反了会造成错误余额展示、错误前置拒绝或持续回源。
+func TestBillingReservationCacheDeltaSigns(t *testing.T) {
+	server := miniredis.RunT(t)
+	oldRedisEnabled, oldRDB := common.RedisEnabled, common.RDB
+	common.RedisEnabled = true
+	common.RDB = redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() {
+		_ = common.RDB.Close()
+		common.RedisEnabled, common.RDB = oldRedisEnabled, oldRDB
+	})
+
+	userId, tokenId, tokenKey := seedReservationFixture(t, 1_000, 1_000)
+
+	// 预置缓存：用户 Quota=1000，Key RemainQuota=1000（带 TTL，否则 HINCRBY 跳过）
+	userKey := fmt.Sprintf("user:%d", userId)
+	tokenCacheKey := fmt.Sprintf("token:%s", common.GenerateHMAC(tokenKey))
+	require.NoError(t, common.RDB.HSet(context.Background(), userKey, "Quota", 1000).Err())
+	require.NoError(t, common.RDB.Expire(context.Background(), userKey, time.Minute).Err())
+	require.NoError(t, common.RDB.HSet(context.Background(), tokenCacheKey, "RemainQuota", 1000).Err())
+	require.NoError(t, common.RDB.Expire(context.Background(), tokenCacheKey, time.Minute).Err())
+
+	// 预占 400：DB 扣 400，缓存必须 -400
+	_, err := ReserveWalletBillingQuota("req-cache-1", userId, tokenId, tokenKey, 400, false)
+	require.NoError(t, err)
+	userQuota, err := common.RDB.HGet(context.Background(), userKey, "Quota").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(600), userQuota, "reserve must decrement cached user quota by 400")
+	tokenQuota, err := common.RDB.HGet(context.Background(), tokenCacheKey, "RemainQuota").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(600), tokenQuota, "reserve must decrement cached token quota by 400")
+
+	// 结算补扣 150：DB 扣 150，缓存必须 -150
+	require.NoError(t, SettleBillingReservation("req-cache-1", 150))
+	userQuota, err = common.RDB.HGet(context.Background(), userKey, "Quota").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(450), userQuota, "settle top-up must decrement cached user quota by 150")
+	tokenQuota, err = common.RDB.HGet(context.Background(), tokenCacheKey, "RemainQuota").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(450), tokenQuota, "settle top-up must decrement cached token quota by 150")
+
+	// 结算退差 100：DB 退 100，缓存必须 +100
+	_, err = ReserveWalletBillingQuota("req-cache-2", userId, tokenId, tokenKey, 100, false)
+	require.NoError(t, err)
+	require.NoError(t, SettleBillingReservation("req-cache-2", -100))
+	userQuota, err = common.RDB.HGet(context.Background(), userKey, "Quota").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(450), userQuota, "refund must restore cached user quota")
+	tokenQuota, err = common.RDB.HGet(context.Background(), tokenCacheKey, "RemainQuota").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(450), tokenQuota, "refund must restore cached token quota")
+
+	// 释放（Provider 明确失败，未结算）：DB 退 100，缓存必须 +100
+	_, err = ReserveWalletBillingQuota("req-cache-3", userId, tokenId, tokenKey, 100, false)
+	require.NoError(t, err)
+	require.NoError(t, MarkBillingReservationProviderStarted("req-cache-3"))
+	require.NoError(t, ReleaseBillingReservation("req-cache-3", tokenKey))
+	userQuota, err = common.RDB.HGet(context.Background(), userKey, "Quota").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(450), userQuota, "reserve+release net zero on cache")
+	tokenQuota, err = common.RDB.HGet(context.Background(), tokenCacheKey, "RemainQuota").Int64()
+	require.NoError(t, err)
+	assert.Equal(t, int64(450), tokenQuota, "reserve+release net zero on cache")
 }

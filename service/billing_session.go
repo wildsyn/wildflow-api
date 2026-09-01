@@ -63,11 +63,12 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		s.settled = true
 		return nil
 	}
-	// 1) 调整资金来源 + Key 额度（有预占记录时在 model 层幂等完成）
+	// 1) 调整资金来源 + Key 额度（model 层单事务幂等完成；结算失败时记录
+	// 保持可恢复状态，调用方可重试——不会终结成"部分结算"）。
 	if s.hasReservation() {
 		if err := model.SettleBillingReservation(s.relayInfo.RequestId, delta); err != nil {
 			if errors.Is(err, model.ErrBillingReservationNotFound) {
-				// 记录不存在（如异步任务路径），回退到分步调整。
+				// 记录不存在（requestId 为空的旧数据路径），回退到分步调整。
 				return s.settleWithoutRecord(delta)
 			}
 			return err
@@ -82,10 +83,27 @@ func (s *BillingSession) Settle(actualQuota int) error {
 }
 
 // hasReservation 报告本会话是否有对应的预占记录（含 requestId 重放）。
-// ForcePreConsume（异步任务）不创建预占记录：其可靠性由 task 行的
-// RefundTaskQuota/RecalculateTaskQuota 合同保证。
+// 普通请求与异步任务（ForcePreConsume）现在共用同一预占记录：它同时是并发
+// 资格账与崩溃恢复账本。preConsumedQuota=0 的免费/信任路径没有记录。
 func (s *BillingSession) hasReservation() bool {
-	return !s.relayInfo.ForcePreConsume && s.preConsumedQuota > 0
+	return s.preConsumedQuota > 0
+}
+
+// MarkProviderStarted 在 Provider 请求即将发出前调用：把预占记录推进到
+// provider_started（结果未知），此后恢复任务不得自动释放，防止把可能已被
+// Provider 接受的请求退款。幂等；无记录（免费模型/信任为 0）时是 no-op。
+// 标记失败只记录日志：记录保持 reserved 最多被恢复任务按陈旧窗口退款，
+// 属可接受的对账边界，不阻塞请求。
+func (s *BillingSession) MarkProviderStarted(c *gin.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settled || s.refunded || !s.hasReservation() {
+		return
+	}
+	if err := model.MarkBillingReservationProviderStarted(s.relayInfo.RequestId); err != nil {
+		common.SysLog(fmt.Sprintf("error marking billing reservation provider_started (request=%s): %s",
+			s.relayInfo.RequestId, err.Error()))
+	}
 }
 
 // settleWithoutRecord 无预占记录的差额结算：资金来源和令牌额度分两步提交，
@@ -260,39 +278,24 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 
 	// ---- 1) 原子预占：账户余额 + Key 硬上限在同一事务内取得资格 ----
 	// 预占失败的请求零 Provider 调用、零账变；并发/多实例下任何一方不足都
-	// 会整体失败，不会把余额或 Key 剩余额度扣成负数。
+	// 会整体失败，不会把余额或 Key 剩余额度扣成负数。普通请求与异步任务
+	// （ForcePreConsume）使用同一预占记录：它既是并发硬上限的资格账，也是
+	// 崩溃恢复账本（触达 Provider 前崩溃可自动退款，触达后进入
+	// provider_started 不被自动误退）。
 	if effectiveQuota > 0 {
 		switch funding := s.funding.(type) {
 		case *WalletFunding:
 			// 预占事务即资金扣减本身；成功后同步 funding.consumed 维持退款合同。
-			if s.relayInfo.ForcePreConsume {
-				// 异步任务的可靠性由 task 行 + RefundTaskQuota/RecalculateTaskQuota
-				// 的既有合同保证，不创建预占记录（避免双重账本）；
-				// 预扣仍是原子条件扣减，只是没有可恢复记录。
-				if err := model.ReserveUserQuota(s.relayInfo.UserId, effectiveQuota); err != nil {
-					return s.preConsumeFailure(c, err)
-				}
-				if err := model.ReserveTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, effectiveQuota, s.relayInfo.TokenUnlimited); err != nil {
-					if rollbackErr := model.IncreaseUserQuota(s.relayInfo.UserId, effectiveQuota, false); rollbackErr != nil {
-						common.SysLog(fmt.Sprintf("failed to rollback user quota after token reserve failure (userId=%d, quota=%d): %s",
-							s.relayInfo.UserId, effectiveQuota, rollbackErr.Error()))
-					}
-					return s.preConsumeFailure(c, err)
-				}
-				funding.consumed = effectiveQuota
-				s.tokenConsumed = effectiveQuota
-			} else {
-				reserved, err := model.ReserveWalletBillingQuota(s.relayInfo.RequestId, s.relayInfo.UserId,
-					s.relayInfo.TokenId, s.relayInfo.TokenKey, effectiveQuota, s.relayInfo.TokenUnlimited)
-				if err != nil {
-					return s.preConsumeFailure(c, err)
-				}
-				funding.consumed = effectiveQuota
-				s.tokenConsumed = effectiveQuota
-				if !reserved {
-					// requestId 重放（同一请求的重复预占）：账已预扣，只同步会话状态。
-					s.alreadyReserved = true
-				}
+			reserved, err := model.ReserveWalletBillingQuota(s.relayInfo.RequestId, s.relayInfo.UserId,
+				s.relayInfo.TokenId, s.relayInfo.TokenKey, effectiveQuota, s.relayInfo.TokenUnlimited)
+			if err != nil {
+				return s.preConsumeFailure(c, err)
+			}
+			funding.consumed = effectiveQuota
+			s.tokenConsumed = effectiveQuota
+			if !reserved {
+				// requestId 重放（同一请求的重复预占）：账已预扣，只同步会话状态。
+				s.alreadyReserved = true
 			}
 		case *SubscriptionFunding:
 			_, reserved, err := model.ReserveSubscriptionBillingQuota(s.relayInfo.RequestId, s.relayInfo.UserId,
@@ -300,8 +303,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			if err != nil {
 				return s.preConsumeFailure(c, err)
 			}
-			// 订阅资金与 Key 硬上限已原子预占；funding 状态由 PreConsume 回填，
-			// 但此时订阅已扣，直接标记 consumed 防止兜底路径重复扣减。
+			// 订阅资金与 Key 硬上限已原子预占；直接标记 consumed 防止兜底路径重复扣减。
 			s.tokenConsumed = effectiveQuota
 			funding.preConsumed = int64(effectiveQuota)
 			if !reserved {
