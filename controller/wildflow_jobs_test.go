@@ -83,13 +83,19 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) {
 		userID := 42
+		tokenID := 7
 		if raw := c.GetHeader("X-Test-User"); raw != "" {
 			parsed, parseErr := strconv.Atoi(raw)
 			require.NoError(t, parseErr)
 			userID = parsed
 		}
+		if raw := c.GetHeader("X-Test-Token"); raw != "" {
+			parsed, parseErr := strconv.Atoi(raw)
+			require.NoError(t, parseErr)
+			tokenID = parsed
+		}
 		c.Set("id", userID)
-		c.Set("token_id", 7)
+		c.Set("token_id", tokenID)
 		c.Set(common.RequestIdKey, "request-public-1")
 		if raw := c.GetHeader("X-Test-Model-Limits"); raw != "" {
 			limits := make(map[string]bool)
@@ -597,6 +603,90 @@ func TestSucceededWildFlowJobSettlesRetailPriceExactlyOnce(t *testing.T) {
 		Where("user_id = ? AND type = ? AND request_id = ?", 42, model.LogTypeConsume, operationID).
 		Count(&consumeLogs).Error)
 	assert.Equal(t, int64(1), consumeLogs)
+}
+
+func TestWildFlowMultiAccountBillingStaysIsolatedAcrossSameKeyReplays(t *testing.T) {
+	var submissions atomic.Int32
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/internal/v1/jobs":
+			submissions.Add(1)
+			if r.Header.Get("X-WildFlow-Tenant-Ref") == "user:42" {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"job":{"id":"job-account-a","state":"queued"}}`))
+				return
+			}
+			require.Equal(t, "user:43", r.Header.Get("X-WildFlow-Tenant-Ref"))
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job":{"id":"job-account-b","state":"queued"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/jobs/job-account-a":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-account-a","state":"succeeded","artifacts":[{"id":"artifact-account-a","job_id":"job-account-a","media_type":"image/png","size_bytes":12,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/jobs/job-account-b":
+			_, _ = w.Write([]byte(`{"job":{"id":"job-account-b","state":"failed","last_error":"provider failed"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	require.NoError(t, model.DB.Create(&model.User{Id: 43, Username: "wildflow-billing-user-b", AffCode: "wildflow-billing-aff-b", Quota: 1_000_000, Group: "default"}).Error)
+	require.NoError(t, model.DB.Create(&model.Token{Id: 8, UserId: 43, Key: "wildflow-test-token-b", Name: "wildflow-test-token-b", RemainQuota: 1_000_000}).Error)
+
+	body := `{"model":"FLUX.2 [klein] 4B","parameters":{"prompt":"一只熊猫"}}`
+	accountAHeaders := map[string]string{"Idempotency-Key": "shared-key"}
+	accountBHeaders := map[string]string{"Idempotency-Key": "shared-key", "X-Test-User": "43", "X-Test-Token": "8"}
+	createdA := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, accountAHeaders)
+	replayedA := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, accountAHeaders)
+	createdB := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, accountBHeaders)
+	require.Equal(t, http.StatusAccepted, createdA.Code, createdA.Body.String())
+	require.Equal(t, http.StatusAccepted, replayedA.Code, replayedA.Body.String())
+	require.Equal(t, http.StatusAccepted, createdB.Code, createdB.Body.String())
+	assert.Equal(t, int32(2), submissions.Load(), "one submission per account despite the shared idempotency key")
+
+	operationA := strings.TrimPrefix(createdA.Header().Get("Location"), "/v1/jobs/")
+	operationB := strings.TrimPrefix(createdB.Header().Get("Location"), "/v1/jobs/")
+	require.NotEmpty(t, operationA)
+	require.NotEmpty(t, operationB)
+	assert.NotEqual(t, operationA, operationB)
+	_, err := model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{
+		EventID: "usage-account-a", PayloadDigest: strings.Repeat("d", 64), OperationID: operationA,
+		JobID: "job-account-a", ModelVersionRef: "black-forest-labs/FLUX.2-klein-4B", Kind: "images", Quantity: 1, Unit: "image",
+	})
+	require.NoError(t, err)
+
+	for _, request := range []struct {
+		operationID string
+		headers     map[string]string
+	}{
+		{operationA, nil},
+		{operationA, nil},
+		{operationB, map[string]string{"X-Test-User": "43", "X-Test-Token": "8"}},
+		{operationB, map[string]string{"X-Test-User": "43", "X-Test-Token": "8"}},
+	} {
+		response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+request.operationID, "", request.headers)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	}
+
+	var accountA, accountB model.User
+	var tokenA, tokenB model.Token
+	var settled, refunded model.WildFlowOperation
+	require.NoError(t, model.DB.First(&accountA, 42).Error)
+	require.NoError(t, model.DB.First(&accountB, 43).Error)
+	require.NoError(t, model.DB.First(&tokenA, 7).Error)
+	require.NoError(t, model.DB.First(&tokenB, 8).Error)
+	require.NoError(t, model.DB.Where("operation_id = ?", operationA).First(&settled).Error)
+	require.NoError(t, model.DB.Where("operation_id = ?", operationB).First(&refunded).Error)
+	assert.Equal(t, 1_000_000-3_425, accountA.Quota)
+	assert.Equal(t, 3_425, accountA.UsedQuota)
+	assert.Equal(t, 1, accountA.RequestCount)
+	assert.Equal(t, 1_000_000, accountB.Quota)
+	assert.Zero(t, accountB.UsedQuota)
+	assert.Zero(t, accountB.RequestCount)
+	assert.Equal(t, 1_000_000-3_425, tokenA.RemainQuota)
+	assert.Equal(t, 1_000_000, tokenB.RemainQuota)
+	assert.Equal(t, model.WildFlowBillingStateSettled, settled.BillingState)
+	assert.Equal(t, model.WildFlowBillingStateRefunded, refunded.BillingState)
+	assert.Equal(t, "usage-account-a", settled.BillingUsageEventID)
+	assert.Empty(t, refunded.BillingUsageEventID)
 }
 
 func TestRecoveryRequiredWildFlowJobKeepsReservation(t *testing.T) {
