@@ -217,6 +217,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
+		// 所有普通 Relay 发送入口在调用 adaptor 前都必须先持久化
+		// provider_started。错误/缺记录/状态竞争时 fail closed，避免恢复任务
+		// 把可能已经发送的请求当作 reserved 退款。
+		if relayInfo.Billing != nil {
+			if err := relayInfo.Billing.MarkProviderStarted(c); err != nil {
+				newAPIError = types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+				break
+			}
+		}
+
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
 			newAPIError = relay.WssHelper(c, relayInfo)

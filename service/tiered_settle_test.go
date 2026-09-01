@@ -325,6 +325,8 @@ func (*recordingBillingSettler) Refund(*gin.Context) {}
 
 func (*recordingBillingSettler) NeedsRefund() bool { return false }
 
+func (*recordingBillingSettler) MarkProviderStarted(*gin.Context) error { return nil }
+
 func (s *recordingBillingSettler) GetPreConsumedQuota() int {
 	return s.preConsumedQuota
 }
@@ -377,6 +379,9 @@ func TestPrepareTieredBillingForSelectedGroupStartsBillingAfterFreeGroup(t *test
 		IsPlayground:    true,
 		ForcePreConsume: true,
 		OriginModelName: "gpt-test",
+		// GenRelayInfo 总是生成非空 RequestId（requestId 为空仅出现在手工构造
+		// 的测试对象上），这里与生产行为一致。
+		RequestId: "req-tiered-free-group",
 		UserSetting: dto.UserSetting{
 			BillingPreference: "wallet_only",
 		},
