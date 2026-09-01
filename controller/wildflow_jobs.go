@@ -1,12 +1,12 @@
 package controller
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"mime"
 	"net/http"
@@ -556,19 +556,7 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 	} else if artifact.MediaType == "application/json" {
 		filename = artifact.ID + ".json"
 	}
-	c.Header("Content-Type", content.MediaType)
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeWildFlowFilename(filename)))
-	if content.ContentLength >= 0 {
-		c.Header("Content-Length", strconv.FormatInt(content.ContentLength, 10))
-	}
-	c.Status(http.StatusOK)
-	writer := io.Writer(c.Writer)
-	var contentDigest hash.Hash
-	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
-		contentDigest = sha256.New()
-		writer = io.MultiWriter(c.Writer, contentDigest)
-	}
-	written, err := io.Copy(writer, content.Body)
+	payload, err := io.ReadAll(content.Body)
 	if err != nil {
 		if updateErr := model.UpdateWildFlowOperationExecution(
 			operation.OperationID,
@@ -579,32 +567,64 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 			logger.LogError(c.Request.Context(), "persist WildFlow artifact stream recovery: "+updateErr.Error())
 		}
 		logger.LogError(c.Request.Context(), "stream WildFlow artifact: "+err.Error())
+		wildFlowJobError(c, http.StatusServiceUnavailable, "artifact_stream_error", "artifact content requires recovery")
 		return
 	}
-	if operation.ProductModelRef != service.WildFlowModelExamDualASR {
-		return
-	}
-	actualDigest := hex.EncodeToString(contentDigest.Sum(nil))
-	if written != artifact.SizeBytes || actualDigest != strings.ToLower(artifact.SHA256) {
+	digest := sha256.Sum256(payload)
+	actualDigest := hex.EncodeToString(digest[:])
+	if int64(len(payload)) != artifact.SizeBytes ||
+		actualDigest != strings.ToLower(artifact.SHA256) ||
+		!validWildFlowArtifactMagic(artifact.MediaType, payload) {
 		if updateErr := model.UpdateWildFlowOperationExecution(
 			operation.OperationID,
 			operation.JobID,
 			"recovery_required",
 			"artifact_integrity_error",
 		); updateErr != nil {
-			logger.LogError(c.Request.Context(), "persist WildFlow artifact integrity recovery: "+updateErr.Error())
+			wildFlowInternalError(c, updateErr)
+			return
 		}
-		logger.LogError(c.Request.Context(), "WildFlow artifact stream digest or size differs from metadata")
+		wildFlowJobError(c, http.StatusServiceUnavailable, "artifact_integrity_error", "artifact content requires recovery")
+		return
+	}
+	c.Header("Content-Type", content.MediaType)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeWildFlowFilename(filename)))
+	c.Header("Content-Length", strconv.FormatInt(int64(len(payload)), 10))
+	c.Data(http.StatusOK, content.MediaType, payload)
+	if operation.ProductModelRef != service.WildFlowModelExamDualASR {
 		return
 	}
 	tenantDigest := sha256.Sum256([]byte(wildFlowTenantRef(operation.UserID)))
 	if _, _, err := model.RecordWildFlowArtifactDownloadReceipt(&model.WildFlowArtifactDownloadReceipt{
 		OperationID: operation.OperationID, JobID: operation.JobID, ArtifactID: artifact.ID,
 		UserID: operation.UserID, TenantRefSHA256: hex.EncodeToString(tenantDigest[:]),
-		ArtifactMediaType: artifact.MediaType, ArtifactSizeBytes: written,
+		ArtifactMediaType: artifact.MediaType, ArtifactSizeBytes: int64(len(payload)),
 		ArtifactSHA256: actualDigest, CompletedAt: time.Now().UTC(),
 	}); err != nil {
 		logger.LogError(c.Request.Context(), "persist WildFlow artifact download receipt: "+err.Error())
+	}
+}
+
+func validWildFlowArtifactMagic(mediaType string, payload []byte) bool {
+	switch mediaType {
+	case "application/json":
+		var value any
+		return common.Unmarshal(payload, &value) == nil
+	case "audio/mpeg":
+		return bytes.HasPrefix(payload, []byte("ID3")) ||
+			(len(payload) >= 2 && payload[0] == 0xff && payload[1]&0xe0 == 0xe0)
+	case "audio/wav":
+		return len(payload) >= 12 && bytes.Equal(payload[:4], []byte("RIFF")) && bytes.Equal(payload[8:12], []byte("WAVE"))
+	case "image/png":
+		return bytes.HasPrefix(payload, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
+	case "image/jpeg":
+		return len(payload) >= 3 && payload[0] == 0xff && payload[1] == 0xd8 && payload[2] == 0xff
+	case "image/gif":
+		return bytes.HasPrefix(payload, []byte("GIF87a")) || bytes.HasPrefix(payload, []byte("GIF89a"))
+	case "image/webp":
+		return len(payload) >= 12 && bytes.Equal(payload[:4], []byte("RIFF")) && bytes.Equal(payload[8:12], []byte("WEBP"))
+	default:
+		return false
 	}
 }
 

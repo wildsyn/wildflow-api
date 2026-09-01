@@ -266,8 +266,9 @@ func TestInternalExamDualASRDownloadRejectsSameLengthDigestMismatchWithoutReceip
 	}).Error)
 
 	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr-mismatch/content", "", nil)
-	require.Equal(t, http.StatusOK, response.Code, "the stream started before its final digest was known")
-	assert.Equal(t, actual, response.Body.Bytes())
+	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"code":"artifact_integrity_error"`)
+	assert.NotContains(t, response.Body.String(), string(actual))
 	var operation model.WildFlowOperation
 	require.NoError(t, model.DB.Where("operation_id = ?", "op-asr-mismatch").First(&operation).Error)
 	assert.Equal(t, "recovery_required", operation.State)
@@ -305,8 +306,9 @@ func TestInternalExamDualASRDownloadRejectsShortStreamWithoutReceipt(t *testing.
 	}).Error)
 
 	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr-short/content", "", nil)
-	require.Equal(t, http.StatusOK, response.Code, "the stream started before unexpected EOF")
-	assert.Equal(t, actual, response.Body.Bytes())
+	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"code":"artifact_stream_error"`)
+	assert.NotContains(t, response.Body.String(), string(actual))
 	var operation model.WildFlowOperation
 	require.NoError(t, model.DB.Where("operation_id = ?", "op-asr-short").First(&operation).Error)
 	assert.Equal(t, "recovery_required", operation.State)
@@ -335,7 +337,7 @@ func TestInternalExamDualASROperationReadAllowsStandardRegisteredUserToken(t *te
 }
 
 func validVoxArtifactJSON(artifactID string, jobID string, characters int) string {
-	const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	digest := fmt.Sprintf("%x", sha256.Sum256(validVoxArtifactPayload()))
 	return fmt.Sprintf(
 		`{"id":%q,"job_id":%q,"media_type":"audio/mpeg","size_bytes":12,"sha256":%q,"metadata":{"codec":"mp3","bitrate":96000,"sample_rate":48000,"channels":1,"duration_ms":1200,"input_characters":%d,"completed_characters":%d,"segment_count":1,"completed_segment_count":1,"size_bytes":12,"sha256":%q,"voice":"default"}}`,
 		artifactID,
@@ -345,6 +347,10 @@ func validVoxArtifactJSON(artifactID string, jobID string, characters int) strin
 		characters,
 		digest,
 	)
+}
+
+func validVoxArtifactPayload() []byte {
+	return []byte{'I', 'D', '3', 4, 0, 0, 0, 0, 0, 0, 0, 0}
 }
 
 func TestCreateWildFlowJobPreConsumesRetailPriceExactlyOnce(t *testing.T) {
@@ -1296,7 +1302,10 @@ func TestLegacySubmittingGETReconcilesUnknownSubmissionBeforeResponse(t *testing
 func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	jobReads := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "user:42", r.Header.Get("X-WildFlow-Tenant-Ref"))
+		if r.Header.Get("X-WildFlow-Tenant-Ref") != "user:42" {
+			http.NotFound(w, r)
+			return
+		}
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/internal/v1/jobs":
 			w.Header().Set("Content-Type", "application/json")
@@ -1312,7 +1321,7 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-1/content":
 			w.Header().Set("Content-Type", "audio/mpeg")
 			w.Header().Set("Content-Disposition", `attachment; filename="artifact-1.mp3"`)
-			_, _ = io.Copy(w, bytes.NewBufferString("audio-result"))
+			_, _ = w.Write(validVoxArtifactPayload())
 		default:
 			http.NotFound(w, r)
 		}
@@ -1334,6 +1343,9 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	replayed := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", `{"model":"tts-standard","parameters":{"input":"hello"}}`, map[string]string{"Idempotency-Key": "result-1"})
 	artifactResponse := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-1", "", nil)
 	downloadResponse := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-1/content", "", nil)
+	repeatedDownloadResponse := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-1/content", "", nil)
+	hiddenArtifact := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-1", "", map[string]string{"X-Test-User": "43"})
+	hiddenDownload := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-1/content", "", map[string]string{"X-Test-User": "43"})
 
 	require.Equal(t, http.StatusOK, statusResponse.Code, statusResponse.Body.String())
 	require.Equal(t, http.StatusNotFound, hiddenOperation.Code, hiddenOperation.Body.String())
@@ -1352,9 +1364,14 @@ func TestWildFlowJobStatusAndArtifactDownloadRemainUserScoped(t *testing.T) {
 	assert.Contains(t, artifactResponse.Body.String(), `"segment_count":1`)
 	assert.Contains(t, artifactResponse.Body.String(), `"completed_segment_count":1`)
 	require.Equal(t, http.StatusOK, downloadResponse.Code, downloadResponse.Body.String())
+	require.Equal(t, http.StatusOK, repeatedDownloadResponse.Code, repeatedDownloadResponse.Body.String())
 	assert.Equal(t, "audio/mpeg", downloadResponse.Header().Get("Content-Type"))
 	assert.Contains(t, downloadResponse.Header().Get("Content-Disposition"), ".mp3")
-	assert.Equal(t, "audio-result", downloadResponse.Body.String())
+	assert.Equal(t, validVoxArtifactPayload(), downloadResponse.Body.Bytes())
+	assert.Equal(t, downloadResponse.Body.String(), repeatedDownloadResponse.Body.String())
+	require.Equal(t, http.StatusNotFound, hiddenArtifact.Code, hiddenArtifact.Body.String())
+	require.Equal(t, http.StatusNotFound, hiddenDownload.Code, hiddenDownload.Body.String())
+	assert.NotContains(t, hiddenDownload.Body.String(), "artifact-1")
 }
 
 func TestSucceededWildFlowJobReplayReturnsGoneAfterResultRetentionExpires(t *testing.T) {
@@ -1428,9 +1445,11 @@ func TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch(t *testing.
 		name          string
 		mediaType     string
 		contentLength string
+		body          []byte
 	}{
 		{name: "media type", mediaType: "audio/wav", contentLength: "12"},
 		{name: "content length", mediaType: "audio/mpeg", contentLength: "11"},
+		{name: "same length digest mismatch", mediaType: "audio/mpeg", contentLength: "12", body: []byte{'I', 'D', '3', 4, 0, 0, 0, 0, 0, 0, 0, 1}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1451,6 +1470,9 @@ func TestDownloadVoxCPM2ArtifactFailsClosedOnInternalContentMismatch(t *testing.
 				case r.Method == http.MethodGet && r.URL.Path == "/internal/v1/artifacts/artifact-download-mismatch/content":
 					w.Header().Set("Content-Type", test.mediaType)
 					w.Header().Set("Content-Length", test.contentLength)
+					if len(test.body) > 0 {
+						_, _ = w.Write(test.body)
+					}
 				default:
 					http.NotFound(w, r)
 				}
@@ -1535,8 +1557,9 @@ func TestDownloadVoxCPM2ArtifactPersistsRecoveryAfterStreamFailure(t *testing.T)
 	recoveryStatus := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/"+operationID, "", nil)
 	replay := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", requestBody, requestHeaders)
 
-	require.Equal(t, http.StatusOK, download.Code, "the public stream had already started before unexpected EOF")
-	assert.Equal(t, "short", download.Body.String())
+	require.Equal(t, http.StatusServiceUnavailable, download.Code, download.Body.String())
+	assert.Contains(t, download.Body.String(), `"code":"artifact_stream_error"`)
+	assert.NotContains(t, download.Body.String(), "short")
 	require.Equal(t, http.StatusOK, recoveryStatus.Code, recoveryStatus.Body.String())
 	assert.Contains(t, recoveryStatus.Body.String(), `"state":"recovery_required"`)
 	assert.Contains(t, recoveryStatus.Body.String(), `"error":"artifact_stream_error"`)
