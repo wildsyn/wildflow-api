@@ -323,6 +323,8 @@ func (*recordingBillingSettler) Settle(int) error { return nil }
 
 func (*recordingBillingSettler) Refund(*gin.Context) {}
 
+func (*recordingBillingSettler) RefundUnsent(*gin.Context) {}
+
 func (*recordingBillingSettler) NeedsRefund() bool { return false }
 
 func (*recordingBillingSettler) MarkProviderStarted(*gin.Context) error { return nil }

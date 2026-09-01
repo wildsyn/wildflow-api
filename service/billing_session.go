@@ -100,6 +100,9 @@ func (s *BillingSession) MarkProviderStarted(c *gin.Context) error {
 	if s.settled || s.refunded || !s.hasReservation() {
 		return nil
 	}
+	if s.alreadyReserved {
+		return fmt.Errorf("provider dispatch replay (request=%s): %w", s.relayInfo.RequestId, model.ErrBillingReservationStateConflict)
+	}
 	if err := model.MarkBillingReservationProviderStarted(s.relayInfo.RequestId); err != nil {
 		return fmt.Errorf("mark billing reservation provider_started (request=%s): %w", s.relayInfo.RequestId, err)
 	}
@@ -190,6 +193,20 @@ func (s *BillingSession) Refund(c *gin.Context) {
 			}
 		}
 	})
+}
+
+// RefundUnsent releases only a reservation created by this session before the
+// Provider dispatch marker. A duplicate request may observe another request's
+// reservation, but cannot prove it was never sent, so it must leave it for
+// reconciliation instead of refunding it.
+func (s *BillingSession) RefundUnsent(c *gin.Context) {
+	s.mu.Lock()
+	if s.alreadyReserved {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	s.Refund(c)
 }
 
 // NeedsRefund 返回是否存在需要退还的预扣状态。
