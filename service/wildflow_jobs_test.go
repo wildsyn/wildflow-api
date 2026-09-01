@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -100,12 +101,38 @@ func TestValidateWildFlowIdeogram4Parameters(t *testing.T) {
 		{"prompt": "panda", "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(0), "guidance_scale": float64(7)},
 		{"prompt": "panda", "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(1), "guidance_scale": float64(0)},
 		{"prompt": "panda", "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(1), "guidance_scale": float64(30.1)},
+		{"prompt": "panda", "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(1), "guidance_scale": float64(7), "license_entitlement": "caller-controlled"},
 	}
 	for _, parameters := range invalidParameters {
 		require.ErrorIs(t, validateWildFlowRequest("image", WildFlowJobRequest{
 			Model: WildFlowModelIdeogram4MixedV3, Parameters: parameters,
 		}), ErrWildFlowInvalidParameters)
 	}
+}
+
+func TestPrepareWildFlowRuntimeParametersInjectsOnlyTrustedIdeogramEntitlement(t *testing.T) {
+	public := map[string]any{"prompt": "panda", "width": float64(1024)}
+	runtime, err := PrepareWildFlowRuntimeParameters(
+		WildFlowModelIdeogram4MixedV3,
+		"ideogram-4-mixed-v3@bbee2ab2",
+		public,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "internal-noncommercial-evaluation-only", runtime["license_entitlement"])
+	_, suppliedByClient := public["license_entitlement"]
+	assert.False(t, suppliedByClient)
+
+	retail, err := PrepareWildFlowRuntimeParameters(
+		WildFlowModelFlux2,
+		"black-forest-labs/FLUX.2-klein-4B",
+		public,
+	)
+	require.NoError(t, err)
+	_, hasEntitlement := retail["license_entitlement"]
+	assert.False(t, hasEntitlement)
+
+	_, err = PrepareWildFlowRuntimeParameters(WildFlowModelIdeogram4MixedV3, "ideogram-4-mixed-v3@untrusted", public)
+	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
 }
 
 func TestValidateWildFlowParametersAcceptsEveryDocumentedVoice(t *testing.T) {

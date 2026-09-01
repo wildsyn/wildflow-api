@@ -33,6 +33,7 @@ const (
 	WildFlowModelFlux2            = "FLUX.2 [klein] 4B"
 	WildFlowModelIdeogram4MixedV3 = "Ideogram 4 mixed-v3"
 	WildFlowModelExamDualASR      = "wildflow/exam-replay-dual-asr-v1"
+	wildFlowIdeogram4Entitlement  = "internal-noncommercial-evaluation-only"
 )
 
 var wildFlowTTSVoices = map[string]struct{}{
@@ -174,6 +175,28 @@ func ResolveWildFlowRuntimeOfferingRef(publicModelRef string, modelVersionRef st
 		return offering.RuntimeOfferingID, nil
 	}
 	return offering.ID, nil
+}
+
+// PrepareWildFlowRuntimeParameters copies public parameters into the trusted
+// inference request and appends any entitlement that only the API may provide.
+func PrepareWildFlowRuntimeParameters(publicModelRef string, modelVersionRef string, parameters map[string]any) (map[string]any, error) {
+	offering, ok := FindWildFlowOffering(publicModelRef)
+	if !ok || offering.ModelVersionRef != modelVersionRef {
+		return nil, ErrWildFlowUnsupportedModel
+	}
+	runtimeParameters := make(map[string]any, len(parameters)+1)
+	for key, value := range parameters {
+		runtimeParameters[key] = value
+	}
+	if offering.ID == WildFlowModelIdeogram4MixedV3 {
+		runtimeParameters["license_entitlement"] = wildFlowIdeogram4Entitlement
+	}
+	return runtimeParameters, nil
+}
+
+func IsWildFlowTeamTrialOffering(publicModelRef string) bool {
+	offering, ok := FindWildFlowOffering(publicModelRef)
+	return ok && offering.Pricing.Unit == "team_trial"
 }
 
 func sha256Hex(value []byte) string {

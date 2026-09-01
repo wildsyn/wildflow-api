@@ -997,7 +997,9 @@ func TestCreateWildFlowJobSubmitsIdeogram4WithValidatedTeamTrialParameters(t *te
 		require.NoError(t, common.DecodeJson(r.Body, &body))
 		assert.Equal(t, service.WildFlowModelIdeogram4MixedV3, body["product_model_ref"])
 		assert.Equal(t, "ideogram-4-mixed-v3@bbee2ab2", body["model_version_ref"])
-		assert.Equal(t, float64(7), body["parameters"].(map[string]any)["guidance_scale"])
+		parameters := body["parameters"].(map[string]any)
+		assert.Equal(t, float64(7), parameters["guidance_scale"])
+		assert.Equal(t, "internal-noncommercial-evaluation-only", parameters["license_entitlement"])
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"job":{"id":"job-ideogram-1","state":"queued"}}`))
@@ -1026,6 +1028,77 @@ func TestCreateWildFlowJobSubmitsIdeogram4WithValidatedTeamTrialParameters(t *te
 	})
 	require.Equal(t, http.StatusForbidden, forbidden.Code, forbidden.Body.String())
 	assert.Equal(t, 1, requests)
+}
+
+func TestIdeogramTeamTrialArtifactIsReadableAfterSuccess(t *testing.T) {
+	content := []byte("png-data")
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/artifacts/artifact-ideogram":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"artifact":{"id":"artifact-ideogram","job_id":"job-ideogram","media_type":"image/png","size_bytes":%d,"sha256":%q}}`, len(content), digest)
+		case "/internal/v1/artifacts/artifact-ideogram/content":
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+			_, _ = w.Write(content)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	require.NoError(t, model.DB.Create(&model.WildFlowOperation{
+		OperationID: "op-ideogram-artifact", UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: "key-ideogram-artifact", RequestDigest: "request-ideogram-artifact",
+		RequestID: "request-ideogram-artifact", ProductModelRef: service.WildFlowModelIdeogram4MixedV3,
+		ModelVersionRef: "ideogram-4-mixed-v3@bbee2ab2", JobID: "job-ideogram", State: "succeeded",
+		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+	}).Error)
+
+	metadata := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-ideogram", "", nil)
+	require.Equal(t, http.StatusOK, metadata.Code, metadata.Body.String())
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-ideogram/content", "", nil)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Equal(t, content, response.Body.Bytes())
+}
+
+func TestRestrictedTokenCannotReadCancelOrAccessIdeogramTeamTrialOperations(t *testing.T) {
+	requests := 0
+	cancels := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method == http.MethodPost {
+			cancels++
+		}
+		if r.URL.Path == "/internal/v1/artifacts/artifact-ideogram-auth" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"artifact":{"id":"artifact-ideogram-auth","job_id":"job-ideogram-auth","media_type":"image/png","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	require.NoError(t, model.DB.Create(&model.WildFlowOperation{
+		OperationID: "op-ideogram-auth", UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: "key-ideogram-auth", RequestDigest: "request-ideogram-auth",
+		RequestID: "request-ideogram-auth", ProductModelRef: service.WildFlowModelIdeogram4MixedV3,
+		ModelVersionRef: "ideogram-4-mixed-v3@bbee2ab2", JobID: "job-ideogram-auth", State: "queued",
+		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+	}).Error)
+	headers := map[string]string{"X-Test-Model-Limits": "VoxCPM2"}
+	for _, request := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/v1/jobs/op-ideogram-auth"},
+		{http.MethodPost, "/v1/jobs/op-ideogram-auth/cancel"},
+		{http.MethodGet, "/v1/artifacts/artifact-ideogram-auth"},
+		{http.MethodGet, "/v1/artifacts/artifact-ideogram-auth/content"},
+	} {
+		response := performWildFlowRequest(t, engine, request.method, request.path, "", headers)
+		require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+		assert.Contains(t, response.Body.String(), `"code":"model_forbidden"`)
+	}
+	assert.Equal(t, 2, requests, "artifact lookup precedes durable ownership authorization")
+	assert.Zero(t, cancels)
 }
 
 func TestCreateWildFlowJobRejectsUnknownTopLevelFieldsBeforeInference(t *testing.T) {
