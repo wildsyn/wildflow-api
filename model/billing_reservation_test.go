@@ -313,6 +313,81 @@ func TestMarkProviderStartedFailsClosedForMissingAndTerminalRecords(t *testing.T
 	assert.Equal(t, BillingReservationStateSettled, rec.State)
 }
 
+func TestProviderStartedConcurrentMarkSettleReleaseAndRecovery(t *testing.T) {
+	// Repeated marks are idempotent even when callers race. Once the state is
+	// provider_started, recovery may never refund it; only an explicit terminal
+	// operation can close the reservation.
+	userId, tokenId, tokenKey := seedReservationFixture(t, 2_000, 2_000)
+	const requestID = "req-provider-started-concurrent-settle"
+	_, err := ReserveWalletBillingQuota(requestID, userId, tokenId, tokenKey, 400, false)
+	require.NoError(t, err)
+
+	const markers = 8
+	start := make(chan struct{})
+	errs := make(chan error, markers)
+	var wg sync.WaitGroup
+	for range markers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- MarkBillingReservationProviderStarted(requestID)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for markErr := range errs {
+		require.NoError(t, markErr)
+	}
+
+	// Make the record recovery-eligible. Concurrent recovery still has to skip
+	// provider_started while settle is allowed to commit the terminal state.
+	require.NoError(t, DB.Model(&BillingReservationRecord{}).Where("request_id = ?", requestID).
+		UpdateColumn("updated_at", GetDBTimestamp()-7200).Error)
+	recoveryDone := make(chan struct{})
+	var released int64
+	var recoveryErr error
+	go func() {
+		defer close(recoveryDone)
+		released, recoveryErr = ReleaseStaleBillingReservations(60, 100)
+	}()
+	require.NoError(t, SettleBillingReservation(requestID, 0))
+	<-recoveryDone
+	require.NoError(t, recoveryErr)
+	assert.Equal(t, int64(0), released)
+	assert.Equal(t, 1_600, reservationUserQuota(t, userId), "recovery must not refund a provider-started reservation")
+
+	var settled BillingReservationRecord
+	require.NoError(t, DB.Where("request_id = ?", requestID).First(&settled).Error)
+	assert.Equal(t, BillingReservationStateSettled, settled.State)
+
+	// In contrast, an explicit known-failure release is allowed to win a race
+	// with recovery. Recovery remains a no-op and the refund happens exactly
+	// once through ReleaseBillingReservation.
+	const releaseRequestID = "req-provider-started-concurrent-release"
+	_, err = ReserveWalletBillingQuota(releaseRequestID, userId, tokenId, tokenKey, 300, false)
+	require.NoError(t, err)
+	require.NoError(t, MarkBillingReservationProviderStarted(releaseRequestID))
+	require.NoError(t, DB.Model(&BillingReservationRecord{}).Where("request_id = ?", releaseRequestID).
+		UpdateColumn("updated_at", GetDBTimestamp()-7200).Error)
+
+	recoveryDone = make(chan struct{})
+	go func() {
+		defer close(recoveryDone)
+		released, recoveryErr = ReleaseStaleBillingReservations(60, 100)
+	}()
+	require.NoError(t, ReleaseBillingReservation(releaseRequestID, tokenKey))
+	<-recoveryDone
+	require.NoError(t, recoveryErr)
+	assert.Equal(t, int64(0), released)
+	assert.Equal(t, 1_600, reservationUserQuota(t, userId), "only the explicit release refunds the second reservation")
+
+	var releasedRecord BillingReservationRecord
+	require.NoError(t, DB.Where("request_id = ?", releaseRequestID).First(&releasedRecord).Error)
+	assert.Equal(t, BillingReservationStateReleased, releasedRecord.State)
+}
+
 func TestSettleBillingReservationFailureStaysRecoverable(t *testing.T) {
 	// 结算差额调整失败（订阅溢出）：整体回滚，记录保持 provider_started 可重试，
 	// 不得终结成"部分结算"
