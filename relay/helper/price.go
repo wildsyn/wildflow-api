@@ -110,8 +110,10 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			relayconstant.RelayModeResponsesCompact:
 			isTextCompletion = meta.TokenType != types.TokenTypeImage && meta.ImagePriceRatio == 0
 		}
+		geminiAction := strings.ToLower(strings.SplitN(info.RequestURLPath, "?", 2)[0])
+		isGeminiEmbedding := strings.HasSuffix(geminiAction, ":embedcontent") || strings.HasSuffix(geminiAction, ":batchembedcontents")
 		if info.RelayFormat == types.RelayFormatClaude ||
-			(info.RelayFormat == types.RelayFormatGemini && !strings.Contains(strings.ToLower(info.RequestURLPath), "embed")) {
+			(info.RelayFormat == types.RelayFormatGemini && !isGeminiEmbedding) {
 			isTextCompletion = meta.TokenType != types.TokenTypeImage && meta.ImagePriceRatio == 0
 		}
 		if completionTokens == 0 && isTextCompletion {
