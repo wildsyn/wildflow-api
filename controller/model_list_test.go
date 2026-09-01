@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -737,6 +738,48 @@ func TestCanonicalWildFlowModelIDCannotBypassRuntimeFailClosed(t *testing.T) {
 			}
 			require.NoError(t, common.Unmarshal(retrieveRecorder.Body.Bytes(), &payload))
 			assert.Equal(t, "model_not_found", payload.Error.Code)
+		})
+	}
+}
+
+func TestNonOpenAIModelDirectoriesDoNotRequestWildFlowRuntimeCatalog(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "default", Model: "claude-test-model", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "gemini-test-model", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "VoxCPM2", ChannelId: 1, Enabled: true},
+	}).Error)
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		time.Sleep(4 * time.Second)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("WILDFLOW_INFERENCE_URL", server.URL)
+	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "non-openai-test-token")
+
+	for _, testCase := range []struct {
+		name      string
+		modelType int
+		path      string
+	}{
+		{name: "anthropic", modelType: constant.ChannelTypeAnthropic, path: "/v1/models"},
+		{name: "gemini", modelType: constant.ChannelTypeGemini, path: "/v1beta/models"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, testCase.path, nil)
+			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+
+			ListModels(ctx, testCase.modelType)
+
+			require.Equal(t, http.StatusOK, recorder.Code)
+			assert.Equal(t, 0, requests)
+			assert.NotContains(t, recorder.Body.String(), "VoxCPM2")
 		})
 	}
 }

@@ -256,9 +256,9 @@ func ListModels(c *gin.Context, modelType int) {
 			tokenModelLimit = map[string]bool{}
 		}
 	}
-	wildFlowOfferings := service.GetWildFlowCatalog(wildFlowRequestContext(c))
-	canonicalWildFlowIDs := make(map[string]struct{}, len(wildFlowOfferings))
-	for _, offering := range wildFlowOfferings {
+	canonicalWildFlowOfferings := service.ListCanonicalWildFlowOfferings()
+	canonicalWildFlowIDs := make(map[string]struct{}, len(canonicalWildFlowOfferings))
+	for _, offering := range canonicalWildFlowOfferings {
 		canonicalWildFlowIDs[offering.ID] = struct{}{}
 	}
 	models := service.GetGroupsEnabledModels(ownerGroups)
@@ -290,6 +290,7 @@ func ListModels(c *gin.Context, modelType int) {
 		userOpenAiModels = append(userOpenAiModels, buildOpenAIModel(modelName, ownerByModel))
 	}
 	if modelType == constant.ChannelTypeOpenAI {
+		wildFlowOfferings := service.GetWildFlowCatalog(wildFlowRequestContext(c))
 		userOpenAiModels = appendWildFlowJobModels(c, userOpenAiModels, wildFlowOfferings)
 	}
 
