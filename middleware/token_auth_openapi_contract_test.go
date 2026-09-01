@@ -2,15 +2,133 @@ package middleware
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// tokenAuthGuardedRelayPaths lists representative relay paths documented in
+// relay.json that sit behind TokenAuth. Every one of them must answer an
+// unauthenticated request with the documented 401 TokenAuthError shape.
+var tokenAuthGuardedRelayPaths = []string{
+	"/v1/models",
+	"/v1/chat/completions",
+	"/v1/completions",
+	"/v1/responses",
+	"/v1/messages",
+	"/v1/embeddings",
+	"/v1/images/generations",
+	"/v1/audio/speech",
+	"/v1/audio/transcriptions",
+	"/v1/moderations",
+	"/v1/rerank",
+	"/v1/video/generations",
+	"/v1/videos",
+	"/v1beta/models",
+	"/kling/v1/videos/text2video",
+	"/jimeng/",
+}
+
+// TestTokenAuthGuardedRelayRoutesReturnDocumented401 pins the per-route
+// response contract required by ZXDW-210: every relay path behind TokenAuth
+// answers a missing key with 401 and the exact TokenAuthError body shape
+// (message/type/code) that relay.json documents.
+func TestTokenAuthGuardedRelayRoutesReturnDocumented401(t *testing.T) {
+	setupTokenAuthTest(t)
+	user := createTokenAuthUser(t)
+	createTokenAuthToken(t, user.Id, "routecontractkey", nil)
+
+	for _, path := range tokenAuthGuardedRelayPaths {
+		t.Run(path, func(t *testing.T) {
+			router := gin.New()
+			router.Use(func(c *gin.Context) { c.Next() })
+			router.Use(TokenAuth())
+			router.POST("/*any", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+			router.GET("/*any", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+			request.Header.Set("Content-Type", "application/json")
+			// No Authorization header at all: the request must be rejected
+			// before reaching any handler.
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+
+			require.Equal(t, http.StatusUnauthorized, response.Code, "path %s", path)
+			var body struct {
+				Error struct {
+					Message string `json:"message"`
+					Type    string `json:"type"`
+					Code    string `json:"code"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			assert.Equal(t, "new_api_error", body.Error.Type)
+			assert.Equal(t, string(types.ErrorCodeTokenNotProvided), body.Error.Code)
+			assert.Contains(t, body.Error.Message, common.TranslateMessage(nil, "token.not_provided"))
+		})
+	}
+}
+
+// TestTokenAuthReadOnlyDocumentsStableCodes locks /api/usage/token/ and
+// /api/log/token 401 semantics: stable machine codes with the same generic
+// message for unknown keys, so read-only endpoints cannot probe key existence.
+func TestTokenAuthReadOnlyDocumentsStableCodes(t *testing.T) {
+	setupTokenAuthTest(t)
+	user := createTokenAuthUser(t)
+	createTokenAuthToken(t, user.Id, "readonlykey0001", nil)
+	disabledAllow := ""
+	createTokenAuthToken(t, user.Id, "readonlykey0002", func(token *model.Token) {
+		token.Status = common.TokenStatusDisabled
+		token.AllowIps = &disabledAllow
+	})
+
+	tests := []struct {
+		name     string
+		auth     string
+		wantCode string
+		wantMsg  string
+	}{
+		{name: "missing header", auth: "", wantCode: "token_not_provided", wantMsg: common.TranslateMessage(nil, "token.not_provided")},
+		{name: "unknown key", auth: "Bearer missingkey00001", wantCode: "token_not_found", wantMsg: common.TranslateMessage(nil, "token.invalid")},
+		{name: "disabled key", auth: "Bearer readonlykey0002", wantCode: "token_disabled", wantMsg: common.TranslateMessage(nil, "token.disabled")},
+		{name: "unknown key generic message identical to probe", auth: "Bearer readonlykey0009", wantCode: "token_not_found", wantMsg: common.TranslateMessage(nil, "token.invalid")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			router := gin.New()
+			router.GET("/api/usage/token/", TokenAuthReadOnly(), func(c *gin.Context) {
+				c.JSON(http.StatusOK, gin.H{"ok": true})
+			})
+			request := httptest.NewRequest(http.MethodGet, "/api/usage/token/", nil)
+			if test.auth != "" {
+				request.Header.Set("Authorization", test.auth)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+
+			require.Equal(t, http.StatusUnauthorized, response.Code)
+			var body struct {
+				Success bool   `json:"success"`
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			assert.False(t, body.Success)
+			assert.Equal(t, test.wantCode, body.Code)
+			assert.Contains(t, body.Message, test.wantMsg)
+		})
+	}
+}
 
 // TestTokenAuthErrorCodesDocumentedInRelayOpenAPI pins the stable token auth
 // error codes to the docs/openapi/relay.json TokenAuthError enum so the
@@ -35,12 +153,20 @@ func TestTokenAuthErrorCodesDocumentedInRelayOpenAPI(t *testing.T) {
 				} `json:"TokenAuthError"`
 			} `json:"schemas"`
 		} `json:"components"`
+		Paths map[string]map[string]struct {
+			Responses map[string]struct {
+				Content map[string]struct {
+					Schema struct {
+						Ref string `json:"$ref"`
+					} `json:"schema"`
+				} `json:"content"`
+			} `json:"responses"`
+		} `json:"paths"`
 	}
 	require.NoError(t, json.Unmarshal(raw, &doc))
 
 	documented := doc.Components.Schemas.TokenAuthError.Properties.Error.Properties.Code.Enum
 	require.NotEmpty(t, documented, "docs/openapi/relay.json must document the TokenAuthError schema")
-
 	assert.ElementsMatch(t, []string{
 		string(types.ErrorCodeTokenNotProvided),
 		string(types.ErrorCodeTokenNotFound),
@@ -49,6 +175,51 @@ func TestTokenAuthErrorCodesDocumentedInRelayOpenAPI(t *testing.T) {
 		string(types.ErrorCodeTokenDisabled),
 		string(types.ErrorCodeTokenQuotaExhausted),
 	}, documented)
+
+	// 401 (token auth failure) and 403 (allow_ips rejection) must be
+	// documented with the TokenAuthError schema on every TokenAuth-guarded
+	// path relay.json describes, not only on /v1/chat/completions.
+	tokenAuthDocPaths := []string{
+		"/v1/models",
+		"/v1/chat/completions",
+		"/v1/completions",
+		"/v1/responses",
+		"/v1/responses/compact",
+		"/v1/messages",
+		"/v1/embeddings",
+		"/v1/engines/{model}/embeddings",
+		"/v1/images/generations",
+		"/v1/images/edits",
+		"/v1/audio/speech",
+		"/v1/audio/transcriptions",
+		"/v1/audio/translations",
+		"/v1/moderations",
+		"/v1/rerank",
+		"/v1/video/generations",
+		"/v1/video/generations/{task_id}",
+		"/v1/videos",
+		"/v1/videos/{task_id}",
+		"/v1/videos/{task_id}/content",
+		"/v1beta/models",
+		"/v1beta/models/{model}:generateContent",
+		"/kling/v1/videos/text2video",
+		"/kling/v1/videos/text2video/{task_id}",
+		"/kling/v1/videos/image2video",
+		"/kling/v1/videos/image2video/{task_id}",
+		"/jimeng/",
+	}
+	for _, path := range tokenAuthDocPaths {
+		ops := doc.Paths[path]
+		require.NotEmpty(t, ops, "relay.json must document %s", path)
+		for method, op := range ops {
+			require.Contains(t, op.Responses, "401", "%s %s must document 401", method, path)
+			require.Contains(t, op.Responses, "403", "%s %s must document 403", method, path)
+			assert.Equal(t, "#/components/schemas/TokenAuthError",
+				op.Responses["401"].Content["application/json"].Schema.Ref, "%s %s", method, path)
+			assert.Equal(t, "#/components/schemas/TokenAuthError",
+				op.Responses["403"].Content["application/json"].Schema.Ref, "%s %s", method, path)
+		}
+	}
 }
 
 // TestTokenAuthUnknownKeyNeverRevealsExistence pins the no-probing contract:
@@ -57,10 +228,7 @@ func TestTokenAuthErrorCodesDocumentedInRelayOpenAPI(t *testing.T) {
 func TestTokenAuthUnknownKeyNeverRevealsExistence(t *testing.T) {
 	setupTokenAuthTest(t)
 	user := createTokenAuthUser(t)
-	createTokenAuthToken(t, user.Id, "probekey000001", func(token *model.Token) {
-		allowIps := ""
-		token.AllowIps = &allowIps
-	})
+	createTokenAuthToken(t, user.Id, "probekey000001", nil)
 
 	_, unknown := serveTokenAuthRequest(t, "doesnotexist0001")
 	_, disabled := serveTokenAuthRequest(t, "probekey000002")
@@ -72,3 +240,5 @@ func TestTokenAuthUnknownKeyNeverRevealsExistence(t *testing.T) {
 	assert.Equal(t, "token_not_found", unknown.Error.Code)
 	assert.True(t, strings.HasPrefix(unknown.Error.Code, "token_"), "machine code must be namespaced")
 }
+
+var _ = model.Token{}

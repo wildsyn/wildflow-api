@@ -78,6 +78,9 @@ func openTokenControllerTestDB(t *testing.T) *gorm.DB {
 
 	gin.SetMode(gin.TestMode)
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	// Refresh dialect column names for tests that exercise code paths using
+	// the reserved-word column helpers (e.g. TokenAuth's key lookup).
+	model.InitCol()
 	common.RedisEnabled = false
 
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))

@@ -3827,6 +3827,17 @@
               }
             },
             "headers": {}
+          },
+          "404": {
+            "description": "令牌不存在或不属于当前用户（两者同响应，不可探测）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenManagementError"
+                }
+              }
+            },
+            "headers": {}
           }
         },
         "security": [
@@ -3864,6 +3875,17 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            },
+            "headers": {}
+          },
+          "404": {
+            "description": "令牌不存在或不属于当前用户（两者同响应，不可探测）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenManagementError"
                 }
               }
             },
@@ -3933,7 +3955,7 @@
       "get": {
         "summary": "获取令牌使用情况",
         "deprecated": false,
-        "description": "🔑 需要令牌认证（TokenAuthReadOnly）。返回当前令牌的用量概览。401 携带稳定 code：token_not_provided / token_not_found / token_disabled（其他状态仍可只读查询）。",
+        "description": "🔑 需要令牌认证（TokenAuthReadOnly）。返回当前令牌的用量概览。401 响应带稳定 code（token_not_provided / token_not_found / token_disabled），未提供与不存在的 Key 使用相同人话提示以防探测。",
         "tags": [
           "令牌管理"
         ],
@@ -3966,7 +3988,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenManagementError"
+                  "$ref": "#/components/schemas/TokenAuthReadOnlyError"
                 }
               }
             },
@@ -4449,7 +4471,7 @@
       "get": {
         "summary": "通过令牌获取日志",
         "deprecated": false,
-        "description": "🔓 无需鉴权（通过令牌查询）",
+        "description": "🔑 需要令牌认证（TokenAuthReadOnly）。返回该 Key 的日志。业务失败固定返回 200 success=false（本实现行为），鉴权失败为 401 带 TokenAuthReadOnlyError。",
         "tags": [
           "日志"
         ],
@@ -4467,6 +4489,17 @@
         "responses": {
           "200": {
             "description": "成功",
+            "headers": {}
+          },
+          "401": {
+            "description": "未提供令牌、令牌不存在或已被禁用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenAuthReadOnlyError"
+                }
+              }
+            },
             "headers": {}
           }
         },
@@ -5343,7 +5376,7 @@
             "headers": {}
           },
           "404": {
-            "description": "令牌不存在或不属于当前用户",
+            "description": "令牌不存在或不属于当前用户（两者同响应，不可探测）",
             "content": {
               "application/json": {
                 "schema": {
@@ -5679,7 +5712,7 @@
           },
           "allow_ips": {
             "type": "string",
-            "description": "IP 白名单，每行一个 IP 或 CIDR（IPv4/IPv6 均支持，逗号分隔等同换行）。空/缺省表示不限制。写入时逐条校验，非法条目返回 token.allow_ips_invalid 校验错误（附行号），不再被静默接受；已在库中的历史非法条目在请求侧被忽略",
+            "description": "IP 白名单，每行一个 IP 或 CIDR（IPv4/IPv6 均支持，逗号分隔等同换行，由写入与请求侧共享同一解析器 SplitIPCIDRList）。空/缺省表示不限制。写入时逐条校验，非法条目返回 400 token.allow_ips_invalid 校验错误（附条目序号），不再被静默接受；历史遗留的非法条目在请求侧被跳过（不与相邻条目拼接），同列表中的合法条目继续生效。请求侧拒绝为 403 access_denied。",
             "example": "10.0.0.0/8\n2001:db8::/32"
           },
           "group": {
@@ -5746,7 +5779,7 @@
             "description": "本地化错误信息；allow_ips 校验失败时包含违规条目与行号"
           }
         },
-        "description": "令牌管理接口的通用失败响应（success=false）。"
+        "description": "令牌管理接口的失败响应体（success=false）。HTTP 状态码与真实行为一致：校验失败 400，令牌不存在/越权 404，业务冲突按各接口说明；请求体解析失败为 400。"
       },
       "TokenKeyResponse": {
         "type": "object",
@@ -5829,6 +5862,36 @@
             }
           }
         }
+      },
+      "TokenAuthReadOnlyError": {
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "token_not_provided",
+              "token_not_found",
+              "token_disabled"
+            ],
+            "description": "token_not_provided=未提供；token_not_found=Key 不存在（与人话提示一致，不可探测）；token_disabled=该 Key 已被禁用（仅对真实存在的 Key 返回）。"
+          },
+          "message": {
+            "type": "string",
+            "description": "本地化人话提示"
+          }
+        },
+        "description": "TokenAuthReadOnly 只读令牌端点（/api/usage/token/、/api/log/token）的 401 响应。"
       }
     },
     "responses": {

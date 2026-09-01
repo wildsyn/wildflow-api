@@ -82,25 +82,23 @@ func (token *Token) GetMaskedKey() string {
 }
 
 func (token *Token) GetIpLimits() []string {
-	// delete empty spaces
-	//split with \n
-	ipLimits := make([]string, 0)
 	if token.AllowIps == nil {
-		return ipLimits
+		return nil
 	}
-	cleanIps := strings.ReplaceAll(*token.AllowIps, " ", "")
-	if cleanIps == "" {
-		return ipLimits
-	}
-	ips := strings.Split(cleanIps, "\n")
-	for _, ip := range ips {
-		ip = strings.TrimSpace(ip)
-		ip = strings.ReplaceAll(ip, ",", "")
-		if ip != "" {
-			ipLimits = append(ipLimits, ip)
+	// Must share the splitter with write-time validation
+	// (common.ValidateIPCIDRList) so a comma/newline list that passed
+	// validation is enforced with exactly the same entries. Entries that are
+	// not valid IP/CIDR (legacy rows written before validation existed) are
+	// skipped instead of being merged into a bogus address that could never
+	// match and would silently reject legitimate callers.
+	limits := common.SplitIPCIDRList(*token.AllowIps)
+	entries := make([]string, 0, len(limits))
+	for _, entry := range limits {
+		if common.IsValidIPOrCIDR(entry) {
+			entries = append(entries, entry)
 		}
 	}
-	return ipLimits
+	return entries
 }
 
 func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {

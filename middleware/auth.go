@@ -282,6 +282,7 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 		if key == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
+				"code":    types.ErrorCodeTokenNotProvided,
 				"message": common.TranslateMessage(c, i18n.MsgTokenNotProvided),
 			})
 			c.Abort()
@@ -299,6 +300,9 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusUnauthorized, gin.H{
 					"success": false,
+					// Same generic message as other unknown-key paths so the
+					// read-only endpoints cannot be used to probe key existence.
+					"code":    types.ErrorCodeTokenNotFound,
 					"message": common.TranslateMessage(c, i18n.MsgTokenInvalid),
 				})
 			} else {
@@ -317,7 +321,8 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 		if token.Status == common.TokenStatusDisabled {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": common.TranslateMessage(c, i18n.MsgTokenStatusUnavailable),
+				"code":    types.ErrorCodeTokenDisabled,
+				"message": common.TranslateMessage(c, i18n.MsgTokenDisabled),
 			})
 			c.Abort()
 			return
