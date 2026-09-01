@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -175,8 +176,8 @@ func appendWildFlowJobModels(c *gin.Context, models []dto.OpenAIModels) []dto.Op
 	for _, item := range models {
 		seen[item.Id] = true
 	}
-	for _, offering := range service.ListCanonicalWildFlowOfferings() {
-		if seen[offering.ID] || !wildFlowTokenAllowsModel(c, offering.ID) {
+	for _, offering := range service.GetWildFlowCatalog(c.Request.Context()) {
+		if seen[offering.ID] || !offering.Callable || !wildFlowTokenAllowsModel(c, offering.ID) {
 			continue
 		}
 		models = append(models, dto.OpenAIModels{
@@ -353,7 +354,7 @@ func EnabledListModels(c *gin.Context) {
 func RetrieveModel(c *gin.Context, modelType int) {
 	modelId := c.Param("model")
 	if offering, ok := service.FindWildFlowOffering(modelId); ok {
-		if modelType == constant.ChannelTypeOpenAI && wildFlowTokenAllowsModel(c, offering.ID) {
+		if modelType == constant.ChannelTypeOpenAI && offeringIsCallable(c, offering.ID) && wildFlowTokenAllowsModel(c, offering.ID) {
 			c.JSON(200, dto.OpenAIModels{
 				Id:                     offering.ID,
 				Object:                 "model",
@@ -381,6 +382,19 @@ func RetrieveModel(c *gin.Context, modelType int) {
 		return
 	}
 	writeModelNotFound(c, modelId)
+}
+
+func offeringIsCallable(c *gin.Context, modelID string) bool {
+	ctx := context.Background()
+	if c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	for _, offering := range service.GetWildFlowCatalog(ctx) {
+		if offering.ID == modelID {
+			return offering.Callable
+		}
+	}
+	return false
 }
 
 func writeModelNotFound(c *gin.Context, modelID string) {

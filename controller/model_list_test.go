@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,22 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func withCallableWildFlowRuntime(t *testing.T) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/internal/v1/catalog", r.URL.Path)
+		require.Equal(t, "Bearer model-list-test-token", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"VoxCPM2","model_version_ref":"openbmb/VoxCPM2","callable":true},
+			{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
+			{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":true}
+		]}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("WILDFLOW_INFERENCE_URL", server.URL)
+	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "model-list-test-token")
+}
 
 type listModelsResponse struct {
 	Success bool               `json:"success"`
@@ -502,6 +519,7 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 func TestListModelsIncludesAuthorizedWildFlowJobModels(t *testing.T) {
 	withSelfUseModeEnabled(t)
 	setupModelListControllerTestDB(t)
+	withCallableWildFlowRuntime(t)
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -527,6 +545,7 @@ func TestListModelsIncludesAuthorizedWildFlowJobModels(t *testing.T) {
 func TestListModelsAppliesTokenLimitsToWildFlowJobModels(t *testing.T) {
 	withSelfUseModeEnabled(t)
 	setupModelListControllerTestDB(t)
+	withCallableWildFlowRuntime(t)
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -544,6 +563,7 @@ func TestListModelsAppliesTokenLimitsToWildFlowJobModels(t *testing.T) {
 }
 
 func TestRetrieveModelSupportsAuthorizedWildFlowJobModel(t *testing.T) {
+	withCallableWildFlowRuntime(t)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Params = gin.Params{{Key: "model", Value: "VoxCPM2"}}
@@ -559,6 +579,7 @@ func TestRetrieveModelSupportsAuthorizedWildFlowJobModel(t *testing.T) {
 }
 
 func TestRetrieveModelSupportsDualASRForRegisteredUsers(t *testing.T) {
+	withCallableWildFlowRuntime(t)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Params = gin.Params{{Key: "model", Value: service.WildFlowModelExamDualASR}}
@@ -574,6 +595,7 @@ func TestRetrieveModelSupportsDualASRForRegisteredUsers(t *testing.T) {
 }
 
 func TestRetrieveModelHidesForbiddenWildFlowJobModel(t *testing.T) {
+	withCallableWildFlowRuntime(t)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Params = gin.Params{{Key: "model", Value: "VoxCPM2"}}
@@ -590,6 +612,71 @@ func TestRetrieveModelHidesForbiddenWildFlowJobModel(t *testing.T) {
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
 	require.Equal(t, "model_not_found", payload.Error.Code)
+}
+
+func TestWildFlowModelDirectoryKeepsRuntimeAndTenantVisibilityConsistent(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	setupModelListControllerTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/internal/v1/catalog", r.URL.Path)
+		require.Equal(t, "Bearer multi-tenant-test-token", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"VoxCPM2","model_version_ref":"openbmb/VoxCPM2","callable":true},
+			{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
+			{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":false},
+			{"id":"tenant-a-private","model_version_ref":"private/revision","callable":true}
+		]}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("WILDFLOW_INFERENCE_URL", server.URL)
+	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "multi-tenant-test-token")
+
+	catalog := service.GetWildFlowCatalog(context.Background())
+	byID := make(map[string]service.WildFlowOffering, len(catalog))
+	for _, offering := range catalog {
+		byID[offering.ID] = offering
+	}
+	require.Len(t, byID, 3)
+	assert.True(t, byID["VoxCPM2"].Callable)
+	assert.True(t, byID["FLUX.2 [klein] 4B"].Callable)
+	assert.False(t, byID[service.WildFlowModelExamDualASR].Callable)
+
+	for name, allowed := range map[string]map[string]bool{
+		"tenant-a": {"VoxCPM2": true, service.WildFlowModelExamDualASR: true},
+		"tenant-b": {"FLUX.2 [klein] 4B": true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+			common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, allowed)
+
+			ListModels(ctx, constant.ChannelTypeOpenAI)
+
+			ids := decodeListModelsResponse(t, recorder)
+			require.Len(t, ids, 1)
+			for modelID := range allowed {
+				if byID[modelID].Callable {
+					assert.Contains(t, ids, modelID)
+				} else {
+					assert.NotContains(t, ids, modelID)
+				}
+			}
+			assert.NotContains(t, ids, "tenant-a-private")
+		})
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "model", Value: service.WildFlowModelExamDualASR}}
+	RetrieveModel(ctx, constant.ChannelTypeOpenAI)
+	var payload struct {
+		Error types.OpenAIError `json:"error"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	assert.Equal(t, "model_not_found", payload.Error.Code)
 }
 
 func TestCheckUpdatePasswordRequiresCurrentPassword(t *testing.T) {
