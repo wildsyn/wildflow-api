@@ -998,8 +998,11 @@ func TestCreateWildFlowJobSubmitsIdeogram4WithValidatedTeamTrialParameters(t *te
 		assert.Equal(t, service.WildFlowModelIdeogram4MixedV3, body["product_model_ref"])
 		assert.Equal(t, "ideogram-4-mixed-v3@bbee2ab2", body["model_version_ref"])
 		parameters := body["parameters"].(map[string]any)
-		assert.Equal(t, float64(7), parameters["guidance_scale"])
-		assert.Equal(t, "internal-noncommercial-evaluation-only", parameters["license_entitlement"])
+		assert.Equal(t, map[string]any{
+			"prompt": "一只熊猫", "width": float64(1024), "height": float64(1536),
+			"seed": float64(7), "steps": float64(28), "guidance_scale": float64(7),
+			"license_entitlement": "internal-noncommercial-evaluation-only",
+		}, parameters)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"job":{"id":"job-ideogram-1","state":"queued"}}`))
@@ -1021,6 +1024,13 @@ func TestCreateWildFlowJobSubmitsIdeogram4WithValidatedTeamTrialParameters(t *te
 		map[string]string{"Idempotency-Key": "ideogram-invalid"},
 	)
 	require.Equal(t, http.StatusBadRequest, invalid.Code, invalid.Body.String())
+	assert.Equal(t, 1, requests)
+
+	clientEntitlement := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs",
+		`{"model":"Ideogram 4 mixed-v3","parameters":{"prompt":"panda","width":1024,"height":1024,"seed":7,"steps":28,"license_entitlement":"caller-controlled"}}`,
+		map[string]string{"Idempotency-Key": "ideogram-client-entitlement"},
+	)
+	require.Equal(t, http.StatusBadRequest, clientEntitlement.Code, clientEntitlement.Body.String())
 	assert.Equal(t, 1, requests)
 
 	forbidden := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{
