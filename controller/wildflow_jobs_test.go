@@ -989,6 +989,45 @@ func TestCreateWildFlowJobMapsFLUXToTheExactModelVersion(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
 }
 
+func TestCreateWildFlowJobSubmitsIdeogram4WithValidatedTeamTrialParameters(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var body map[string]any
+		require.NoError(t, common.DecodeJson(r.Body, &body))
+		assert.Equal(t, service.WildFlowModelIdeogram4MixedV3, body["product_model_ref"])
+		assert.Equal(t, "ideogram-4-mixed-v3@bbee2ab2", body["model_version_ref"])
+		assert.Equal(t, float64(7), body["parameters"].(map[string]any)["guidance_scale"])
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job":{"id":"job-ideogram-1","state":"queued"}}`))
+	}))
+	body := `{"model":"Ideogram 4 mixed-v3","parameters":{"prompt":"一只熊猫","width":1024,"height":1536,"seed":7,"steps":28}}`
+
+	created := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "ideogram-1"})
+	replayed := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "ideogram-1"})
+	require.Equal(t, http.StatusAccepted, created.Code, created.Body.String())
+	require.Equal(t, http.StatusAccepted, replayed.Code, replayed.Body.String())
+	assert.Equal(t, 1, requests)
+	var operation model.WildFlowOperation
+	require.NoError(t, model.DB.Where("operation_id = ?", created.Header().Get("Location")[len("/v1/jobs/"):]).First(&operation).Error)
+	assert.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
+	assert.Equal(t, model.WildFlowBillingSourceTeamTrial, operation.BillingSource)
+
+	invalid := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs",
+		`{"model":"Ideogram 4 mixed-v3","parameters":{"prompt":"panda","width":1536,"height":1536,"seed":7,"steps":28}}`,
+		map[string]string{"Idempotency-Key": "ideogram-invalid"},
+	)
+	require.Equal(t, http.StatusBadRequest, invalid.Code, invalid.Body.String())
+	assert.Equal(t, 1, requests)
+
+	forbidden := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{
+		"Idempotency-Key": "ideogram-forbidden", "X-Test-Model-Limits": "VoxCPM2",
+	})
+	require.Equal(t, http.StatusForbidden, forbidden.Code, forbidden.Body.String())
+	assert.Equal(t, 1, requests)
+}
+
 func TestCreateWildFlowJobRejectsUnknownTopLevelFieldsBeforeInference(t *testing.T) {
 	requests := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

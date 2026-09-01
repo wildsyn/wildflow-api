@@ -44,7 +44,7 @@ func TestValidateWildFlowParametersRejectsUnsafeOrUnsupportedShapes(t *testing.T
 	}
 }
 
-func TestNormalizeWildFlowJobRequestKeepsTwoCanonicalModelsAndMapsLegacyAliases(t *testing.T) {
+func TestNormalizeWildFlowJobRequestKeepsCanonicalModelsAndMapsLegacyAliases(t *testing.T) {
 	t.Parallel()
 
 	canonical, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
@@ -69,6 +69,43 @@ func TestNormalizeWildFlowJobRequestKeepsTwoCanonicalModelsAndMapsLegacyAliases(
 	})
 	require.NoError(t, err)
 	require.Equal(t, "FLUX.2 [klein] 4B", legacyImage.Model)
+
+	ideogram, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
+		Model: WildFlowModelIdeogram4MixedV3,
+		Parameters: map[string]any{
+			"prompt": "panda", "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(28),
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, float64(7), ideogram.Parameters["guidance_scale"])
+}
+
+func TestValidateWildFlowIdeogram4Parameters(t *testing.T) {
+	t.Parallel()
+
+	valid := WildFlowJobRequest{
+		Model: WildFlowModelIdeogram4MixedV3,
+		Parameters: map[string]any{
+			"prompt": "一只熊猫", "width": float64(1024), "height": float64(1536),
+			"seed": float64(4_294_967_295), "steps": float64(100), "guidance_scale": float64(30),
+		},
+	}
+	require.NoError(t, validateWildFlowRequest("image", valid))
+
+	invalidParameters := []map[string]any{
+		{"prompt": "   ", "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(1), "guidance_scale": float64(7)},
+		{"prompt": strings.Repeat("x", 4_001), "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(1), "guidance_scale": float64(7)},
+		{"prompt": "panda", "width": float64(1536), "height": float64(1536), "seed": float64(0), "steps": float64(1), "guidance_scale": float64(7)},
+		{"prompt": "panda", "width": float64(1024), "height": float64(1024), "seed": float64(4_294_967_296), "steps": float64(1), "guidance_scale": float64(7)},
+		{"prompt": "panda", "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(0), "guidance_scale": float64(7)},
+		{"prompt": "panda", "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(1), "guidance_scale": float64(0)},
+		{"prompt": "panda", "width": float64(1024), "height": float64(1024), "seed": float64(0), "steps": float64(1), "guidance_scale": float64(30.1)},
+	}
+	for _, parameters := range invalidParameters {
+		require.ErrorIs(t, validateWildFlowRequest("image", WildFlowJobRequest{
+			Model: WildFlowModelIdeogram4MixedV3, Parameters: parameters,
+		}), ErrWildFlowInvalidParameters)
+	}
 }
 
 func TestValidateWildFlowParametersAcceptsEveryDocumentedVoice(t *testing.T) {

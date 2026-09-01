@@ -29,9 +29,10 @@ type WildFlowJobRequest struct {
 }
 
 const (
-	WildFlowModelVoxCPM2     = "VoxCPM2"
-	WildFlowModelFlux2       = "FLUX.2 [klein] 4B"
-	WildFlowModelExamDualASR = "wildflow/exam-replay-dual-asr-v1"
+	WildFlowModelVoxCPM2          = "VoxCPM2"
+	WildFlowModelFlux2            = "FLUX.2 [klein] 4B"
+	WildFlowModelIdeogram4MixedV3 = "Ideogram 4 mixed-v3"
+	WildFlowModelExamDualASR      = "wildflow/exam-replay-dual-asr-v1"
 )
 
 var wildFlowTTSVoices = map[string]struct{}{
@@ -64,6 +65,10 @@ func NormalizeWildFlowJobRequest(request WildFlowJobRequest) (WildFlowJobRequest
 	case WildFlowModelFlux2:
 	case "flux2-klein-4b", "flux2", "black-forest-labs/FLUX.2-klein-4B":
 		request.Model = WildFlowModelFlux2
+	case WildFlowModelIdeogram4MixedV3:
+		if _, exists := request.Parameters["guidance_scale"]; !exists {
+			request.Parameters["guidance_scale"] = float64(7)
+		}
 	case WildFlowModelExamDualASR:
 	default:
 		return WildFlowJobRequest{}, ErrWildFlowUnsupportedModel
@@ -189,12 +194,47 @@ func validateWildFlowParameters(kind string, parameters map[string]any) error {
 	return ErrWildFlowUnsupportedModel
 }
 
+func validateWildFlowIdeogram4Parameters(parameters map[string]any) error {
+	allowed := map[string]bool{
+		"prompt": true, "width": true, "height": true, "seed": true, "steps": true, "guidance_scale": true,
+	}
+	for key := range parameters {
+		if !allowed[key] {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	prompt, ok := parameters["prompt"].(string)
+	if !ok || strings.TrimSpace(prompt) == "" || utf8.RuneCountInString(prompt) > 4_000 {
+		return ErrWildFlowInvalidParameters
+	}
+	width, widthOK := boundedInteger(parameters["width"], 1_024, 1_536)
+	height, heightOK := boundedInteger(parameters["height"], 1_024, 1_536)
+	if !widthOK || !heightOK || !((width == 1_024 && height == 1_024) ||
+		(width == 1_024 && height == 1_536) || (width == 1_536 && height == 1_024)) {
+		return ErrWildFlowInvalidParameters
+	}
+	if _, valid := boundedInteger(parameters["seed"], 0, 4_294_967_295); !valid {
+		return ErrWildFlowInvalidParameters
+	}
+	if _, valid := boundedInteger(parameters["steps"], 1, 100); !valid {
+		return ErrWildFlowInvalidParameters
+	}
+	guidanceScale, valid := finiteNumber(parameters["guidance_scale"])
+	if !valid || guidanceScale <= 0 || guidanceScale > 30 {
+		return ErrWildFlowInvalidParameters
+	}
+	return nil
+}
+
 func validateWildFlowRequest(kind string, request WildFlowJobRequest) error {
 	if kind == "asr" {
 		return validateWildFlowASRRequest(request)
 	}
 	if len(request.InputArtifactIDs) != 0 {
 		return ErrWildFlowInvalidParameters
+	}
+	if request.Model == WildFlowModelIdeogram4MixedV3 {
+		return validateWildFlowIdeogram4Parameters(request.Parameters)
 	}
 	return validateWildFlowParameters(kind, request.Parameters)
 }
