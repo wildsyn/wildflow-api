@@ -658,7 +658,8 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model
 		return inferenceclient.Artifact{}, nil, false
 	}
 	internalTrialReady := operation.BillingSource == model.WildFlowBillingSourceTeamTrial &&
-		operation.BillingState == model.WildFlowBillingStatePending
+		operation.BillingState == model.WildFlowBillingStatePending &&
+		operation.ResultJSON != "" && operation.ResultValidatedTime > 0
 	retailResultReady := operation.ResultJSON != "" &&
 		(operation.BillingState == model.WildFlowBillingStateReserved || operation.BillingState == model.WildFlowBillingStateSettled)
 	if operation.State != "succeeded" || (!retailResultReady && !internalTrialReady) {

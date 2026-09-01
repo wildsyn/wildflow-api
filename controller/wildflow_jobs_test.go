@@ -219,6 +219,7 @@ func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T
 		RequestID: "request-asr-download", ProductModelRef: service.WildFlowModelExamDualASR,
 		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr", State: "succeeded",
 		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+		ResultJSON: `{}`, ResultValidatedTime: time.Now().Unix(), ResultExpiresAt: time.Now().Add(time.Hour).Unix(),
 	}).Error)
 
 	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr/content", "", nil)
@@ -263,6 +264,7 @@ func TestInternalExamDualASRDownloadRejectsSameLengthDigestMismatchWithoutReceip
 		RequestID: "request-asr-mismatch", ProductModelRef: service.WildFlowModelExamDualASR,
 		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr-mismatch", State: "succeeded",
 		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+		ResultJSON: `{}`, ResultValidatedTime: time.Now().Unix(), ResultExpiresAt: time.Now().Add(time.Hour).Unix(),
 	}).Error)
 
 	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr-mismatch/content", "", nil)
@@ -302,6 +304,7 @@ func TestInternalExamDualASRDownloadRejectsShortStreamWithoutReceipt(t *testing.
 		RequestID: "request-asr-short", ProductModelRef: service.WildFlowModelExamDualASR,
 		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr-short", State: "succeeded",
 		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+		ResultJSON: `{}`, ResultValidatedTime: time.Now().Unix(), ResultExpiresAt: time.Now().Add(time.Hour).Unix(),
 	}).Error)
 
 	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-asr-short/content", "", nil)
@@ -1062,6 +1065,7 @@ func TestIdeogramTeamTrialArtifactIsReadableAfterSuccess(t *testing.T) {
 		RequestID: "request-ideogram-artifact", ProductModelRef: service.WildFlowModelIdeogram4MixedV3,
 		ModelVersionRef: "ideogram-4-mixed-v3@bbee2ab2", JobID: "job-ideogram", State: "succeeded",
 		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+		ResultJSON: `{}`, ResultValidatedTime: time.Now().Unix(), ResultExpiresAt: time.Now().Add(time.Hour).Unix(),
 	}).Error)
 
 	metadata := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-ideogram", "", nil)
@@ -1069,6 +1073,43 @@ func TestIdeogramTeamTrialArtifactIsReadableAfterSuccess(t *testing.T) {
 	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/artifact-ideogram/content", "", nil)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	assert.Equal(t, content, response.Body.Bytes())
+}
+
+func TestIdeogramTeamTrialArtifactRequiresPersistedValidatedResult(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/artifacts/artifact-ideogram-no-result":
+			_, _ = w.Write([]byte(`{"artifact":{"id":"artifact-ideogram-no-result","job_id":"job-ideogram-no-result","media_type":"image/png","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`))
+		case "/internal/v1/artifacts/artifact-ideogram-unvalidated":
+			_, _ = w.Write([]byte(`{"artifact":{"id":"artifact-ideogram-unvalidated","job_id":"job-ideogram-unvalidated","media_type":"image/png","size_bytes":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	for _, operation := range []*model.WildFlowOperation{
+		{
+			OperationID: "op-ideogram-no-result", UserID: 42, TokenID: 7,
+			IdempotencyKeyDigest: "key-ideogram-no-result", RequestDigest: "request-ideogram-no-result",
+			RequestID: "request-ideogram-no-result", ProductModelRef: service.WildFlowModelIdeogram4MixedV3,
+			ModelVersionRef: "ideogram-4-mixed-v3@bbee2ab2", JobID: "job-ideogram-no-result", State: "succeeded",
+			BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+		},
+		{
+			OperationID: "op-ideogram-unvalidated", UserID: 42, TokenID: 7,
+			IdempotencyKeyDigest: "key-ideogram-unvalidated", RequestDigest: "request-ideogram-unvalidated",
+			RequestID: "request-ideogram-unvalidated", ProductModelRef: service.WildFlowModelIdeogram4MixedV3,
+			ModelVersionRef: "ideogram-4-mixed-v3@bbee2ab2", JobID: "job-ideogram-unvalidated", State: "succeeded",
+			BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+			ResultJSON: `{}`, ResultExpiresAt: time.Now().Add(time.Hour).Unix(),
+		},
+	} {
+		require.NoError(t, model.DB.Create(operation).Error)
+	}
+	for _, artifactID := range []string{"artifact-ideogram-no-result", "artifact-ideogram-unvalidated"} {
+		response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/artifacts/"+artifactID, "", nil)
+		require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+		assert.Contains(t, response.Body.String(), `"code":"artifact_not_ready"`)
+	}
 }
 
 func TestRestrictedTokenCannotReadCancelOrAccessIdeogramTeamTrialOperations(t *testing.T) {
