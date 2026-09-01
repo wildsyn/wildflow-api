@@ -145,7 +145,11 @@ func PrepareWildFlowOperation(
 }
 
 func findWildFlowJobOffering(id string) (WildFlowOffering, bool) {
-	return FindWildFlowOffering(id)
+	offering, ok := FindWildFlowOffering(id)
+	if !ok || !IsWildFlowDurableJobOffering(offering) {
+		return WildFlowOffering{}, false
+	}
+	return offering, true
 }
 
 func FindWildFlowOffering(id string) (WildFlowOffering, bool) {

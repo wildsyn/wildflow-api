@@ -119,6 +119,18 @@ func ListCanonicalWildFlowOfferings() []WildFlowOffering {
 	return offerings
 }
 
+// IsWildFlowDurableJobOffering reports whether an offering is implemented by
+// the first-party durable Job API. Chat offerings use the ordinary New API
+// channel distributor instead and must not be advertised as /v1/jobs models.
+func IsWildFlowDurableJobOffering(offering WildFlowOffering) bool {
+	switch offering.Kind {
+	case "tts", "image", "asr":
+		return true
+	default:
+		return false
+	}
+}
+
 func GetWildFlowCatalog(ctx context.Context) []WildFlowOffering {
 	catalog := ListCanonicalWildFlowOfferings()
 	for index := range catalog {

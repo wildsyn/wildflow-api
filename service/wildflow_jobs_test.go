@@ -71,6 +71,20 @@ func TestNormalizeWildFlowJobRequestKeepsTwoCanonicalModelsAndMapsLegacyAliases(
 	require.Equal(t, "FLUX.2 [klein] 4B", legacyImage.Model)
 }
 
+func TestWildFlowDurableJobOfferingRejectsQwenChatCatalogEntry(t *testing.T) {
+	t.Parallel()
+
+	offering, ok := findWildFlowJobOffering("Qwen/Qwen3.8-27B-FP8")
+	require.False(t, ok)
+	require.Empty(t, offering.ID)
+
+	_, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
+		Model:      "Qwen/Qwen3.8-27B-FP8",
+		Parameters: map[string]any{"input": "hello"},
+	})
+	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
+}
+
 func TestValidateWildFlowParametersAcceptsEveryDocumentedVoice(t *testing.T) {
 	t.Parallel()
 
