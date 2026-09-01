@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -140,6 +141,29 @@ func TestModelPriceHelperTieredPreConsumeMaxTokensFallback(t *testing.T) {
 			require.Equal(t, tc.expected, priceData.QuotaToPreConsume)
 		})
 	}
+}
+
+func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	savedModelRatios := ratio_setting.ModelRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedModelRatios))
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"standard-hard-bound-model":1}`))
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set("group", "default")
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "standard-hard-bound-model",
+		UserGroup:       "default",
+		UsingGroup:      "default",
+	}
+
+	priceData, err := ModelPriceHelper(ctx, info, common.PreConsumedQuota, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	assert.Equal(t, common.PreConsumedQuota+defaultStandardPreConsumeMaxTokens, priceData.QuotaToPreConsume,
+		"omitting max_tokens must reserve the full validator-bounded completion cost")
 }
 
 func TestModelPriceHelperTieredRejectsPreConsumeOverflow(t *testing.T) {

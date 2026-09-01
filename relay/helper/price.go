@@ -41,6 +41,12 @@ const claudeCacheCreation1hMultiplier = 6 / 3.75
 // the pre-consumed quota still reflects a plausible output cost in paid groups.
 const defaultTieredPreConsumeMaxTokens = 8192
 
+// defaultStandardPreConsumeMaxTokens is the largest completion length accepted
+// by the relay validators. Standard-ratio requests without max_tokens do not
+// carry another enforceable completion bound, so reserving less would let a
+// successful provider response create an uncollectable positive settlement.
+const defaultStandardPreConsumeMaxTokens = maxTokensLimit
+
 // HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hosttypes.GroupRatioInfo {
 	groupRatioInfo := hosttypes.GroupRatioInfo{
@@ -95,6 +101,10 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
 		if meta.MaxTokens != 0 {
 			preConsumedTokens += meta.MaxTokens
+		} else if meta.TokenType != types.TokenTypeImage && meta.ImagePriceRatio == 0 {
+			// Image requests are capped by their validated image multipliers rather
+			// than completion tokens, so no completion reservation belongs there.
+			preConsumedTokens += defaultStandardPreConsumeMaxTokens
 		}
 		var success bool
 		var matchName string
