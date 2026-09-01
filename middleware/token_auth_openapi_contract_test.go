@@ -177,40 +177,14 @@ func TestTokenAuthErrorCodesDocumentedInRelayOpenAPI(t *testing.T) {
 	}, documented)
 
 	// 401 (token auth failure) and 403 (allow_ips rejection) must be
-	// documented with the TokenAuthError schema on every TokenAuth-guarded
-	// path relay.json describes, not only on /v1/chat/completions.
-	tokenAuthDocPaths := []string{
-		"/v1/models",
-		"/v1/chat/completions",
-		"/v1/completions",
-		"/v1/responses",
-		"/v1/responses/compact",
-		"/v1/messages",
-		"/v1/embeddings",
-		"/v1/engines/{model}/embeddings",
-		"/v1/images/generations",
-		"/v1/images/edits",
-		"/v1/audio/speech",
-		"/v1/audio/transcriptions",
-		"/v1/audio/translations",
-		"/v1/moderations",
-		"/v1/rerank",
-		"/v1/video/generations",
-		"/v1/video/generations/{task_id}",
-		"/v1/videos",
-		"/v1/videos/{task_id}",
-		"/v1/videos/{task_id}/content",
-		"/v1beta/models",
-		"/v1beta/models/{model}:generateContent",
-		"/kling/v1/videos/text2video",
-		"/kling/v1/videos/text2video/{task_id}",
-		"/kling/v1/videos/image2video",
-		"/kling/v1/videos/image2video/{task_id}",
-		"/jimeng/",
-	}
-	for _, path := range tokenAuthDocPaths {
-		ops := doc.Paths[path]
-		require.NotEmpty(t, ops, "relay.json must document %s", path)
+	// documented with the TokenAuthError schema on EVERY operation relay.json
+	// describes. Every path in relay.json sits behind TokenAuth (each op also
+	// declares BearerAuth security), so iterate the document instead of a
+	// hand-maintained list — a list can drift when new routes are added and
+	// silently skip exactly the paths that need the contract.
+	require.NotEmpty(t, doc.Paths, "docs/openapi/relay.json must document relay paths")
+	for path, ops := range doc.Paths {
+		require.NotEmpty(t, ops, "relay.json must document at least one operation for %s", path)
 		for method, op := range ops {
 			require.Contains(t, op.Responses, "401", "%s %s must document 401", method, path)
 			require.Contains(t, op.Responses, "403", "%s %s must document 403", method, path)
