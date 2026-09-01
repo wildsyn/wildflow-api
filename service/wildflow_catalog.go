@@ -87,6 +87,17 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 		},
 	},
 	{
+		ID:              "Qwen/Qwen3.8-27B-FP8",
+		DisplayName:     "Qwen3.8-27B (FP8) 对话",
+		Kind:            "chat",
+		Vendor:          "Qwen",
+		ModelVersionRef: "Qwen/Qwen3.8-27B-FP8",
+		Description:     "通义千问 27B FP8 对话模型，支持中文问答、代码与思考模式，当前为团队内测。",
+		Pricing: WildFlowCatalogPricing{
+			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内测 · 暂不扣零售余额",
+		},
+	},
+	{
 		ID:                 WildFlowModelExamDualASR,
 		DisplayName:        "直播回放双 ASR",
 		Kind:               "asr",
