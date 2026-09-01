@@ -175,6 +175,16 @@ func setupTaskDispatchTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+func setTaskDispatchTestModelPrice(t *testing.T, modelName string, price float64) {
+	t.Helper()
+	var prices map[string]float64
+	require.NoError(t, common.Unmarshal([]byte(ratio_setting.ModelPrice2JSONString()), &prices))
+	prices[modelName] = price
+	priceBytes, err := common.Marshal(prices)
+	require.NoError(t, err)
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(string(priceBytes)))
+}
+
 func seedTaskDispatchBilling(t *testing.T, db *gorm.DB) (int, int, string) {
 	t.Helper()
 	user := &model.User{Username: "task-dispatch-user-" + t.Name(), Quota: 1_000, Group: "default", AffCode: "task-dispatch-aff-" + t.Name()}

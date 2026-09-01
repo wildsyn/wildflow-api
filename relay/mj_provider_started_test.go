@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	taskdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
@@ -55,11 +56,18 @@ func TestMidjourneyProviderStartedFailClosed(t *testing.T) {
 		install      func(t *testing.T, db *gorm.DB, requestID string)
 		wantProvider int32
 		wantSuccess  bool
+		freeRequest  bool
 	}{
 		{
 			name:         "successful marked dispatch",
 			wantProvider: 1,
 			wantSuccess:  true,
+		},
+		{
+			name:         "free request needs no marker",
+			wantProvider: 1,
+			wantSuccess:  true,
+			freeRequest:  true,
 		},
 		{
 			name: "missing record",
@@ -105,6 +113,9 @@ func TestMidjourneyProviderStartedFailClosed(t *testing.T) {
 		for _, fault := range faults {
 			t.Run(entry.name+"/"+fault.name, func(t *testing.T) {
 				db := setupTaskDispatchTestDB(t)
+				if fault.freeRequest {
+					setTaskDispatchTestModelPrice(t, entry.model, 0)
+				}
 				requestID := fmt.Sprintf("mj-provider-started-%d", time.Now().UnixNano())
 				if fault.install != nil {
 					fault.install(t, db, requestID)
@@ -153,6 +164,11 @@ func TestMidjourneyProviderStartedFailClosed(t *testing.T) {
 					assert.Equal(t, 4, response.Code)
 				}
 				assert.Equal(t, fault.wantProvider, providerCalls.Load())
+				if fault.freeRequest {
+					var reservationCount int64
+					require.NoError(t, db.Model(&model.BillingReservationRecord{}).Where("request_id = ?", requestID).Count(&reservationCount).Error)
+					assert.Equal(t, int64(0), reservationCount, "free requests must not require a reservation marker")
+				}
 			})
 		}
 	}

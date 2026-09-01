@@ -212,21 +212,27 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	}
 
 	// 原子预占：账户余额与 Key 硬上限在调用 Provider 前取得资格，失败零账变。
-	if err := service.ReservePerCallBilling(info, priceData.Quota); err != nil {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: "quota_not_enough",
+	// 免费/零额度请求不创建预占记录，因此也无需 provider_started 标记。
+	reserved := priceData.Quota > 0
+	if reserved {
+		if err := service.ReservePerCallBilling(info, priceData.Quota); err != nil {
+			return &dto.MidjourneyResponse{
+				Code:        4,
+				Description: "quota_not_enough",
+			}
 		}
 	}
 	requestURL := getMjRequestPath(c.Request.URL.String())
 	baseURL := c.GetString("base_url")
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
 	// 标记必须成功才允许发送。缺记录、状态竞争与 DB 错误均 fail closed。
-	if err := model.MarkBillingReservationProviderStarted(info.RequestId); err != nil {
-		if releaseErr := service.ReleasePerCallBilling(info); releaseErr != nil {
-			common.SysLog("error releasing mj swap face billing after mark failure: " + releaseErr.Error())
+	if reserved {
+		if err := model.MarkBillingReservationProviderStarted(info.RequestId); err != nil {
+			if releaseErr := service.ReleasePerCallBilling(info); releaseErr != nil {
+				common.SysLog("error releasing mj swap face billing after mark failure: " + releaseErr.Error())
+			}
+			return &dto.MidjourneyResponse{Code: 4, Description: "billing_mark_failed"}
 		}
-		return &dto.MidjourneyResponse{Code: 4, Description: "billing_mark_failed"}
 	}
 	mjResp, _, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
@@ -529,15 +535,14 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	// 原子预占：账户余额与 Key 硬上限在调用 Provider 前取得资格，失败零账变。
 	// consumeQuota 在响应后可能被改为 false（上游拒绝提交），此时必须释放预占，
 	// 因此用 reserved 记录"是否已预占"，而不是在 defer 里重读 consumeQuota。
-	reserved := false
-	if consumeQuota {
+	reserved := consumeQuota && priceData.Quota > 0
+	if reserved {
 		if err := service.ReservePerCallBilling(relayInfo, priceData.Quota); err != nil {
 			return &dto.MidjourneyResponse{
 				Code:        4,
 				Description: "quota_not_enough",
 			}
 		}
-		reserved = true
 	}
 
 	// Provider 请求即将发出：预占推进到 provider_started（结果未知），此后
