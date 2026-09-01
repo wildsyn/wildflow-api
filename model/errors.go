@@ -18,8 +18,9 @@ var (
 
 // Token auth errors
 var (
-	ErrTokenNotProvided = errors.New("token not provided")
-	ErrTokenInvalid     = errors.New("token invalid")
+	ErrTokenNotProvided   = errors.New("token not provided")
+	ErrTokenInvalid       = errors.New("token invalid")
+	ErrTokenStatusChanged = errors.New("token status changed concurrently")
 )
 
 // Redemption errors
