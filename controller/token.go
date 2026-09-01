@@ -384,7 +384,7 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if token.Status == common.TokenStatusEnabled {
+	if statusOnly != "" && token.Status == common.TokenStatusEnabled {
 		if cleanToken.Status == common.TokenStatusExpired && cleanToken.ExpiredTime <= common.GetTimestamp() && cleanToken.ExpiredTime != -1 {
 			common.ApiErrorI18n(c, i18n.MsgTokenExpiredCannotEnable)
 			return
@@ -395,7 +395,9 @@ func UpdateToken(c *gin.Context) {
 		}
 	}
 	if statusOnly != "" {
+		previousStatus := cleanToken.Status
 		cleanToken.Status = token.Status
+		err = cleanToken.UpdateStatus(previousStatus)
 	} else {
 		// If you add more fields, please also update token.Update()
 		cleanToken.Name = token.Name
@@ -415,8 +417,8 @@ func UpdateToken(c *gin.Context) {
 				return
 			}
 		}
+		err = cleanToken.Update()
 	}
-	err = cleanToken.Update()
 	if err != nil {
 		common.ApiError(c, err)
 		return

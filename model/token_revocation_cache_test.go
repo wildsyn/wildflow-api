@@ -70,7 +70,7 @@ func TestTokenDisableImmediatelyInvalidatesCachedGrant(t *testing.T) {
 	require.Equal(t, common.TokenStatusEnabled, cached.Status)
 
 	token.Status = common.TokenStatusDisabled
-	require.NoError(t, token.Update())
+	require.NoError(t, token.UpdateStatus(common.TokenStatusEnabled))
 
 	// After the successful disable the cached enabled snapshot must be gone:
 	// the fence keeps racing fills out and the hash was proven deleted.
@@ -219,7 +219,7 @@ func TestTokenReEnableClearsFenceAndRecaches(t *testing.T) {
 	drainTokenCacheFills(t)
 
 	token.Status = common.TokenStatusDisabled
-	require.NoError(t, token.Update())
+	require.NoError(t, token.UpdateStatus(common.TokenStatusEnabled))
 	_, err := ValidateUserToken(token.Key)
 	require.ErrorIs(t, ErrTokenInvalid, err)
 
@@ -228,7 +228,7 @@ func TestTokenReEnableClearsFenceAndRecaches(t *testing.T) {
 	assert.ErrorIs(t, err, ErrTokenCacheRevocationPending)
 
 	token.Status = common.TokenStatusEnabled
-	require.NoError(t, token.Update())
+	require.NoError(t, token.UpdateStatus(common.TokenStatusDisabled))
 	_, err = ValidateUserToken(token.Key)
 	require.NoError(t, err)
 }
@@ -273,7 +273,7 @@ func TestTokenRevocationWorksWithoutRedis(t *testing.T) {
 	// Disable without Redis: must succeed and the validate path must reject.
 	token = newRevocableToken(t, "revoke-no-redis-disable-key")
 	token.Status = common.TokenStatusDisabled
-	require.NoError(t, token.Update())
+	require.NoError(t, token.UpdateStatus(common.TokenStatusEnabled))
 	_, err = ValidateUserToken(token.Key)
 	require.ErrorIs(t, err, ErrTokenInvalid)
 
@@ -404,6 +404,62 @@ func TestTokenUpdateDoesNotOverwriteFenceAfterDelete(t *testing.T) {
 	require.ErrorIs(t, err, ErrTokenInvalid)
 }
 
+// A normal edit holds an enabled snapshot from its initial read. If disable
+// succeeds before that edit commits, the edit must update only ordinary fields
+// and never restore status, the revocation fence, or the enabled cache grant.
+func TestTokenFieldUpdateCannotRestoreConcurrentDisable(t *testing.T) {
+	token := newRevocableToken(t, "revoke-field-update-vs-disable-key")
+	server := useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+	require.NoError(t, cacheSetToken(*token))
+
+	staleEdit := &Token{}
+	require.NoError(t, DB.First(staleEdit, token.Id).Error)
+	staleEdit.Name = "submitted-after-disable"
+
+	disabling := &Token{}
+	require.NoError(t, DB.First(disabling, token.Id).Error)
+	previousStatus := disabling.Status
+	disabling.Status = common.TokenStatusDisabled
+	require.NoError(t, disabling.UpdateStatus(previousStatus))
+
+	// This models the already-read ordinary edit finally reaching its update.
+	require.NoError(t, staleEdit.Update())
+
+	var stored Token
+	require.NoError(t, DB.First(&stored, token.Id).Error)
+	assert.Equal(t, common.TokenStatusDisabled, stored.Status)
+	assert.False(t, server.Exists(tokenCacheKey(token.Key)))
+	_, err := ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+}
+
+func TestTokenReEnableRejectsStaleStatusVersionAfterConcurrentDisable(t *testing.T) {
+	token := newRevocableToken(t, "revoke-reenable-status-version-key")
+	useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+
+	previousStatus := token.Status
+	token.Status = common.TokenStatusDisabled
+	require.NoError(t, token.UpdateStatus(previousStatus))
+
+	staleEnable := *token
+	staleEnable.Status = common.TokenStatusEnabled
+
+	concurrentDisable := *token
+	concurrentDisable.Status = common.TokenStatusDisabled
+	require.NoError(t, concurrentDisable.UpdateStatus(common.TokenStatusDisabled))
+
+	err := staleEnable.UpdateStatus(common.TokenStatusDisabled)
+	require.ErrorIs(t, err, ErrTokenStatusChanged)
+
+	var stored Token
+	require.NoError(t, DB.First(&stored, token.Id).Error)
+	assert.Equal(t, common.TokenStatusDisabled, stored.Status)
+	_, err = ValidateUserToken(token.Key)
+	require.ErrorIs(t, err, ErrTokenInvalid)
+}
+
 // Re-enable must only release the fence generation it observed: a concurrent
 // delete that raised a newer fence after the re-enable snapshot keeps its deny
 // window, and the re-enable must not write an enabled snapshot over it.
@@ -414,7 +470,7 @@ func TestTokenReEnableDoesNotReleaseNewerFence(t *testing.T) {
 
 	// Disable commits (epoch 1 raised + hash proven deleted).
 	token.Status = common.TokenStatusDisabled
-	require.NoError(t, token.Update())
+	require.NoError(t, token.UpdateStatus(common.TokenStatusEnabled))
 	_, err := ValidateUserToken(token.Key)
 	require.ErrorIs(t, err, ErrTokenInvalid)
 

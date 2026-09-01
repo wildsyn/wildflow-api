@@ -16,6 +16,7 @@ type Token struct {
 	UserId             int            `json:"user_id" gorm:"index"`
 	Key                string         `json:"key" gorm:"type:varchar(128);uniqueIndex"`
 	Status             int            `json:"status" gorm:"default:1"`
+	StatusVersion      int64          `json:"-"`
 	Name               string         `json:"name" gorm:"index" `
 	CreatedTime        int64          `json:"created_time" gorm:"bigint"`
 	AccessedTime       int64          `json:"accessed_time" gorm:"bigint"`
@@ -316,62 +317,22 @@ func (token *Token) Insert() error {
 	return err
 }
 
-// Update Make sure your token's fields is completed, because this will update non-zero values
+// Update updates editable token fields. Status is deliberately excluded: a
+// stale ordinary edit must never re-enable a token that was disabled after the
+// edit read its snapshot. Status transitions use UpdateStatus instead.
 func (token *Token) Update() (err error) {
-	revoking := common.RedisEnabled && token.Status == common.TokenStatusDisabled
-	// A status change to disabled is a revocation: raise the fence before the
-	// database write so a racing cache fill on any node cannot outlive it, and
-	// fail the update if the fence cannot be proven. Leaving a revoked state
-	// releases only the fence generation observed here — a concurrent revoke
-	// that raised a newer fence wins and keeps its deny window.
-	var observedEpoch int64
-	if common.RedisEnabled {
-		if revoking {
-			if err := raiseTokenRevocationFences([]string{token.Key}); err != nil {
-				return err
-			}
-		} else {
-			observedEpoch, err = readRevocationEpoch(token.Key)
-			if err != nil {
-				return fmt.Errorf("%w: read fence failed: %v", ErrTokenCacheRevocationPending, err)
-			}
-		}
-	}
-	result := DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
+	result := DB.Model(token).Select("name", "expired_time", "remain_quota", "unlimited_quota",
 		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token)
 	err = result.Error
 	if err != nil {
 		return err
 	}
-	if revoking {
-		// Revoke fence stays authoritative; prove the cached hash is gone so a
-		// disabled token never reads as enabled after success is returned.
-		if revokeErr := revokeTokensCacheCommitted([]string{token.Key}); revokeErr != nil {
-			common.SysLog("failed to invalidate token cache after disable: " + revokeErr.Error())
-			return revokeErr
-		}
-	} else if shouldUpdateRedis(true, err) {
+	if shouldUpdateRedis(true, err) {
 		// A zero-row update means the row no longer exists (soft-deleted by a
 		// concurrent revoke that won the race): nothing was committed, so no
-		// fence may be released and no snapshot may enter the cache.
+		// stale snapshot may enter the cache.
 		if result.RowsAffected == 0 {
 			return nil
-		}
-		if token.Status == common.TokenStatusEnabled {
-			// Re-enable committed: release the fence generation observed before
-			// the database write. If a concurrent revoke raised a newer fence,
-			// the CAS fails and the deny window stays; the re-enable must not
-			// overwrite it.
-			if err := AllowTokenCacheRefresh(token.Key, observedEpoch); err != nil {
-				if !errors.Is(err, ErrTokenCacheRevocationPending) {
-					common.SysLog("failed to clear token revocation fence on re-enable: " + err.Error())
-					return err
-				}
-				// A newer fence outlives this re-enable: the key stays denied
-				// until its epoch expires, which the concurrent revoker owns.
-				common.SysLog("token re-enable raced a newer revocation fence; fence kept for " + token.Key)
-				return nil
-			}
 		}
 		// Fence-guarded write: an ordinary update racing a concurrent revoke
 		// must not re-write an enabled snapshot over the revoker's fence.
@@ -380,6 +341,68 @@ func (token *Token) Update() (err error) {
 			if deleteErr := cacheDeleteToken(token.Key); deleteErr != nil {
 				common.SysLog("failed to invalidate token cache after update: " + deleteErr.Error())
 			}
+		}
+	}
+	return nil
+}
+
+// UpdateStatus performs a status-only transition using the status and version
+// the caller originally read. A concurrent status change therefore wins
+// instead of being overwritten by a stale enable request. Re-enabling releases
+// only the fence epoch observed before the database compare-and-swap.
+func (token *Token) UpdateStatus(previousStatus int) error {
+	revoking := common.RedisEnabled && token.Status != common.TokenStatusEnabled
+	var observedEpoch int64
+	var err error
+	if common.RedisEnabled {
+		if revoking {
+			if err := raiseTokenRevocationFences([]string{token.Key}); err != nil {
+				return err
+			}
+		} else if previousStatus != common.TokenStatusEnabled {
+			observedEpoch, err = readRevocationEpoch(token.Key)
+			if err != nil {
+				return fmt.Errorf("%w: read fence failed: %v", ErrTokenCacheRevocationPending, err)
+			}
+		}
+	}
+
+	result := DB.Model(&Token{}).
+		Where("id = ? AND user_id = ? AND status = ? AND COALESCE(status_version, 0) = ?", token.Id, token.UserId, previousStatus, token.StatusVersion).
+		Updates(map[string]any{
+			"status":         token.Status,
+			"status_version": gorm.Expr("COALESCE(status_version, 0) + ?", 1),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrTokenStatusChanged
+	}
+	token.StatusVersion++
+
+	if revoking {
+		if err := revokeTokensCacheCommitted([]string{token.Key}); err != nil {
+			common.SysLog("failed to invalidate token cache after status revoke: " + err.Error())
+			return err
+		}
+		return nil
+	}
+	if token.Status == common.TokenStatusEnabled && previousStatus != common.TokenStatusEnabled {
+		if err := AllowTokenCacheRefresh(token.Key, observedEpoch); err != nil {
+			if !errors.Is(err, ErrTokenCacheRevocationPending) {
+				common.SysLog("failed to clear token revocation fence on re-enable: " + err.Error())
+				return err
+			}
+			// A newer revocation owns the deny window. Do not cache the enabled
+			// snapshot and, crucially, do not remove its fence.
+			common.SysLog("token re-enable raced a newer revocation fence; fence kept for " + token.Key)
+			return nil
+		}
+	}
+	if shouldUpdateRedis(true, nil) {
+		if err := cacheSetTokenRespectingRevocation(*token); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) {
+			common.SysLog("failed to update token cache after status change: " + err.Error())
 		}
 	}
 	return nil
