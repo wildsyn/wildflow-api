@@ -92,6 +92,7 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 		Kind:               "image",
 		Vendor:             "Ideogram",
 		ModelVersionRef:    "ideogram-4-mixed-v3@bbee2ab2",
+		RuntimeOfferingID:  "ideogram-4-mixed-v3",
 		Description:        "Ideogram 4 图片生成，仅限团队内部非商业评测使用，不提供商用承诺。",
 		RequiredParameters: []string{"prompt", "width", "height", "seed", "steps"},
 		Pricing: WildFlowCatalogPricing{

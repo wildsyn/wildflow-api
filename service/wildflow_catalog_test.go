@@ -18,7 +18,7 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 		_, _ = w.Write([]byte(`{"data":[
 			{"id":"VoxCPM2","model_version_ref":"openbmb/VoxCPM2","callable":true},
 			{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
-			{"id":"Ideogram 4 mixed-v3","model_version_ref":"ideogram-4-mixed-v3@bbee2ab2","callable":true},
+			{"id":"ideogram-4-mixed-v3","model_version_ref":"ideogram-4-mixed-v3@bbee2ab2","callable":true},
 			{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":true},
 			{"id":"untrusted-extra","model_version_ref":"other/model","callable":true}
 		]}`))

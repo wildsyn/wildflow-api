@@ -201,6 +201,13 @@ func TestResolveWildFlowRuntimeOfferingRefKeepsPublicAndRuntimeIdentityDistinct(
 	require.Equal(t, "exam-replay-dual-asr", runtimeRef)
 
 	runtimeRef, err = ResolveWildFlowRuntimeOfferingRef(
+		WildFlowModelIdeogram4MixedV3,
+		"ideogram-4-mixed-v3@bbee2ab2",
+	)
+	require.NoError(t, err)
+	require.Equal(t, "ideogram-4-mixed-v3", runtimeRef)
+
+	runtimeRef, err = ResolveWildFlowRuntimeOfferingRef(
 		WildFlowModelVoxCPM2,
 		"openbmb/VoxCPM2",
 	)
