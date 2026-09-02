@@ -29,11 +29,11 @@ func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuot
 	if err != nil {
 		return model.WildFlowBillingQuote{}, err
 	}
-	if request.Model == WildFlowModelExamDualASR {
-		return model.WildFlowBillingQuote{}, ErrWildFlowUnsupportedModel
-	}
 	offering, ok := FindWildFlowOffering(request.Model)
 	if !ok {
+		return model.WildFlowBillingQuote{}, ErrWildFlowUnsupportedModel
+	}
+	if offering.Pricing.Unit == "team_trial" {
 		return model.WildFlowBillingQuote{}, ErrWildFlowUnsupportedModel
 	}
 	if err := validateWildFlowParameters(offering.Kind, request.Parameters); err != nil {
@@ -99,11 +99,15 @@ func ReserveWildFlowOperationBilling(operation *model.WildFlowOperation, request
 	if err != nil {
 		return nil, err
 	}
-	if request.Model == WildFlowModelExamDualASR {
-		if err := validateWildFlowRequest("asr", request); err != nil {
+	offering, ok := FindWildFlowOffering(request.Model)
+	if !ok {
+		return nil, ErrWildFlowUnsupportedModel
+	}
+	if offering.Pricing.Unit == "team_trial" {
+		if err := validateWildFlowRequest(offering.Kind, request); err != nil {
 			return nil, err
 		}
-		if operation.ProductModelRef != WildFlowModelExamDualASR ||
+		if operation.ProductModelRef != offering.ID ||
 			operation.BillingSource != model.WildFlowBillingSourceTeamTrial ||
 			(operation.BillingState != "" && operation.BillingState != model.WildFlowBillingStatePending) {
 			return nil, model.ErrWildFlowBillingStateConflict
