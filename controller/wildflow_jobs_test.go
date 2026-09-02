@@ -998,7 +998,7 @@ func TestCreateWildFlowJobSubmitsIdeogram4WithValidatedTeamTrialParameters(t *te
 		requests++
 		var body map[string]any
 		require.NoError(t, common.DecodeJson(r.Body, &body))
-		assert.Equal(t, service.WildFlowModelIdeogram4MixedV3, body["product_model_ref"])
+		assert.Equal(t, "ideogram-4-mixed-v3", body["product_model_ref"])
 		assert.Equal(t, "ideogram-4-mixed-v3@bbee2ab2", body["model_version_ref"])
 		parameters := body["parameters"].(map[string]any)
 		assert.Equal(t, map[string]any{
