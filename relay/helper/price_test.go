@@ -144,7 +144,7 @@ func TestModelPriceHelperTieredPreConsumeMaxTokensFallback(t *testing.T) {
 	}
 }
 
-func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *testing.T) {
+func TestModelPriceHelperStandardPreConsumeUsesExecutableDefaultWithoutMaxTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	savedModelRatios := ratio_setting.ModelRatio2JSONString()
@@ -153,13 +153,13 @@ func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *test
 		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedModelRatios))
 		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(savedCompletionRatios))
 	})
-	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"standard-hard-bound-model":0.125}`))
-	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"standard-hard-bound-model":8}`))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"standard-default-model":1.25}`))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"standard-default-model":4}`))
 
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx.Set("group", "default")
 	info := &relaycommon.RelayInfo{
-		OriginModelName: "standard-hard-bound-model",
+		OriginModelName: "standard-default-model",
 		UserGroup:       "default",
 		UsingGroup:      "default",
 		RelayMode:       relayconstant.RelayModeChatCompletions,
@@ -167,24 +167,24 @@ func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *test
 
 	priceData, err := ModelPriceHelper(ctx, info, common.PreConsumedQuota, &types.TokenCountMeta{})
 	require.NoError(t, err)
-	expected, err := common.QuotaFromFloatStrict(float64(common.PreConsumedQuota+defaultStandardPreConsumeMaxTokens*8) * 0.125)
+	expected, err := common.QuotaFromFloatStrict(float64(common.PreConsumedQuota+defaultStandardPreConsumeMaxTokens*4) * 1.25)
 	require.NoError(t, err)
 	assert.Equal(t, expected, priceData.QuotaToPreConsume,
-		"omitting max_tokens must reserve the full validator-bounded, completion-ratio-adjusted cost")
+		"omitting max_tokens must reserve the finite execution default with its completion ratio")
 
 	embeddingInfo := &relaycommon.RelayInfo{
-		OriginModelName: "standard-hard-bound-model",
+		OriginModelName: "standard-default-model",
 		UserGroup:       "default",
 		UsingGroup:      "default",
 		RelayMode:       relayconstant.RelayModeEmbeddings,
 	}
 	embeddingPrice, err := ModelPriceHelper(ctx, embeddingInfo, 10, &types.TokenCountMeta{})
 	require.NoError(t, err)
-	assert.Equal(t, 62, embeddingPrice.QuotaToPreConsume,
+	assert.Equal(t, 625, embeddingPrice.QuotaToPreConsume,
 		"a no-completion endpoint must retain prompt-only pre-consume behavior")
 
 	geminiEmbeddingInfo := &relaycommon.RelayInfo{
-		OriginModelName: "standard-hard-bound-model",
+		OriginModelName: "standard-default-model",
 		UserGroup:       "default",
 		UsingGroup:      "default",
 		RelayFormat:     types.RelayFormatGemini,
@@ -192,11 +192,11 @@ func TestModelPriceHelperStandardPreConsumeUsesHardBoundWithoutMaxTokens(t *test
 	}
 	geminiEmbeddingPrice, err := ModelPriceHelper(ctx, geminiEmbeddingInfo, 10, &types.TokenCountMeta{})
 	require.NoError(t, err)
-	assert.Equal(t, 62, geminiEmbeddingPrice.QuotaToPreConsume,
+	assert.Equal(t, 625, geminiEmbeddingPrice.QuotaToPreConsume,
 		"Gemini batch embedding must not reserve a completion allowance")
 
 	geminiGenerationInfo := &relaycommon.RelayInfo{
-		OriginModelName: "standard-hard-bound-model",
+		OriginModelName: "standard-default-model",
 		UserGroup:       "default",
 		UsingGroup:      "default",
 		RelayFormat:     types.RelayFormatGemini,

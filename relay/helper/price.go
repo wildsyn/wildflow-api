@@ -42,11 +42,10 @@ const claudeCacheCreation1hMultiplier = 6 / 3.75
 // the pre-consumed quota still reflects a plausible output cost in paid groups.
 const defaultTieredPreConsumeMaxTokens = 8192
 
-// defaultStandardPreConsumeMaxTokens is the largest completion length accepted
-// by the relay validators. Standard-ratio requests without max_tokens do not
-// carry another enforceable completion bound, so reserving less would let a
-// successful provider response create an uncollectable positive settlement.
-const defaultStandardPreConsumeMaxTokens = maxTokensLimit
+// defaultStandardPreConsumeMaxTokens is the execution limit injected into
+// standard text-completion requests that omit a completion limit. It must stay
+// small enough for normal requests and is billed exactly as it is sent upstream.
+const defaultStandardPreConsumeMaxTokens = 8192
 
 // HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hosttypes.GroupRatioInfo {
@@ -144,8 +143,8 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
 		ratio := modelRatio * groupRatioInfo.GroupRatio
 		// Keep the reservation formula aligned with text settlement: completion
-		// tokens have their own price multiplier. Omitting max_tokens therefore
-		// reserves the validator-bounded maximum before the Provider is called.
+		// tokens have their own price multiplier. Requests parsed by the relay
+		// receive this same default before their upstream body is constructed.
 		preConsumedQuotaBeforeRatio := float64(preConsumedPromptTokens)
 		if isTextCompletion {
 			preConsumedQuotaBeforeRatio += float64(completionTokens) * completionRatio
