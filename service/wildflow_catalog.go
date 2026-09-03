@@ -100,15 +100,15 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 		},
 	},
 	{
-		ID:                "Qwen/Qwen3.8-27B-FP8",
+		ID:                "Qwen/Qwen3.8-27B-FP8@gpu-4090-06",
 		DisplayName:       "Qwen3.8-27B (FP8) 对话",
 		Kind:              "chat",
 		Vendor:            "Qwen",
 		ModelVersionRef:   "Qwen/Qwen3.8-27B-FP8",
 		RuntimeOfferingID: "qwen3.8-27b-fp8",
-		Description:       "通义千问 27B FP8 对话模型，支持中文问答、代码与思考模式，当前为团队内测。",
+		Description:       "通义千问 27B FP8 对话模型，支持中文问答、代码与思考模式，当前由 WildFlow 四卡 4090 节点提供。",
 		Pricing: WildFlowCatalogPricing{
-			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内测 · 暂不扣零售余额",
+			Currency: "CNY", Amount: 4.38, Unit: "million_tokens", Display: "¥4.38 / 百万输入或输出 Token",
 		},
 	},
 	{
