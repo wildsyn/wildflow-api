@@ -1,6 +1,8 @@
 package common
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 
 	"github.com/QuantumNous/new-api/common"
@@ -28,4 +30,36 @@ func NewOutboundJSONBody(data []byte) (body common.ReplayableBody, closer io.Clo
 		return nil, nil, err
 	}
 	return common.NewReplayableBodyReader(storage), storage, nil
+}
+
+// NewPassThroughJSONBody returns the original pass-through payload unless an
+// omitted optional integer needs an executable default. In that case it adds
+// only the missing field, preserving every other client-supplied JSON field.
+// A JSON null is treated as omitted, while an explicit zero is preserved.
+func NewPassThroughJSONBody(storage common.BodyStorage, field string, value *uint) (body io.Reader, closer io.Closer, err error) {
+	if value == nil {
+		return common.NewReplayableBodyReader(storage), nil, nil
+	}
+
+	rawBody, err := storage.Bytes()
+	if err != nil {
+		return nil, nil, err
+	}
+	fields := map[string]json.RawMessage{}
+	if err := common.Unmarshal(rawBody, &fields); err != nil {
+		return nil, nil, err
+	}
+	if raw, exists := fields[field]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return common.NewReplayableBodyReader(storage), nil, nil
+	}
+	encodedValue, err := common.Marshal(value)
+	if err != nil {
+		return nil, nil, err
+	}
+	fields[field] = encodedValue
+	jsonData, err := common.Marshal(fields)
+	if err != nil {
+		return nil, nil, err
+	}
+	return NewOutboundJSONBody(jsonData)
 }

@@ -168,6 +168,15 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		wildFlowInternalError(c, err)
 		return
 	}
+	runtimeParameters, err := service.PrepareWildFlowRuntimeParameters(
+		operation.ProductModelRef,
+		operation.ModelVersionRef,
+		request.Parameters,
+	)
+	if err != nil {
+		wildFlowInternalError(c, err)
+		return
+	}
 	owner := "api:" + uuid.NewString()
 	leaseToken := uuid.NewString()
 	claimed, acquired, err := model.ClaimWildFlowOperationSubmission(
@@ -255,7 +264,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		ProductModelRef:      runtimeOfferingRef,
 		ModelVersionRef:      operation.ModelVersionRef,
 		InputArtifactIDs:     request.InputArtifactIDs,
-		Parameters:           request.Parameters,
+		Parameters:           runtimeParameters,
 		DeadlineAt:           time.Now().UTC().Add(deadlineAfter),
 		CallbackCapabilities: []string{},
 	})
@@ -705,8 +714,9 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model
 	if !authorizeWildFlowOperationModel(c, operation) {
 		return inferenceclient.Artifact{}, nil, false
 	}
-	internalTrialReady := operation.ProductModelRef == service.WildFlowModelExamDualASR &&
-		operation.BillingState == model.WildFlowBillingStatePending
+	internalTrialReady := operation.BillingSource == model.WildFlowBillingSourceTeamTrial &&
+		operation.BillingState == model.WildFlowBillingStatePending &&
+		operation.ResultJSON != "" && operation.ResultValidatedTime > 0
 	retailResultReady := operation.ResultJSON != "" &&
 		(operation.BillingState == model.WildFlowBillingStateReserved || operation.BillingState == model.WildFlowBillingStateSettled)
 	if operation.State != "succeeded" || (!retailResultReady && !internalTrialReady) {
@@ -734,7 +744,7 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model
 }
 
 func authorizeWildFlowOperationModel(c *gin.Context, operation *model.WildFlowOperation) bool {
-	if operation.ProductModelRef != service.WildFlowModelExamDualASR ||
+	if !service.IsWildFlowTeamTrialOffering(operation.ProductModelRef) ||
 		wildFlowTokenAllowsModel(c, operation.ProductModelRef) {
 		return true
 	}
