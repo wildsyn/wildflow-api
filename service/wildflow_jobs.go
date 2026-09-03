@@ -33,6 +33,7 @@ const (
 	WildFlowModelFlux2            = "FLUX.2 [klein] 4B"
 	WildFlowModelIdeogram4MixedV3 = "Ideogram 4 mixed-v3"
 	WildFlowModelExamDualASR      = "wildflow/exam-replay-dual-asr-v1"
+	WildFlowModelIndexTTS25       = "IndexTTS-2.5"
 	wildFlowIdeogram4Entitlement  = "internal-noncommercial-evaluation-only"
 )
 
@@ -71,6 +72,14 @@ func NormalizeWildFlowJobRequest(request WildFlowJobRequest) (WildFlowJobRequest
 			request.Parameters["guidance_scale"] = float64(7)
 		}
 	case WildFlowModelExamDualASR:
+	case WildFlowModelIndexTTS25, "indextts-2.5", "indextts25-internal", "indextts-2.5@0b328234":
+		request.Model = WildFlowModelIndexTTS25
+		input, hasInput := request.Parameters["input"]
+		_, hasText := request.Parameters["text"]
+		if hasInput && !hasText {
+			request.Parameters["text"] = input
+			delete(request.Parameters, "input")
+		}
 	default:
 		return WildFlowJobRequest{}, ErrWildFlowUnsupportedModel
 	}
@@ -262,6 +271,16 @@ func validateWildFlowRequest(kind string, request WildFlowJobRequest) error {
 	}
 	if request.Model == WildFlowModelIdeogram4MixedV3 {
 		return validateWildFlowIdeogram4Parameters(request.Parameters)
+	}
+	if request.Model == WildFlowModelIndexTTS25 {
+		if len(request.Parameters) != 1 {
+			return ErrWildFlowInvalidParameters
+		}
+		text, ok := request.Parameters["text"].(string)
+		if !ok || text == "" || text != strings.TrimSpace(text) || len([]byte(text)) > 8192 {
+			return ErrWildFlowInvalidParameters
+		}
+		return nil
 	}
 	return validateWildFlowParameters(kind, request.Parameters)
 }
