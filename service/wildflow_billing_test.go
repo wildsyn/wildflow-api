@@ -334,6 +334,9 @@ func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *te
 		},
 	}
 	operation := &model.WildFlowOperation{ProductModelRef: WildFlowModelExamDualASR}
+	artifact.Metadata["model_revision"] = "vibevoice-d0c9efdb-plus-faster-whisper-edaa852e"
+	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
+	artifact.Metadata["model_revision"] = "d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478"
 	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
 	artifact.Metadata["runtime_version_ref"] = "exam-dual-asr-runtime-v1-a09e48e-94da20d"
 	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
