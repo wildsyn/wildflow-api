@@ -230,7 +230,7 @@ func TestQuoteWildFlowBillingRejectsUnsupportedModel(t *testing.T) {
 func TestInternalExamDualASRTrialDoesNotCreateRetailBilling(t *testing.T) {
 	operation := &model.WildFlowOperation{
 		OperationID: "op-internal-asr", ProductModelRef: WildFlowModelInternalASR,
-		ModelVersionRef: WildFlowModelInternalASR, BillingState: model.WildFlowBillingStatePending,
+		ModelVersionRef: WildFlowModelExamDualASR, BillingState: model.WildFlowBillingStatePending,
 		BillingSource: model.WildFlowBillingSourceTeamTrial,
 	}
 	request := WildFlowJobRequest{

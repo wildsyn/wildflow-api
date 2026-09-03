@@ -136,7 +136,7 @@ func TestInternalASRCreateRequiresCallableRuntimeBeforePersistence(t *testing.T)
 		requests++
 		require.Equal(t, "/internal/v1/catalog", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":false}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":false}]}`))
 	}))
 
 	response := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs",
@@ -159,7 +159,7 @@ func TestCreateWildFlowInputArtifactAllowsStandardRegisteredUserTokenAndStreamsF
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/internal/v1/catalog" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":true}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":true}]}`))
 			return
 		}
 		requests++
@@ -222,15 +222,15 @@ func TestCreateInternalASRJobAllowsRegisteredUserTokenAndRemainsUnbilled(t *test
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/internal/v1/catalog" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":true}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":true}]}`))
 			return
 		}
 		require.Equal(t, "/internal/v1/jobs", r.URL.Path)
 		submissions++
 		var body map[string]any
 		require.NoError(t, common.DecodeJson(r.Body, &body))
-		assert.Equal(t, "internal-vibevoice-faster-whisper-asr", body["product_model_ref"])
-		assert.Equal(t, service.WildFlowModelInternalASR, body["model_version_ref"])
+		assert.Equal(t, "exam-replay-dual-asr", body["product_model_ref"])
+		assert.Equal(t, service.WildFlowModelExamDualASR, body["model_version_ref"])
 		assert.Equal(t, []any{"input-1"}, body["input_artifact_ids"])
 		deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
 		require.NoError(t, err)

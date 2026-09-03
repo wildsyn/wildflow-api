@@ -10,7 +10,7 @@ WildFlow site is the internal-user boundary. The anonymous public catalog omits 
 deliberately restricts to selected models continue to honor the platform's existing generic model scope.
 
 The API persists the authenticated model identity while submitting the distinct Runtime offering
-`internal-vibevoice-faster-whisper-asr` to inference. New requests using `wildflow/exam-replay-dual-asr-v1` are
+`exam-replay-dual-asr` with the retained execution identity to inference. New client requests using `wildflow/exam-replay-dual-asr-v1` are
 rejected before persistence or inference; terminal jobs and Artifacts created under that retired identity remain
 read-only.
 

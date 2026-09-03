@@ -66,6 +66,17 @@ func TestWildFlowCatalogIsPublicAndOmitsInternalASR(t *testing.T) {
 				"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内部非商业评测 · 暂不扣零售余额"},
 				"callable":false,
 				"status":"unavailable"
+			},
+			{
+				"id":"Qwen/Qwen3.8-27B-FP8@gpu-4090-06",
+				"display_name":"Qwen3.8-27B (FP8) 对话",
+				"kind":"chat",
+				"vendor":"Qwen",
+				"model_version_ref":"Qwen/Qwen3.8-27B-FP8",
+				"description":"通义千问 27B FP8 对话模型，支持中文问答、代码与思考模式，当前由 WildFlow 四卡 4090 节点提供。",
+				"pricing":{"currency":"CNY","amount":4.38,"unit":"million_tokens","display":"¥4.38 / 百万输入或输出 Token"},
+				"callable":false,
+				"status":"unavailable"
 			}
 		]
 	}`, response.Body.String())

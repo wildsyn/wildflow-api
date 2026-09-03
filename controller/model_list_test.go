@@ -35,7 +35,7 @@ func withCallableWildFlowRuntime(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[
 			{"id":"VoxCPM2","model_version_ref":"openbmb/VoxCPM2","callable":true},
 			{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
-			{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":true}
+			{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":true}
 		]}`))
 	}))
 	t.Cleanup(server.Close)
@@ -564,6 +564,73 @@ func TestListModelsIncludesAuthorizedWildFlowJobModels(t *testing.T) {
 		require.Equal(t, "wildflow", item.OwnedBy)
 		require.Equal(t, []constant.EndpointType{constant.EndpointTypeWildFlowJobs}, item.SupportedEndpointTypes)
 	}
+	require.NotContains(t, modelsByID, "Qwen/Qwen3.8-27B-FP8@gpu-4090-06")
+}
+
+func TestListModelsQwenUsesEnabledChatAbilityContract(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	db := setupModelListControllerTestDB(t)
+
+	originalMemoryCacheEnabled := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = true
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = originalMemoryCacheEnabled
+		model.InvalidatePricingCache()
+	})
+
+	const qwenModel = "Qwen/Qwen3.8-27B-FP8@gpu-4090-06"
+	channel := &model.Channel{
+		Id:     702,
+		Type:   constant.ChannelTypeOpenAI,
+		Key:    "qwen-chat-key",
+		Status: common.ChannelStatusEnabled,
+		Name:   "qwen-chat-channel",
+		Group:  "team",
+		Models: qwenModel,
+	}
+	require.NoError(t, db.Create(channel).Error)
+	require.NoError(t, db.Create(&model.Ability{
+		Group:     "team",
+		Model:     qwenModel,
+		ChannelId: channel.Id,
+		Enabled:   true,
+	}).Error)
+	model.InitChannelCache()
+	model.GetPricing()
+
+	list := func(group string, limits map[string]bool) map[string]dto.OpenAIModels {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		common.SetContextKey(ctx, constant.ContextKeyUserGroup, group)
+		common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+		common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, limits)
+		ListModels(ctx, constant.ChannelTypeOpenAI)
+
+		payload := decodeListModelsPayload(t, recorder)
+		modelsByID := make(map[string]dto.OpenAIModels, len(payload.Data))
+		for _, item := range payload.Data {
+			modelsByID[item.Id] = item
+		}
+		return modelsByID
+	}
+
+	// A canonical website catalog entry alone cannot grant access to chat.
+	require.NotContains(t, list("default", map[string]bool{qwenModel: true}), qwenModel)
+	require.NotContains(t, list("team", map[string]bool{"other-model": true}), qwenModel)
+
+	qwen, ok := list("team", map[string]bool{qwenModel: true})[qwenModel]
+	require.True(t, ok)
+	require.Equal(t, []constant.EndpointType{constant.EndpointTypeOpenAI}, qwen.SupportedEndpointTypes)
+	require.NotContains(t, qwen.SupportedEndpointTypes, constant.EndpointTypeWildFlowJobs)
+
+	// The declared OpenAI endpoint resolves through the same enabled chat
+	// channel that made the model visible.
+	selected, err := model.GetRandomSatisfiedChannel("team", qwenModel, 0, "/v1/chat/completions")
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, channel.Id, selected.Id)
 }
 
 func TestListModelsAppliesTokenLimitsToWildFlowJobModels(t *testing.T) {
@@ -652,7 +719,7 @@ func TestWildFlowModelDirectoryKeepsRuntimeAndTenantVisibilityConsistent(t *test
 		_, _ = w.Write([]byte(`{"data":[
 			{"id":"VoxCPM2","model_version_ref":"openbmb/VoxCPM2","callable":true},
 			{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
-			{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":false},
+			{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":false},
 			{"id":"tenant-a-private","model_version_ref":"private/revision","callable":true}
 		]}`))
 	}))

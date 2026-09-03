@@ -135,6 +135,20 @@ func TestPrepareWildFlowRuntimeParametersInjectsOnlyTrustedIdeogramEntitlement(t
 	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
 }
 
+func TestWildFlowDurableJobOfferingRejectsQwenChatCatalogEntry(t *testing.T) {
+	t.Parallel()
+
+	offering, ok := findWildFlowJobOffering("Qwen/Qwen3.8-27B-FP8@gpu-4090-06")
+	require.False(t, ok)
+	require.Empty(t, offering.ID)
+
+	_, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
+		Model:      "Qwen/Qwen3.8-27B-FP8@gpu-4090-06",
+		Parameters: map[string]any{"input": "hello"},
+	})
+	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
+}
+
 func TestValidateWildFlowParametersAcceptsEveryDocumentedVoice(t *testing.T) {
 	t.Parallel()
 
@@ -197,7 +211,7 @@ func TestCanonicalWildFlowCatalogUsesInternalASRIdentity(t *testing.T) {
 
 	public, visible := FindWildFlowOffering("wildflow/internal-vibevoice-faster-whisper-asr-v1")
 	require.True(t, visible)
-	require.Equal(t, "wildflow/internal-vibevoice-faster-whisper-asr-v1", public.ModelVersionRef)
+	require.Equal(t, WildFlowModelExamDualASR, public.ModelVersionRef)
 	_, legacyVisible := FindWildFlowOffering(WildFlowModelExamDualASR)
 	require.False(t, legacyVisible)
 }
@@ -207,10 +221,10 @@ func TestResolveWildFlowRuntimeOfferingRefKeepsPublicAndRuntimeIdentityDistinct(
 
 	runtimeRef, err := ResolveWildFlowRuntimeOfferingRef(
 		"wildflow/internal-vibevoice-faster-whisper-asr-v1",
-		"wildflow/internal-vibevoice-faster-whisper-asr-v1",
+		WildFlowModelExamDualASR,
 	)
 	require.NoError(t, err)
-	require.Equal(t, "internal-vibevoice-faster-whisper-asr", runtimeRef)
+	require.Equal(t, "exam-replay-dual-asr", runtimeRef)
 
 	runtimeRef, err = ResolveWildFlowRuntimeOfferingRef(
 		WildFlowModelIdeogram4MixedV3,

@@ -19,7 +19,8 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 			{"id":"VoxCPM2","model_version_ref":"openbmb/VoxCPM2","callable":true},
 			{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
 			{"id":"ideogram-4-mixed-v3","model_version_ref":"ideogram-4-mixed-v3@bbee2ab2","callable":true},
-			{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":true},
+			{"id":"qwen3.8-27b-fp8","model_version_ref":"Qwen/Qwen3.8-27B-FP8","callable":true},
+			{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":true},
 			{"id":"untrusted-extra","model_version_ref":"other/model","callable":true}
 		]}`))
 	}))
@@ -29,21 +30,26 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 
 	catalog := GetWildFlowCatalog(context.Background())
 
-	require.Len(t, catalog, 4)
-	assert.Equal(t, []string{"VoxCPM2", "FLUX.2 [klein] 4B", WildFlowModelIdeogram4MixedV3, WildFlowModelInternalASR}, []string{
-		catalog[0].ID, catalog[1].ID, catalog[2].ID, catalog[3].ID,
+	require.Len(t, catalog, 5)
+	assert.Equal(t, []string{"VoxCPM2", "FLUX.2 [klein] 4B", WildFlowModelIdeogram4MixedV3, "Qwen/Qwen3.8-27B-FP8@gpu-4090-06", WildFlowModelInternalASR}, []string{
+		catalog[0].ID, catalog[1].ID, catalog[2].ID, catalog[3].ID, catalog[4].ID,
 	})
 	assert.True(t, catalog[0].Callable)
 	assert.True(t, catalog[1].Callable)
 	assert.True(t, catalog[2].Callable)
 	assert.True(t, catalog[3].Callable)
+	assert.True(t, catalog[4].Callable)
 	assert.Equal(t, "openbmb/VoxCPM2", catalog[0].ModelVersionRef)
 	assert.Equal(t, "¥0.8 / 万字符", catalog[0].Pricing.Display)
 	assert.Equal(t, "ideogram-4-mixed-v3@bbee2ab2", catalog[2].ModelVersionRef)
 	assert.Equal(t, "team_trial", catalog[2].Pricing.Unit)
 	assert.Contains(t, catalog[2].Description, "非商业")
-	assert.Equal(t, "asr", catalog[3].Kind)
-	assert.Equal(t, "公司内部使用 · 不对外定价", catalog[3].Pricing.Display)
+	assert.Equal(t, "chat", catalog[3].Kind)
+	assert.Equal(t, "Qwen/Qwen3.8-27B-FP8", catalog[3].ModelVersionRef)
+	assert.Equal(t, "¥4.38 / 百万输入或输出 Token", catalog[3].Pricing.Display)
+	assert.Equal(t, "asr", catalog[4].Kind)
+	assert.Equal(t, WildFlowModelExamDualASR, catalog[4].ModelVersionRef)
+	assert.Equal(t, "公司内部使用 · 不对外定价", catalog[4].Pricing.Display)
 }
 
 func TestGetPublicWildFlowCatalogOmitsInternalASR(t *testing.T) {
@@ -55,7 +61,7 @@ func TestGetPublicWildFlowCatalogOmitsInternalASR(t *testing.T) {
 		assert.NotEqual(t, WildFlowModelInternalASR, offering.ID)
 		assert.NotEqual(t, WildFlowModelExamDualASR, offering.ID)
 	}
-	require.Len(t, public, 3)
+	require.Len(t, public, 4)
 }
 
 func TestGetWildFlowCatalogFailsClosedButStillDisplaysCanonicalModels(t *testing.T) {
@@ -64,7 +70,7 @@ func TestGetWildFlowCatalogFailsClosedButStillDisplaysCanonicalModels(t *testing
 
 	catalog := GetWildFlowCatalog(context.Background())
 
-	require.Len(t, catalog, 4)
+	require.Len(t, catalog, 5)
 	for _, offering := range catalog {
 		assert.False(t, offering.Callable)
 		assert.Equal(t, "unavailable", offering.Status)
