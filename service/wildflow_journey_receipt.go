@@ -333,7 +333,7 @@ func wildFlowJourneyOperationBillingMode(
 		operation.BillingAmountMicros > 0 && operation.BillingUnit == "audio_millisecond" &&
 		operation.BillingBillableUnits == usage.Quantity && usage.Quantity > 0 &&
 		operation.BillingQuotaPerUnit != "" && operation.BillingUSDExchangeRate != "" &&
-		operation.BillingPriceVersion == wildFlowRetailPriceVersion && operation.BillingSettledTime > 0 {
+		supportedWildFlowRetailPriceVersion(operation.BillingPriceVersion) && operation.BillingSettledTime > 0 {
 		return "retail_audio_duration", true
 	}
 	return "", false

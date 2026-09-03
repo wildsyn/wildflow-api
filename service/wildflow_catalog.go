@@ -121,7 +121,7 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 		Description:        "同时输出分段转写与逐词时间戳，适用于通用音频转写、字幕整理和检索。",
 		RequiredParameters: []string{"input_artifact_ids"},
 		Pricing: WildFlowCatalogPricing{
-			Currency: "CNY", Amount: 0.10, Unit: "audio_minute", Display: "¥0.10 / 音频分钟",
+			Currency: "CNY", Amount: 0.05, Unit: "audio_minute", Display: "¥0.05 / 音频分钟",
 		},
 	},
 	{

@@ -61,14 +61,14 @@ func TestQuoteWildFlowBillingUsesRetailCNYPrices(t *testing.T) {
 			quota:        3_425,
 		},
 		{
-			name: "dual ASR preauthorizes the two hour maximum at 0.10 CNY per audio minute",
+			name: "dual ASR preauthorizes the two hour maximum at 0.05 CNY per audio minute",
 			request: WildFlowJobRequest{
 				Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
 			},
-			amountMicros: 12_000_000,
+			amountMicros: 6_000_000,
 			billingUnit:  "audio_millisecond",
 			billableUnit: 7_200_000,
-			quota:        821_918,
+			quota:        410_959,
 		},
 	}
 
