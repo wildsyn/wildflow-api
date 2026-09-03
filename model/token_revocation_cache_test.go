@@ -221,7 +221,7 @@ func TestTokenReEnableClearsFenceAndRecaches(t *testing.T) {
 	token.Status = common.TokenStatusDisabled
 	require.NoError(t, token.UpdateStatus(common.TokenStatusEnabled))
 	_, err := ValidateUserToken(token.Key)
-	require.ErrorIs(t, ErrTokenInvalid, err)
+	require.ErrorIs(t, err, ErrTokenInvalid)
 
 	// While the fence is alive, a fill must not resurrect the disabled token.
 	err = cacheSetTokenRespectingRevocation(*token)

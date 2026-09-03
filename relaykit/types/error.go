@@ -35,6 +35,11 @@ const (
 	ErrorTypeUpstreamError   ErrorType = "upstream_error"
 )
 
+// ErrProviderNotDispatched marks a local relay failure that happened before
+// any transport attempt. It lets billing release only reservations that are
+// provably unsent without treating network failures as safe to refund.
+var ErrProviderNotDispatched = errors.New("provider not dispatched")
+
 type ErrorCode string
 
 const (
@@ -65,6 +70,19 @@ const (
 	ErrorCodeConvertRequestFailed  ErrorCode = "convert_request_failed"
 	ErrorCodeAccessDenied          ErrorCode = "access_denied"
 
+	// token auth error codes: stable machine codes for relay requests
+	// authenticated with an API key. token_not_provided has its own missing-key
+	// message; unknown and ordinary invalid keys both use token_invalid with the
+	// same response so an unauthorized caller cannot probe key
+	// existence. token_expired,
+	// token_disabled and token_quota_exhausted are only returned for keys the
+	// caller already demonstrated possession of.
+	ErrorCodeTokenNotProvided    ErrorCode = "token_not_provided"
+	ErrorCodeTokenInvalid        ErrorCode = "token_invalid"
+	ErrorCodeTokenExpired        ErrorCode = "token_expired"
+	ErrorCodeTokenDisabled       ErrorCode = "token_disabled"
+	ErrorCodeTokenQuotaExhausted ErrorCode = "token_quota_exhausted"
+
 	// request error
 	ErrorCodeBadRequestBody ErrorCode = "bad_request_body"
 
@@ -88,14 +106,38 @@ const (
 )
 
 type NewAPIError struct {
-	Err            error
-	RelayError     any
-	skipRetry      bool
-	recordErrorLog *bool
-	errorType      ErrorType
-	errorCode      ErrorCode
-	StatusCode     int
-	Metadata       json.RawMessage
+	Err             error
+	RelayError      any
+	providerFailure bool
+	providerUnsent  bool
+	skipRetry       bool
+	recordErrorLog  *bool
+	errorType       ErrorType
+	errorCode       ErrorCode
+	StatusCode      int
+	Metadata        json.RawMessage
+}
+
+// MarkProviderFailure records that an upstream HTTP response explicitly
+// rejected the request. Transport failures and malformed successful responses
+// intentionally do not set this bit: they leave Provider side effects unknown.
+func (e *NewAPIError) MarkProviderFailure() *NewAPIError {
+	if e != nil {
+		e.providerFailure = true
+	}
+	return e
+}
+
+// IsProviderFailure reports whether the relay received an explicit upstream
+// failure response, so the caller can safely release a pre-consumption.
+func (e *NewAPIError) IsProviderFailure() bool {
+	return e != nil && e.providerFailure
+}
+
+// IsProviderUnsent reports that the relay failed before attempting an
+// upstream transport operation.
+func (e *NewAPIError) IsProviderUnsent() bool {
+	return e != nil && e.providerUnsent
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.
@@ -245,17 +287,21 @@ func NewError(err error, errorCode ErrorCode, ops ...NewAPIErrorOptions) *NewAPI
 	var newErr *NewAPIError
 	// 保留深层传递的 new err
 	if errors.As(err, &newErr) {
+		if errors.Is(err, ErrProviderNotDispatched) {
+			newErr.providerUnsent = true
+		}
 		for _, op := range ops {
 			op(newErr)
 		}
 		return newErr
 	}
 	e := &NewAPIError{
-		Err:        err,
-		RelayError: nil,
-		errorType:  ErrorTypeNewAPIError,
-		StatusCode: http.StatusInternalServerError,
-		errorCode:  errorCode,
+		Err:            err,
+		RelayError:     nil,
+		providerUnsent: errors.Is(err, ErrProviderNotDispatched),
+		errorType:      ErrorTypeNewAPIError,
+		StatusCode:     http.StatusInternalServerError,
+		errorCode:      errorCode,
 	}
 	for _, op := range ops {
 		op(e)
@@ -267,6 +313,9 @@ func NewOpenAIError(err error, errorCode ErrorCode, statusCode int, ops ...NewAP
 	var newErr *NewAPIError
 	// 保留深层传递的 new err
 	if errors.As(err, &newErr) {
+		if errors.Is(err, ErrProviderNotDispatched) {
+			newErr.providerUnsent = true
+		}
 		if newErr.RelayError == nil {
 			openaiError := OpenAIError{
 				Message: newErr.Error(),
@@ -285,7 +334,9 @@ func NewOpenAIError(err error, errorCode ErrorCode, statusCode int, ops ...NewAP
 		Type:    string(errorCode),
 		Code:    errorCode,
 	}
-	return WithOpenAIError(openaiError, statusCode, ops...)
+	result := WithOpenAIError(openaiError, statusCode, ops...)
+	result.providerUnsent = errors.Is(err, ErrProviderNotDispatched)
+	return result
 }
 
 func InitOpenAIError(errorCode ErrorCode, statusCode int, ops ...NewAPIErrorOptions) *NewAPIError {

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -77,6 +78,9 @@ func openTokenControllerTestDB(t *testing.T) *gorm.DB {
 
 	gin.SetMode(gin.TestMode)
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	// Refresh dialect column names for tests that exercise code paths using
+	// the reserved-word column helpers (e.g. TokenAuth's key lookup).
+	model.InitCol()
 	common.RedisEnabled = false
 
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
@@ -107,6 +111,10 @@ func migrateTokenControllerTestDB(t *testing.T, db *gorm.DB) {
 
 func setupTokenControllerTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+
+	// Token validation errors are localized; make sure the i18n bundle is
+	// loaded even when this package's tests run without main.go bootstrap.
+	require.NoError(t, i18n.Init())
 
 	db := openTokenControllerTestDB(t)
 	migrateTokenControllerTestDB(t, db)

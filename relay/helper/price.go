@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -40,6 +41,11 @@ const claudeCacheCreation1hMultiplier = 6 / 3.75
 // used for tiered expression pre-consume when the client omits max_tokens, so
 // the pre-consumed quota still reflects a plausible output cost in paid groups.
 const defaultTieredPreConsumeMaxTokens = 8192
+
+// defaultStandardPreConsumeMaxTokens is the execution limit injected into
+// standard text-completion requests that omit a completion limit. It must stay
+// small enough for normal requests and is billed exactly as it is sent upstream.
+const defaultStandardPreConsumeMaxTokens = 8192
 
 // HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hosttypes.GroupRatioInfo {
@@ -92,9 +98,27 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	var audioCompletionRatio float64
 	var freeModel bool
 	if !usePrice {
-		preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
-		if meta.MaxTokens != 0 {
-			preConsumedTokens += meta.MaxTokens
+		preConsumedPromptTokens := common.Max(promptTokens, common.PreConsumedQuota)
+		completionTokens := meta.MaxTokens
+		isTextCompletion := false
+		switch info.RelayMode {
+		case relayconstant.RelayModeChatCompletions,
+			relayconstant.RelayModeCompletions,
+			relayconstant.RelayModeEdits,
+			relayconstant.RelayModeResponses,
+			relayconstant.RelayModeResponsesCompact:
+			isTextCompletion = meta.TokenType != types.TokenTypeImage && meta.ImagePriceRatio == 0
+		}
+		geminiAction := strings.ToLower(strings.SplitN(info.RequestURLPath, "?", 2)[0])
+		isGeminiEmbedding := strings.HasSuffix(geminiAction, ":embedcontent") || strings.HasSuffix(geminiAction, ":batchembedcontents")
+		if info.RelayFormat == types.RelayFormatClaude ||
+			(info.RelayFormat == types.RelayFormatGemini && !isGeminiEmbedding) {
+			isTextCompletion = meta.TokenType != types.TokenTypeImage && meta.ImagePriceRatio == 0
+		}
+		if completionTokens == 0 && isTextCompletion {
+			// Image requests are capped by their validated image multipliers rather
+			// than completion tokens, so no completion reservation belongs there.
+			completionTokens = defaultStandardPreConsumeMaxTokens
 		}
 		var success bool
 		var matchName string
@@ -118,7 +142,14 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		audioRatio = ratio_setting.GetAudioRatio(info.OriginModelName)
 		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
 		ratio := modelRatio * groupRatioInfo.GroupRatio
-		quota, err := common.QuotaFromFloatStrict(float64(preConsumedTokens) * ratio)
+		// Keep the reservation formula aligned with text settlement: completion
+		// tokens have their own price multiplier. Requests parsed by the relay
+		// receive this same default before their upstream body is constructed.
+		preConsumedQuotaBeforeRatio := float64(preConsumedPromptTokens)
+		if isTextCompletion {
+			preConsumedQuotaBeforeRatio += float64(completionTokens) * completionRatio
+		}
+		quota, err := common.QuotaFromFloatStrict(preConsumedQuotaBeforeRatio * ratio)
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}

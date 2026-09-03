@@ -143,7 +143,7 @@ func VideoProxy(c *gin.Context) {
 	}
 	if validateErr != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Video URL blocked for task %s: %v", taskID, validateErr))
-		videoProxyError(c, http.StatusForbidden, "server_error", fmt.Sprintf("request blocked: %v", validateErr))
+		videoProxyError(c, http.StatusForbidden, "server_error", "Request blocked")
 		return
 	}
 

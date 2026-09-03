@@ -78,6 +78,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError *types.NewAPIError
 		ws          *websocket.Conn
 	)
+	type providerOutcome uint8
+	const (
+		providerUnsent providerOutcome = iota
+		providerUnknown
+		providerExplicitFailure
+	)
+	providerResult := providerUnsent
 
 	if relayFormat == types.RelayFormatOpenAIRealtime {
 		var err error
@@ -175,7 +182,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			newAPIError = service.NormalizeViolationFeeError(newAPIError)
 			if relayInfo.Billing != nil {
-				relayInfo.Billing.Refund(c)
+				switch providerResult {
+				case providerUnsent:
+					relayInfo.Billing.RefundUnsent(c)
+				case providerExplicitFailure:
+					relayInfo.Billing.Refund(c)
+				}
 			}
 			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
 		}
@@ -226,6 +238,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				break
 			}
 		}
+		providerResult = providerUnknown
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -242,13 +255,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			relayInfo.LastError = nil
 			return
 		}
+		if newAPIError.IsProviderFailure() {
+			providerResult = providerExplicitFailure
+		} else if newAPIError.IsProviderUnsent() || isProvablyUnsentRelayError(newAPIError) {
+			providerResult = providerUnsent
+		}
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if providerResult == providerUnknown || !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
 	}
@@ -262,6 +280,26 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		gopool.Go(func() {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
+	}
+}
+
+// isProvablyUnsentRelayError covers handler-local request construction that
+// precedes every HTTP/WS adaptor call. These stable error codes are emitted
+// while mapping, converting, or overriding the outbound request; no Provider
+// transport has been attempted yet, so releasing the reservation is safe.
+func isProvablyUnsentRelayError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	switch err.GetErrorCode() {
+	case types.ErrorCodeInvalidApiType,
+		types.ErrorCodeChannelModelMappedError,
+		types.ErrorCodeChannelParamOverrideInvalid,
+		types.ErrorCodeChannelHeaderOverrideInvalid,
+		types.ErrorCodeConvertRequestFailed:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -298,6 +336,8 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 		meta.MaxTokens = int(lo.FromPtrOr(r.MaxOutputTokens, uint(0)))
 	case *dto.ClaudeRequest:
 		meta.MaxTokens = int(lo.FromPtr(r.MaxTokens))
+	case *dto.GeminiChatRequest:
+		meta.MaxTokens = int(lo.FromPtr(r.GenerationConfig.MaxOutputTokens))
 	case *dto.ImageRequest:
 		// Pricing for image requests depends on ImagePriceRatio; safe to compute even when CountToken is disabled.
 		return r.GetTokenCountMeta()
