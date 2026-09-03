@@ -176,7 +176,7 @@ func appendWildFlowJobModels(c *gin.Context, models []dto.OpenAIModels) []dto.Op
 		seen[item.Id] = true
 	}
 	for _, offering := range service.ListCanonicalWildFlowOfferings() {
-		if seen[offering.ID] || !wildFlowTokenAllowsModel(c, offering.ID) {
+		if !service.IsWildFlowDurableJobOffering(offering) || seen[offering.ID] || !wildFlowTokenAllowsModel(c, offering.ID) {
 			continue
 		}
 		models = append(models, dto.OpenAIModels{
@@ -352,7 +352,7 @@ func EnabledListModels(c *gin.Context) {
 
 func RetrieveModel(c *gin.Context, modelType int) {
 	modelId := c.Param("model")
-	if offering, ok := service.FindWildFlowOffering(modelId); ok {
+	if offering, ok := service.FindWildFlowOffering(modelId); ok && service.IsWildFlowDurableJobOffering(offering) {
 		if modelType == constant.ChannelTypeOpenAI && wildFlowTokenAllowsModel(c, offering.ID) {
 			c.JSON(200, dto.OpenAIModels{
 				Id:                     offering.ID,

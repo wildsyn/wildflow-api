@@ -87,6 +87,31 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 		},
 	},
 	{
+		ID:                 WildFlowModelIdeogram4MixedV3,
+		DisplayName:        "Ideogram 4 mixed-v3",
+		Kind:               "image",
+		Vendor:             "Ideogram",
+		ModelVersionRef:    "ideogram-4-mixed-v3@bbee2ab2",
+		RuntimeOfferingID:  "ideogram-4-mixed-v3",
+		Description:        "Ideogram 4 图片生成，仅限团队内部非商业评测使用，不提供商用承诺。",
+		RequiredParameters: []string{"prompt", "width", "height", "seed", "steps"},
+		Pricing: WildFlowCatalogPricing{
+			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内部非商业评测 · 暂不扣零售余额",
+		},
+	},
+	{
+		ID:                "Qwen/Qwen3.8-27B-FP8@gpu-4090-06",
+		DisplayName:       "Qwen3.8-27B (FP8) 对话",
+		Kind:              "chat",
+		Vendor:            "Qwen",
+		ModelVersionRef:   "Qwen/Qwen3.8-27B-FP8",
+		RuntimeOfferingID: "qwen3.8-27b-fp8",
+		Description:       "通义千问 27B FP8 对话模型，支持中文问答、代码与思考模式，当前由 WildFlow 四卡 4090 节点提供。",
+		Pricing: WildFlowCatalogPricing{
+			Currency: "CNY", Amount: 4.38, Unit: "million_tokens", Display: "¥4.38 / 百万输入或输出 Token",
+		},
+	},
+	{
 		ID:                 WildFlowModelExamDualASR,
 		DisplayName:        "直播回放双 ASR",
 		Kind:               "asr",
@@ -105,6 +130,18 @@ func ListCanonicalWildFlowOfferings() []WildFlowOffering {
 	offerings := make([]WildFlowOffering, len(canonicalWildFlowCatalog))
 	copy(offerings, canonicalWildFlowCatalog)
 	return offerings
+}
+
+// IsWildFlowDurableJobOffering reports whether an offering is implemented by
+// the first-party durable Job API. Chat offerings use the ordinary New API
+// channel distributor instead and must not be advertised as /v1/jobs models.
+func IsWildFlowDurableJobOffering(offering WildFlowOffering) bool {
+	switch offering.Kind {
+	case "tts", "image", "asr":
+		return true
+	default:
+		return false
+	}
 }
 
 func GetWildFlowCatalog(ctx context.Context) []WildFlowOffering {
