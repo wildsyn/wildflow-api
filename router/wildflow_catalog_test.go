@@ -87,9 +87,21 @@ func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T
 				"description":"同时输出分段转写与逐词时间戳，适用于直播回放、课程和访谈素材；当前为团队内测。",
 				"required_parameters":["input_artifact_ids"],
 				"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内测 · 暂不扣零售余额"},
-				"callable":false,
-				"status":"unavailable"
-			}
+					"callable":false,
+					"status":"unavailable"
+				},
+				{
+					"id":"IndexTTS-2.5",
+					"display_name":"IndexTTS-2.5",
+					"kind":"tts",
+					"vendor":"IndexTeam",
+					"model_version_ref":"indextts-2.5@0b328234",
+					"description":"固定服务端参考音频的 IndexTTS-2.5 语音合成，仅供团队内部使用。",
+					"required_parameters":["text"],
+					"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内部使用 · 暂不扣零售余额"},
+					"callable":false,
+					"status":"unavailable"
+				}
 		]
 	}`, response.Body.String())
 }

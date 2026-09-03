@@ -194,6 +194,9 @@ func ValidateWildFlowCompletedArtifacts(operation *model.WildFlowOperation, arti
 	if operation.ProductModelRef == WildFlowModelExamDualASR {
 		return validateWildFlowExamDualASRArtifact(artifacts)
 	}
+	if operation.ProductModelRef == WildFlowModelIndexTTS25 {
+		return validateWildFlowIndexTTS25Artifact(artifacts)
+	}
 	if operation.ProductModelRef != WildFlowModelVoxCPM2 {
 		return nil
 	}
@@ -234,6 +237,35 @@ func ValidateWildFlowCompletedArtifacts(operation *model.WildFlowOperation, arti
 		!completedSegmentOK || completedSegmentCount != segmentCount ||
 		!sizeOK || metadataSize != artifact.SizeBytes ||
 		!shaOK || !validWildFlowSHA256(metadataSHA256) || !strings.EqualFold(metadataSHA256, artifact.SHA256) {
+		return ErrWildFlowInvalidArtifact
+	}
+	return nil
+}
+
+func validateWildFlowIndexTTS25Artifact(artifacts []inferenceclient.Artifact) error {
+	if len(artifacts) != 1 {
+		return ErrWildFlowInvalidArtifact
+	}
+	artifact := artifacts[0]
+	if artifact.MediaType != "audio/wav" || artifact.SizeBytes <= 0 || !validWildFlowSHA256(artifact.SHA256) {
+		return ErrWildFlowInvalidArtifact
+	}
+	codec, codecOK := artifact.Metadata["codec"].(string)
+	sampleRate, sampleRateOK := wildFlowArtifactInteger(artifact.Metadata["sample_rate"])
+	channels, channelsOK := wildFlowArtifactInteger(artifact.Metadata["channels"])
+	duration, durationOK := wildFlowArtifactInteger(artifact.Metadata["duration_ms"])
+	metadataSize, sizeOK := wildFlowArtifactInteger(artifact.Metadata["size_bytes"])
+	metadataSHA256, shaOK := artifact.Metadata["sha256"].(string)
+	language, languageOK := artifact.Metadata["lang"].(string)
+	referenceMode, referenceModeOK := artifact.Metadata["reference_audio_mode"].(string)
+	if !codecOK || codec != "pcm_s16le" ||
+		!sampleRateOK || sampleRate < 8_000 || sampleRate > 192_000 ||
+		!channelsOK || channels < 1 || channels > 2 ||
+		!durationOK || duration <= 0 ||
+		!sizeOK || metadataSize != artifact.SizeBytes ||
+		!shaOK || !validWildFlowSHA256(metadataSHA256) || !strings.EqualFold(metadataSHA256, artifact.SHA256) ||
+		!languageOK || language != "zh" ||
+		!referenceModeOK || referenceMode != "server_fixed" {
 		return ErrWildFlowInvalidArtifact
 	}
 	return nil

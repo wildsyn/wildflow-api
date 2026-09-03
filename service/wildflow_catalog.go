@@ -124,6 +124,21 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内测 · 暂不扣零售余额",
 		},
 	},
+	{
+		ID:                WildFlowModelIndexTTS25,
+		DisplayName:       "IndexTTS-2.5",
+		Kind:              "tts",
+		Vendor:            "IndexTeam",
+		ModelVersionRef:   "indextts-2.5@0b328234",
+		RuntimeOfferingID: "indextts25-internal",
+		Description:       "固定服务端参考音频的 IndexTTS-2.5 语音合成，仅供团队内部使用。",
+		RequiredParameters: []string{
+			"text",
+		},
+		Pricing: WildFlowCatalogPricing{
+			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内部使用 · 暂不扣零售余额",
+		},
+	},
 }
 
 func ListCanonicalWildFlowOfferings() []WildFlowOffering {

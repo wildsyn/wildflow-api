@@ -359,3 +359,33 @@ func TestValidateWildFlowCompletedArtifactsPreservesFluxArtifactContract(t *test
 	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
 	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, nil), ErrWildFlowMissingArtifact)
 }
+
+func TestValidateWildFlowCompletedArtifactsRequiresVersionedIndexTTSWAV(t *testing.T) {
+	operation := &model.WildFlowOperation{ProductModelRef: WildFlowModelIndexTTS25}
+	artifact := inferenceclient.Artifact{
+		ID:        "artifact-indextts",
+		JobID:     "job-indextts",
+		MediaType: "audio/wav",
+		SizeBytes: 209452,
+		SHA256:    strings.Repeat("a", 64),
+		Metadata: map[string]any{
+			"codec":                "pcm_s16le",
+			"sample_rate":          float64(24000),
+			"channels":             float64(1),
+			"duration_ms":          float64(4362),
+			"size_bytes":           float64(209452),
+			"sha256":               strings.Repeat("a", 64),
+			"lang":                 "zh",
+			"reference_audio_mode": "server_fixed",
+		},
+	}
+
+	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
+	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact, artifact}), ErrWildFlowInvalidArtifact)
+
+	artifact.Metadata["reference_audio_mode"] = "client_supplied"
+	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
+	artifact.Metadata["reference_audio_mode"] = "server_fixed"
+	artifact.Metadata["sha256"] = strings.Repeat("b", 64)
+	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
+}

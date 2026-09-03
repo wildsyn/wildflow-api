@@ -81,6 +81,46 @@ func TestNormalizeWildFlowJobRequestKeepsCanonicalModelsAndMapsLegacyAliases(t *
 	require.Equal(t, float64(7), ideogram.Parameters["guidance_scale"])
 }
 
+func TestNormalizeAndValidateIndexTTS25InternalRequest(t *testing.T) {
+	t.Parallel()
+
+	request, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
+		Model:      "indextts-2.5",
+		Parameters: map[string]any{"input": "野生流动内部语音测试"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, WildFlowModelIndexTTS25, request.Model)
+	require.Equal(t, "野生流动内部语音测试", request.Parameters["text"])
+	assert.NotContains(t, request.Parameters, "input")
+	offering, ok := findWildFlowJobOffering(request.Model)
+	require.True(t, ok)
+	require.Equal(t, "tts", offering.Kind)
+	require.Equal(t, "indextts-2.5@0b328234", offering.ModelVersionRef)
+	require.Equal(t, "indextts25-internal", offering.RuntimeOfferingID)
+	require.True(t, IsWildFlowTeamTrialOffering(request.Model))
+	require.NoError(t, validateWildFlowRequest(offering.Kind, request))
+
+	runtimeRef, err := ResolveWildFlowRuntimeOfferingRef(request.Model, offering.ModelVersionRef)
+	require.NoError(t, err)
+	require.Equal(t, "indextts25-internal", runtimeRef)
+
+	invalid := []map[string]any{
+		{"text": ""},
+		{"text": " ok "},
+		{"text": "ok", "reference_audio": "user.wav"},
+		{"text": "ok", "voice": "custom"},
+		{"text": "ok", "lang": "en"},
+		{"text": strings.Repeat("x", 8193)},
+	}
+	for _, parameters := range invalid {
+		candidate, normalizeErr := NormalizeWildFlowJobRequest(WildFlowJobRequest{
+			Model: WildFlowModelIndexTTS25, Parameters: parameters,
+		})
+		require.NoError(t, normalizeErr)
+		require.ErrorIs(t, validateWildFlowRequest("tts", candidate), ErrWildFlowInvalidParameters)
+	}
+}
+
 func TestValidateWildFlowIdeogram4Parameters(t *testing.T) {
 	t.Parallel()
 
