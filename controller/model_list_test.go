@@ -732,7 +732,7 @@ func TestWildFlowModelDirectoryKeepsRuntimeAndTenantVisibilityConsistent(t *test
 	for _, offering := range catalog {
 		byID[offering.ID] = offering
 	}
-	require.Len(t, byID, 4)
+	require.Len(t, byID, 5)
 	assert.True(t, byID["VoxCPM2"].Callable)
 	assert.True(t, byID["FLUX.2 [klein] 4B"].Callable)
 	assert.False(t, byID[service.WildFlowModelInternalASR].Callable)

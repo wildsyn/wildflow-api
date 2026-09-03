@@ -263,7 +263,9 @@ func ListModels(c *gin.Context, modelType int) {
 	canonicalWildFlowOfferings := service.ListCanonicalWildFlowOfferings()
 	canonicalWildFlowIDs := make(map[string]struct{}, len(canonicalWildFlowOfferings))
 	for _, offering := range canonicalWildFlowOfferings {
-		canonicalWildFlowIDs[offering.ID] = struct{}{}
+		if service.IsWildFlowDurableJobOffering(offering) {
+			canonicalWildFlowIDs[offering.ID] = struct{}{}
+		}
 	}
 	models := service.GetGroupsEnabledModels(ownerGroups)
 	for _, modelName := range models {
