@@ -650,9 +650,13 @@ func TestWildFlowMultiAccountBillingStaysIsolatedAcrossSameKeyReplays(t *testing
 	createdA := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, accountAHeaders)
 	replayedA := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, accountAHeaders)
 	createdB := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, accountBHeaders)
+	replayedB := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, accountBHeaders)
 	require.Equal(t, http.StatusAccepted, createdA.Code, createdA.Body.String())
 	require.Equal(t, http.StatusAccepted, replayedA.Code, replayedA.Body.String())
 	require.Equal(t, http.StatusAccepted, createdB.Code, createdB.Body.String())
+	require.Equal(t, http.StatusAccepted, replayedB.Code, replayedB.Body.String())
+	assert.Equal(t, createdA.Header().Get("Location"), replayedA.Header().Get("Location"))
+	assert.Equal(t, createdB.Header().Get("Location"), replayedB.Header().Get("Location"))
 	assert.Equal(t, int32(2), submissions.Load(), "one submission per account despite the shared idempotency key")
 
 	operationA := strings.TrimPrefix(createdA.Header().Get("Location"), "/v1/jobs/")
@@ -698,8 +702,23 @@ func TestWildFlowMultiAccountBillingStaysIsolatedAcrossSameKeyReplays(t *testing
 	assert.Equal(t, 1_000_000, tokenB.RemainQuota)
 	assert.Equal(t, model.WildFlowBillingStateSettled, settled.BillingState)
 	assert.Equal(t, model.WildFlowBillingStateRefunded, refunded.BillingState)
+	assert.Equal(t, 7, settled.TokenID)
+	assert.Equal(t, 8, refunded.TokenID)
 	assert.Equal(t, "usage-account-a", settled.BillingUsageEventID)
 	assert.Empty(t, refunded.BillingUsageEventID)
+	for _, entry := range []struct {
+		operationID string
+		logType     int
+	}{
+		{operationA, model.LogTypeConsume},
+		{operationB, model.LogTypeRefund},
+	} {
+		var count int64
+		require.NoError(t, model.DB.Model(&model.WildFlowBillingLogEntry{}).
+			Where("operation_id = ? AND log_type = ?", entry.operationID, entry.logType).
+			Count(&count).Error)
+		assert.Equal(t, int64(1), count)
+	}
 }
 
 func TestRecoveryRequiredWildFlowJobKeepsReservation(t *testing.T) {
