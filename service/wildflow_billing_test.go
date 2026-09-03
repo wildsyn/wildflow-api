@@ -60,6 +60,16 @@ func TestQuoteWildFlowBillingUsesRetailCNYPrices(t *testing.T) {
 			billableUnit: 1,
 			quota:        3_425,
 		},
+		{
+			name: "dual ASR preauthorizes the two hour maximum at 0.10 CNY per audio minute",
+			request: WildFlowJobRequest{
+				Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
+			},
+			amountMicros: 12_000_000,
+			billingUnit:  "audio_millisecond",
+			billableUnit: 7_200_000,
+			quota:        821_918,
+		},
 	}
 
 	for _, test := range tests {
@@ -227,26 +237,14 @@ func TestQuoteWildFlowBillingRejectsUnsupportedModel(t *testing.T) {
 	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
 }
 
-func TestInternalExamDualASRTrialDoesNotCreateRetailBilling(t *testing.T) {
-	operation := &model.WildFlowOperation{
-		OperationID: "op-internal-asr", ProductModelRef: WildFlowModelExamDualASR,
-		ModelVersionRef: WildFlowModelExamDualASR, BillingState: model.WildFlowBillingStatePending,
-		BillingSource: model.WildFlowBillingSourceTeamTrial,
-	}
+func TestDualASRUsesRetailBilling(t *testing.T) {
 	request := WildFlowJobRequest{
 		Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
 	}
-
-	reserved, err := ReserveWildFlowOperationBilling(operation, request)
+	quote, err := QuoteWildFlowBilling(request)
 	require.NoError(t, err)
-	assert.Same(t, operation, reserved)
-	assert.Equal(t, model.WildFlowBillingStatePending, reserved.BillingState)
-	assert.Equal(t, model.WildFlowBillingSourceTeamTrial, reserved.BillingSource)
-	_, err = QuoteWildFlowBilling(request)
-	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
-	operation.BillingState = model.WildFlowBillingStateReserved
-	_, err = ReserveWildFlowOperationBilling(operation, request)
-	require.ErrorIs(t, err, model.ErrWildFlowBillingStateConflict)
+	assert.Equal(t, "audio_millisecond", quote.Unit)
+	assert.Equal(t, int64(7_200_000), quote.BillableUnits)
 }
 
 func TestWildFlowBillingServiceIgnoresUnbilledAndNonTerminalOperations(t *testing.T) {
@@ -324,7 +322,7 @@ func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *te
 		SHA256: strings.Repeat("a", 64),
 		Metadata: map[string]any{
 			"schema_version":                float64(1),
-			"model_version_ref":             WildFlowModelExamDualASR,
+			"model_version_ref":             wildFlowModelVersionDualASR,
 			"model_revision":                "d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478",
 			"vibevoice_model_revision":      "d0c9efdb8d614685062c04425d91e01b6f37d944",
 			"faster_whisper_model_revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",

@@ -49,8 +49,12 @@ func setupWildFlowJourneyReceiptControllerTest(t *testing.T) (*gin.Engine, *mode
 		OperationID: "op-controller-1", UserID: 42, TokenID: 7,
 		IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64),
 		RequestID: "request-controller-1", ProductModelRef: service.WildFlowModelExamDualASR,
-		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: artifact.JobID, State: "succeeded",
-		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+		ModelVersionRef: "wildflow/exam-replay-dual-asr-v1", JobID: artifact.JobID, State: "succeeded",
+		BillingState: model.WildFlowBillingStateSettled, BillingSource: model.WildFlowBillingSourceWallet,
+		BillingQuota: 10, BillingTokenQuota: 10, BillingCurrency: "CNY", BillingAmountMicros: 1667,
+		BillingUnit: "audio_millisecond", BillingBillableUnits: 1000, BillingQuotaPerUnit: "500000",
+		BillingUSDExchangeRate: "7.3", BillingPriceVersion: "wildflow-retail-cny-v1",
+		BillingUsageEventID: "usage-controller-1", BillingSettledTime: now.Add(-2 * time.Minute).Unix(),
 		ResultValidatedTime: now.Add(-2 * time.Minute).Unix(), ResultExpiresAt: now.Add(time.Hour).Unix(),
 		CreatedTime: now.Add(-5 * time.Minute).Unix(),
 	}
@@ -110,8 +114,8 @@ func TestWildFlowJourneyReceiptInternalEndpointsAreDedicatedAuthenticatedAndDura
 	assert.Contains(t, response.Header().Get("Cache-Control"), "no-store")
 	assert.Contains(t, response.Body.String(), `"public_journey_receipt"`)
 	assert.Contains(t, response.Body.String(), `"public_journey_receipt_sha256"`)
-	assert.Contains(t, response.Body.String(), `"billing_mode":"team_trial_no_charge"`)
-	assert.Contains(t, response.Body.String(), `"billing_state":"pending"`)
+	assert.Contains(t, response.Body.String(), `"billing_mode":"retail_audio_duration"`)
+	assert.Contains(t, response.Body.String(), `"billing_state":"settled"`)
 	assert.NotContains(t, response.Body.String(), "user:42")
 	assert.NotContains(t, response.Body.String(), "user_id")
 

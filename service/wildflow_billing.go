@@ -17,6 +17,7 @@ import (
 )
 
 const wildFlowRetailPriceVersion = "wildflow-retail-cny-v1"
+const wildFlowASRMaximumDurationMilliseconds int64 = 7_200_000
 
 var (
 	ErrWildFlowBillingInsufficientQuota = errors.New("insufficient quota for WildFlow job")
@@ -36,7 +37,7 @@ func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuot
 	if offering.Pricing.Unit == "team_trial" {
 		return model.WildFlowBillingQuote{}, ErrWildFlowUnsupportedModel
 	}
-	if err := validateWildFlowParameters(offering.Kind, request.Parameters); err != nil {
+	if err := validateWildFlowRequest(offering.Kind, request); err != nil {
 		return model.WildFlowBillingQuote{}, err
 	}
 	if common.QuotaPerUnit <= 0 || operation_setting.USDExchangeRate <= 0 {
@@ -64,6 +65,12 @@ func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuot
 		billableUnits = 1
 		unit = offering.Pricing.Unit
 		amountCNY = decimal.NewFromFloat(offering.Pricing.Amount)
+	case WildFlowModelExamDualASR:
+		billableUnits = wildFlowASRMaximumDurationMilliseconds
+		unit = "audio_millisecond"
+		amountCNY = decimal.NewFromFloat(offering.Pricing.Amount).
+			Mul(decimal.NewFromInt(billableUnits)).
+			Div(decimal.NewFromInt(60_000))
 	default:
 		return model.WildFlowBillingQuote{}, ErrWildFlowUnsupportedModel
 	}
@@ -294,7 +301,7 @@ func validateWildFlowExamDualASRArtifact(artifacts []inferenceclient.Artifact) e
 	validRuntimeVersion := runtimeVersion == "exam-dual-asr-runtime-v1-a09e48e-94da20d" ||
 		runtimeVersion == "exam-dual-asr-http-runtime-v1-ed59136"
 	if !schemaOK || schemaVersion != 1 || !durationOK || duration <= 0 || duration > 7_200 ||
-		!versionOK || modelVersion != WildFlowModelExamDualASR ||
+		!versionOK || modelVersion != wildFlowModelVersionDualASR ||
 		!revisionOK || !validModelRevision ||
 		!vibeVoiceOK || vibeVoiceRevision != vibeVoice || !whisperOK || whisperRevision != whisper ||
 		!runtimeOK || !validRuntimeVersion ||

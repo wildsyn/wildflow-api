@@ -140,12 +140,11 @@ func validStoredWildFlowPublicJourneyReceipt(
 ) bool {
 	if record == nil || receipt == nil || receipt.SchemaVersion != 1 ||
 		receipt.State != "public_journey_succeeded" || receipt.OperationState != "succeeded" ||
-		receipt.BillingMode != "team_trial_no_charge" ||
-		receipt.BillingState != model.WildFlowBillingStatePending ||
+		!validWildFlowJourneyReceiptBilling(receipt.BillingMode, receipt.BillingState) ||
 		receipt.ArtifactMediaType != "application/json" || receipt.ArtifactSizeBytes <= 0 ||
 		receipt.OperationID != record.OperationID || receipt.JobID != record.JobID ||
 		receipt.ArtifactID != record.ArtifactID ||
-		receipt.PublicModelRef != receipt.ModelVersionRef {
+		!validWildFlowASRJourneyIdentity(receipt.PublicModelRef, receipt.ModelVersionRef) {
 		return false
 	}
 	for _, value := range []string{
@@ -213,17 +212,8 @@ func buildWildFlowPublicJourneyReceipt(
 	if err != nil {
 		return nil, model.ErrWildFlowJourneyEvidenceConflict
 	}
-	if operation.ProductModelRef != WildFlowModelExamDualASR ||
-		operation.ModelVersionRef != WildFlowModelExamDualASR ||
-		operation.State != "succeeded" ||
-		operation.BillingState != model.WildFlowBillingStatePending ||
-		operation.BillingSource != model.WildFlowBillingSourceTeamTrial ||
-		operation.BillingSubscriptionID != 0 || operation.BillingQuota != 0 ||
-		operation.BillingTokenQuota != 0 || operation.BillingCurrency != "" ||
-		operation.BillingAmountMicros != 0 || operation.BillingUnit != "" ||
-		operation.BillingBillableUnits != 0 || operation.BillingQuotaPerUnit != "" ||
-		operation.BillingUSDExchangeRate != "" || operation.BillingPriceVersion != "" ||
-		operation.BillingSettledTime != 0 || operation.BillingUsageEventID != usage.EventID ||
+	billingMode, billingOK := wildFlowJourneyOperationBillingMode(operation, usage)
+	if !billingOK || operation.State != "succeeded" ||
 		operation.ResultJSON == "" || operation.ResultValidatedTime <= 0 ||
 		operation.ResultExpiresAt <= receiptCreatedAt.Unix() ||
 		operation.CreatedTime <= 0 ||
@@ -291,7 +281,7 @@ func buildWildFlowPublicJourneyReceipt(
 		RuntimeOfferingRef:   runtimeOfferingRef,
 		ModelVersionRef:      operation.ModelVersionRef,
 		JobID:                operation.JobID,
-		BillingMode:          "team_trial_no_charge",
+		BillingMode:          billingMode,
 		BillingState:         operation.BillingState,
 		UsageEventID:         usage.EventID,
 		UsagePayloadDigest:   usage.PayloadDigest,
@@ -303,6 +293,50 @@ func buildWildFlowPublicJourneyReceipt(
 		ArtifactDownloadedAt: downloadedAt.Format(time.RFC3339Nano),
 	}
 	return receipt, nil
+}
+
+func validWildFlowASRJourneyIdentity(publicModelRef string, modelVersionRef string) bool {
+	return modelVersionRef == wildFlowModelVersionDualASR &&
+		(publicModelRef == WildFlowModelExamDualASR || publicModelRef == wildFlowModelVersionDualASR)
+}
+
+func validWildFlowJourneyReceiptBilling(mode string, state string) bool {
+	return (mode == "retail_audio_duration" && state == model.WildFlowBillingStateSettled) ||
+		(mode == "team_trial_no_charge" && state == model.WildFlowBillingStatePending)
+}
+
+func wildFlowJourneyOperationBillingMode(
+	operation *model.WildFlowOperation,
+	usage *model.WildFlowUsageEvent,
+) (string, bool) {
+	if operation == nil || usage == nil || !validWildFlowASRJourneyIdentity(
+		operation.ProductModelRef, operation.ModelVersionRef,
+	) || operation.BillingUsageEventID != usage.EventID {
+		return "", false
+	}
+	if operation.ProductModelRef == wildFlowModelVersionDualASR &&
+		operation.BillingState == model.WildFlowBillingStatePending &&
+		operation.BillingSource == model.WildFlowBillingSourceTeamTrial &&
+		operation.BillingSubscriptionID == 0 && operation.BillingQuota == 0 &&
+		operation.BillingTokenQuota == 0 && operation.BillingCurrency == "" &&
+		operation.BillingAmountMicros == 0 && operation.BillingUnit == "" &&
+		operation.BillingBillableUnits == 0 && operation.BillingQuotaPerUnit == "" &&
+		operation.BillingUSDExchangeRate == "" && operation.BillingPriceVersion == "" &&
+		operation.BillingSettledTime == 0 {
+		return "team_trial_no_charge", true
+	}
+	if operation.ProductModelRef == WildFlowModelExamDualASR &&
+		operation.BillingState == model.WildFlowBillingStateSettled &&
+		((operation.BillingSource == model.WildFlowBillingSourceWallet && operation.BillingSubscriptionID == 0) ||
+			(operation.BillingSource == model.WildFlowBillingSourceSubscription && operation.BillingSubscriptionID > 0)) &&
+		operation.BillingQuota > 0 && operation.BillingCurrency == "CNY" &&
+		operation.BillingAmountMicros > 0 && operation.BillingUnit == "audio_millisecond" &&
+		operation.BillingBillableUnits == usage.Quantity && usage.Quantity > 0 &&
+		operation.BillingQuotaPerUnit != "" && operation.BillingUSDExchangeRate != "" &&
+		operation.BillingPriceVersion == wildFlowRetailPriceVersion && operation.BillingSettledTime > 0 {
+		return "retail_audio_duration", true
+	}
+	return "", false
 }
 
 func canonicalWildFlowPublicJourneyReceipt(receipt WildFlowPublicJourneyReceipt) ([]byte, error) {

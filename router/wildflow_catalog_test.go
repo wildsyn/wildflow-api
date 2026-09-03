@@ -79,14 +79,14 @@ func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T
 				"status":"unavailable"
 			},
 			{
-				"id":"wildflow/exam-replay-dual-asr-v1",
-				"display_name":"直播回放双 ASR",
+				"id":"wildflow/dual-asr-v1",
+				"display_name":"双引擎语音识别",
 				"kind":"asr",
 				"vendor":"WildFlow",
 				"model_version_ref":"wildflow/exam-replay-dual-asr-v1",
-				"description":"同时输出分段转写与逐词时间戳，适用于直播回放、课程和访谈素材；当前为团队内测。",
+				"description":"同时输出分段转写与逐词时间戳，适用于通用音频转写、字幕整理和检索。",
 				"required_parameters":["input_artifact_ids"],
-				"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内测 · 暂不扣零售余额"},
+				"pricing":{"currency":"CNY","amount":0.1,"unit":"audio_minute","display":"¥0.10 / 音频分钟"},
 					"callable":false,
 					"status":"unavailable"
 				},
