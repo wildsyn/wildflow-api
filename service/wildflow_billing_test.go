@@ -330,14 +330,14 @@ func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *te
 			"faster_whisper_model_revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
 			"duration_seconds":              float64(120),
 			"source_artifact_id":            "input-1",
-			"runtime_version_ref":           "exam-dual-asr-http-runtime-v1-1a2854c",
+			"runtime_version_ref":           "exam-dual-asr-http-runtime-v1-ed59136",
 		},
 	}
 	operation := &model.WildFlowOperation{ProductModelRef: WildFlowModelExamDualASR}
 	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
 	artifact.Metadata["runtime_version_ref"] = "exam-dual-asr-runtime-v1-a09e48e-94da20d"
 	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
-	artifact.Metadata["runtime_version_ref"] = "exam-dual-asr-http-runtime-v1-1a2854c"
+	artifact.Metadata["runtime_version_ref"] = "exam-dual-asr-http-runtime-v1-ed59136"
 	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), &model.WildFlowOperation{
 		ProductModelRef: WildFlowModelExamDualASR, State: "succeeded", BillingState: model.WildFlowBillingStatePending,
 	}, []inferenceclient.Artifact{artifact}))

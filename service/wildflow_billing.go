@@ -290,7 +290,7 @@ func validateWildFlowExamDualASRArtifact(artifacts []inferenceclient.Artifact) e
 	const vibeVoice = "d0c9efdb8d614685062c04425d91e01b6f37d944"
 	const whisper = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
 	validRuntimeVersion := runtimeVersion == "exam-dual-asr-runtime-v1-a09e48e-94da20d" ||
-		runtimeVersion == "exam-dual-asr-http-runtime-v1-1a2854c"
+		runtimeVersion == "exam-dual-asr-http-runtime-v1-ed59136"
 	if !schemaOK || schemaVersion != 1 || !durationOK || duration <= 0 || duration > 7_200 ||
 		!versionOK || modelVersion != WildFlowModelExamDualASR ||
 		!revisionOK || modelRevision != vibeVoice+"_"+whisper ||
