@@ -522,7 +522,7 @@ func TestListModelsIncludesAuthorizedWildFlowJobModels(t *testing.T) {
 		require.Equal(t, "wildflow", item.OwnedBy)
 		require.Equal(t, []constant.EndpointType{constant.EndpointTypeWildFlowJobs}, item.SupportedEndpointTypes)
 	}
-	require.NotContains(t, modelsByID, "Qwen/Qwen3.8-27B-FP8")
+	require.NotContains(t, modelsByID, "Qwen/Qwen3.8-27B-FP8@gpu-4090-06")
 }
 
 func TestListModelsQwenUsesEnabledChatAbilityContract(t *testing.T) {
@@ -536,7 +536,7 @@ func TestListModelsQwenUsesEnabledChatAbilityContract(t *testing.T) {
 		model.InvalidatePricingCache()
 	})
 
-	const qwenModel = "Qwen/Qwen3.8-27B-FP8"
+	const qwenModel = "Qwen/Qwen3.8-27B-FP8@gpu-4090-06"
 	channel := &model.Channel{
 		Id:     702,
 		Type:   constant.ChannelTypeOpenAI,

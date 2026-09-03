@@ -31,7 +31,7 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 	catalog := GetWildFlowCatalog(context.Background())
 
 	require.Len(t, catalog, 5)
-	assert.Equal(t, []string{"VoxCPM2", "FLUX.2 [klein] 4B", WildFlowModelIdeogram4MixedV3, "Qwen/Qwen3.8-27B-FP8", WildFlowModelExamDualASR}, []string{
+	assert.Equal(t, []string{"VoxCPM2", "FLUX.2 [klein] 4B", WildFlowModelIdeogram4MixedV3, "Qwen/Qwen3.8-27B-FP8@gpu-4090-06", WildFlowModelExamDualASR}, []string{
 		catalog[0].ID, catalog[1].ID, catalog[2].ID, catalog[3].ID, catalog[4].ID,
 	})
 	assert.True(t, catalog[0].Callable)
@@ -46,7 +46,7 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 	assert.Contains(t, catalog[2].Description, "非商业")
 	assert.Equal(t, "chat", catalog[3].Kind)
 	assert.Equal(t, "Qwen/Qwen3.8-27B-FP8", catalog[3].ModelVersionRef)
-	assert.Equal(t, "团队内测 · 暂不扣零售余额", catalog[3].Pricing.Display)
+	assert.Equal(t, "¥4.38 / 百万输入或输出 Token", catalog[3].Pricing.Display)
 	assert.Equal(t, "asr", catalog[4].Kind)
 	assert.Equal(t, "团队内测 · 暂不扣零售余额", catalog[4].Pricing.Display)
 }
