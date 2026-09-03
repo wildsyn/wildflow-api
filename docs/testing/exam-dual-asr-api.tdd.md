@@ -1,12 +1,18 @@
-# Exam dual-ASR public journey and receipt TDD evidence
+# Internal VibeVoice + Faster Whisper ASR journey and receipt TDD evidence
 
 ## User journey
 
-A registered WildFlow user with a standard valid API token selects the public team-trial catalog entry
-`wildflow/exam-replay-dual-asr-v1`, uploads one tenant-scoped FLAC Artifact, submits an idempotent Job, reads the
-verified JSON result, and downloads its exact bytes without a separate entitlement or retail charge. The API persists
-the public model identity while submitting the distinct Runtime offering `exam-replay-dual-asr` to inference. Tokens
-that the user deliberately restricts to selected models continue to honor that scope.
+A registered WildFlow user with a standard valid API token selects the authenticated model
+`wildflow/internal-vibevoice-faster-whisper-asr-v1`, uploads one tenant-scoped FLAC Artifact, submits an idempotent
+Job, reads the verified JSON result, and downloads its exact bytes without a second employee directory, user-group
+allowlist, ASR-specific API key, mTLS credential, separate entitlement, or retail charge. Registration on the current
+WildFlow site is the internal-user boundary. The anonymous public catalog omits this model. Tokens that the user
+deliberately restricts to selected models continue to honor the platform's existing generic model scope.
+
+The API persists the authenticated model identity while submitting the distinct Runtime offering
+`internal-vibevoice-faster-whisper-asr` to inference. New requests using `wildflow/exam-replay-dual-asr-v1` are
+rejected before persistence or inference; terminal jobs and Artifacts created under that retired identity remain
+read-only.
 
 After one exact team-trial Usage Event has been ingested and the API response writer has completed an Artifact
 download whose actual byte count and SHA-256 match the attested metadata, a dedicated internal endpoint may
@@ -26,6 +32,7 @@ bytes.
 | Provenance GREEN | `ee458254` | Artifact validation now requires the immutable dual-ASR RuntimeVersion attested by the Worker. |
 | Registered-user access RED | `95e9d904` | The upload, submit, read, and download controller tests all returned `403 model_forbidden` for a standard registered-user token. |
 | Registered-user access GREEN | `b39d4a92` | Removed the dual-ASR-only denial for unrestricted standard tokens; the same four paths pass while normal token scope enforcement remains intact. |
+| Internal identity and fail-closed Runtime RED/GREEN | current branch | Replaced the retired request identity, removed redundant ASR-specific authorization, hid ASR from the anonymous catalog, and rejected unavailable Runtime or retired-ID creation before persistence and inference. |
 | Public/runtime identity regression | current branch | Added a real controller submission assertion and service mapping test. The historical RED console output was not retained. |
 | Actual-download integrity regression | current branch | Added success, same-length digest mismatch, short stream, immutable completion time, and no-false-receipt tests. The historical RED console output was not retained. |
 | Usage uniqueness and canonical digest regression | current branch | Added atomic team-trial binding, millisecond ingestion time, and an actual Go receiver digest golden. The historical RED console output was not retained. |
@@ -37,9 +44,9 @@ bytes.
 |---|---|---|---|
 | 1 | Input upload requires API authentication, FLAC, bounded length, and SHA-256; no separate dual-ASR entitlement is required for a standard token | `controller`, `internal/inferenceclient`, `router` | PASS |
 | 2 | Job submission is tenant scoped, idempotent, and forwards only input Artifact IDs | `controller`, `service`, `internal/inferenceclient` | PASS |
-| 3 | The public catalog exposes the team trial while Operation rows keep the public identity and inference receives the separate Runtime offering identity | `controller`, `service` | PASS |
+| 3 | The anonymous public catalog omits ASR; authenticated `/v1/models` exposes it when Runtime is callable, while Operation rows and inference use their distinct exact identities | `controller`, `service`, `router` | PASS |
 | 4 | Result download accepts only exact dual-ASR revisions and records completion only after the actual bytes match Artifact size and SHA-256 | `controller`, `service`, `model` | PASS |
-| 5 | Standard tokens can read owned internal operations and Artifacts; deliberately model-scoped tokens still honor their configured scope | `controller` | PASS |
+| 5 | Standard registered-user tokens can create/read owned internal operations and Artifacts without extra ASR authorization; deliberately model-scoped tokens still honor their existing configured scope | `controller` | PASS |
 | 6 | The ASR deadline accommodates the documented two-hour input ceiling and long-running batch inference | `controller` | PASS |
 | 7 | A succeeded ASR Artifact must carry the exact controller-attested RuntimeVersion reference | `controller`, `service` | PASS |
 | 8 | A team-trial Operation atomically binds one Usage Event ID and stores a UTC millisecond ingestion time; another Event ID conflicts | `model`, `controller` | PASS on SQLite, PostgreSQL 16, and MySQL 8.4 |

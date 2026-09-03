@@ -229,12 +229,12 @@ func TestQuoteWildFlowBillingRejectsUnsupportedModel(t *testing.T) {
 
 func TestInternalExamDualASRTrialDoesNotCreateRetailBilling(t *testing.T) {
 	operation := &model.WildFlowOperation{
-		OperationID: "op-internal-asr", ProductModelRef: WildFlowModelExamDualASR,
-		ModelVersionRef: WildFlowModelExamDualASR, BillingState: model.WildFlowBillingStatePending,
+		OperationID: "op-internal-asr", ProductModelRef: WildFlowModelInternalASR,
+		ModelVersionRef: WildFlowModelInternalASR, BillingState: model.WildFlowBillingStatePending,
 		BillingSource: model.WildFlowBillingSourceTeamTrial,
 	}
 	request := WildFlowJobRequest{
-		Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
+		Model: WildFlowModelInternalASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
 	}
 
 	reserved, err := ReserveWildFlowOperationBilling(operation, request)
@@ -318,32 +318,39 @@ func TestValidateWildFlowCompletedArtifactsRequiresCanonicalVoxMP3Evidence(t *te
 	}
 }
 
-func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *testing.T) {
-	artifact := inferenceclient.Artifact{
-		ID: "artifact-asr", JobID: "job-asr", MediaType: "application/json", SizeBytes: 128,
-		SHA256: strings.Repeat("a", 64),
-		Metadata: map[string]any{
-			"schema_version":                float64(1),
-			"model_version_ref":             WildFlowModelExamDualASR,
-			"model_revision":                "d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478",
-			"vibevoice_model_revision":      "d0c9efdb8d614685062c04425d91e01b6f37d944",
-			"faster_whisper_model_revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
-			"duration_seconds":              float64(120),
-			"source_artifact_id":            "input-1",
-			"runtime_version_ref":           "exam-dual-asr-runtime-v1-a09e48e-94da20d",
-		},
-	}
-	operation := &model.WildFlowOperation{ProductModelRef: WildFlowModelExamDualASR}
-	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
-	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), &model.WildFlowOperation{
-		ProductModelRef: WildFlowModelExamDualASR, State: "succeeded", BillingState: model.WildFlowBillingStatePending,
-	}, []inferenceclient.Artifact{artifact}))
+func TestValidateWildFlowCompletedArtifactsAcceptsVersionedASRJSON(t *testing.T) {
+	for name, identity := range map[string]struct {
+		modelRef   string
+		runtimeRef string
+	}{
+		"current internal identity": {WildFlowModelInternalASR, "internal-vibevoice-faster-whisper-asr-runtime-v1-a09e48e-94da20d"},
+		"legacy terminal identity":  {WildFlowModelExamDualASR, "exam-dual-asr-runtime-v1-a09e48e-94da20d"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			artifact := inferenceclient.Artifact{
+				ID: "artifact-asr", JobID: "job-asr", MediaType: "application/json", SizeBytes: 128,
+				SHA256: strings.Repeat("a", 64),
+				Metadata: map[string]any{
+					"schema_version":                float64(1),
+					"model_version_ref":             identity.modelRef,
+					"model_revision":                "d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478",
+					"vibevoice_model_revision":      "d0c9efdb8d614685062c04425d91e01b6f37d944",
+					"faster_whisper_model_revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
+					"duration_seconds":              float64(120),
+					"source_artifact_id":            "input-1",
+					"runtime_version_ref":           identity.runtimeRef,
+				},
+			}
+			operation := &model.WildFlowOperation{ProductModelRef: identity.modelRef}
+			require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
 
-	artifact.Metadata["faster_whisper_model_revision"] = "mutable-latest"
-	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
-	artifact.Metadata["faster_whisper_model_revision"] = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
-	artifact.Metadata["runtime_version_ref"] = "mutable-runtime"
-	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
+			artifact.Metadata["faster_whisper_model_revision"] = "mutable-latest"
+			require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
+			artifact.Metadata["faster_whisper_model_revision"] = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
+			artifact.Metadata["runtime_version_ref"] = "mutable-runtime"
+			require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
+		})
+	}
 }
 
 func TestValidateWildFlowCompletedArtifactsPreservesFluxArtifactContract(t *testing.T) {

@@ -19,6 +19,7 @@ var (
 	ErrWildFlowIdempotencyRequired = errors.New("Idempotency-Key is required")
 	ErrWildFlowIdempotencyConflict = errors.New("Idempotency-Key was already used with a different request")
 	ErrWildFlowUnsupportedModel    = errors.New("unsupported WildFlow model")
+	ErrWildFlowRetiredModel        = errors.New("retired WildFlow model")
 	ErrWildFlowInvalidParameters   = errors.New("invalid model parameters")
 )
 
@@ -32,6 +33,7 @@ const (
 	WildFlowModelVoxCPM2          = "VoxCPM2"
 	WildFlowModelFlux2            = "FLUX.2 [klein] 4B"
 	WildFlowModelIdeogram4MixedV3 = "Ideogram 4 mixed-v3"
+	WildFlowModelInternalASR      = "wildflow/internal-vibevoice-faster-whisper-asr-v1"
 	WildFlowModelExamDualASR      = "wildflow/exam-replay-dual-asr-v1"
 	wildFlowIdeogram4Entitlement  = "internal-noncommercial-evaluation-only"
 )
@@ -70,7 +72,9 @@ func NormalizeWildFlowJobRequest(request WildFlowJobRequest) (WildFlowJobRequest
 		if _, exists := request.Parameters["guidance_scale"]; !exists {
 			request.Parameters["guidance_scale"] = float64(7)
 		}
+	case WildFlowModelInternalASR:
 	case WildFlowModelExamDualASR:
+		return WildFlowJobRequest{}, ErrWildFlowRetiredModel
 	default:
 		return WildFlowJobRequest{}, ErrWildFlowUnsupportedModel
 	}
@@ -167,6 +171,9 @@ func FindWildFlowOffering(id string) (WildFlowOffering, bool) {
 // an Operation to the exact Offering identity accepted by inference. The model
 // version is checked independently so catalog drift fails before submission.
 func ResolveWildFlowRuntimeOfferingRef(publicModelRef string, modelVersionRef string) (string, error) {
+	if publicModelRef == WildFlowModelExamDualASR && modelVersionRef == WildFlowModelExamDualASR {
+		return "exam-replay-dual-asr", nil
+	}
 	offering, ok := FindWildFlowOffering(publicModelRef)
 	if !ok || offering.ModelVersionRef != modelVersionRef {
 		return "", ErrWildFlowUnsupportedModel
@@ -175,6 +182,10 @@ func ResolveWildFlowRuntimeOfferingRef(publicModelRef string, modelVersionRef st
 		return offering.RuntimeOfferingID, nil
 	}
 	return offering.ID, nil
+}
+
+func IsWildFlowASRModelRef(modelRef string) bool {
+	return modelRef == WildFlowModelInternalASR || modelRef == WildFlowModelExamDualASR
 }
 
 // PrepareWildFlowRuntimeParameters copies public parameters into the trusted

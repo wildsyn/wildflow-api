@@ -213,8 +213,8 @@ func buildWildFlowPublicJourneyReceipt(
 	if err != nil {
 		return nil, model.ErrWildFlowJourneyEvidenceConflict
 	}
-	if operation.ProductModelRef != WildFlowModelExamDualASR ||
-		operation.ModelVersionRef != WildFlowModelExamDualASR ||
+	if !IsWildFlowASRModelRef(operation.ProductModelRef) ||
+		operation.ModelVersionRef != operation.ProductModelRef ||
 		operation.State != "succeeded" ||
 		operation.BillingState != model.WildFlowBillingStatePending ||
 		operation.BillingSource != model.WildFlowBillingSourceTeamTrial ||

@@ -167,12 +167,12 @@ func TestNormalizeAndValidateInternalExamDualASRRequest(t *testing.T) {
 	require.NoError(t, validateWildFlowRequest(offering.Kind, request))
 
 	invalid := []WildFlowJobRequest{
-		{Model: WildFlowModelExamDualASR, Parameters: map[string]any{}},
-		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1", "input-2"}, Parameters: map[string]any{}},
-		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"../private"}, Parameters: map[string]any{}},
-		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{"context": strings.Repeat("x", 20_001)}},
-		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{"hotwords": []any{strings.Repeat("x", 101)}}},
-		{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{"source_offset_seconds": float64(7201)}},
+		{Model: WildFlowModelInternalASR, Parameters: map[string]any{}},
+		{Model: WildFlowModelInternalASR, InputArtifactIDs: []string{"input-1", "input-2"}, Parameters: map[string]any{}},
+		{Model: WildFlowModelInternalASR, InputArtifactIDs: []string{"../private"}, Parameters: map[string]any{}},
+		{Model: WildFlowModelInternalASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{"context": strings.Repeat("x", 20_001)}},
+		{Model: WildFlowModelInternalASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{"hotwords": []any{strings.Repeat("x", 101)}}},
+		{Model: WildFlowModelInternalASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{"source_offset_seconds": float64(7201)}},
 	}
 	for _, candidate := range invalid {
 		candidate, err = NormalizeWildFlowJobRequest(candidate)

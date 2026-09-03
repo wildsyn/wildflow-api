@@ -19,7 +19,7 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 			{"id":"VoxCPM2","model_version_ref":"openbmb/VoxCPM2","callable":true},
 			{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
 			{"id":"ideogram-4-mixed-v3","model_version_ref":"ideogram-4-mixed-v3@bbee2ab2","callable":true},
-			{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":true},
+			{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":true},
 			{"id":"untrusted-extra","model_version_ref":"other/model","callable":true}
 		]}`))
 	}))
@@ -30,7 +30,7 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 	catalog := GetWildFlowCatalog(context.Background())
 
 	require.Len(t, catalog, 4)
-	assert.Equal(t, []string{"VoxCPM2", "FLUX.2 [klein] 4B", WildFlowModelIdeogram4MixedV3, WildFlowModelExamDualASR}, []string{
+	assert.Equal(t, []string{"VoxCPM2", "FLUX.2 [klein] 4B", WildFlowModelIdeogram4MixedV3, WildFlowModelInternalASR}, []string{
 		catalog[0].ID, catalog[1].ID, catalog[2].ID, catalog[3].ID,
 	})
 	assert.True(t, catalog[0].Callable)
@@ -43,7 +43,19 @@ func TestGetWildFlowCatalogMergesOnlyCanonicalRuntimeAvailability(t *testing.T) 
 	assert.Equal(t, "team_trial", catalog[2].Pricing.Unit)
 	assert.Contains(t, catalog[2].Description, "非商业")
 	assert.Equal(t, "asr", catalog[3].Kind)
-	assert.Equal(t, "团队内测 · 暂不扣零售余额", catalog[3].Pricing.Display)
+	assert.Equal(t, "公司内部使用 · 不对外定价", catalog[3].Pricing.Display)
+}
+
+func TestGetPublicWildFlowCatalogOmitsInternalASR(t *testing.T) {
+	t.Setenv("WILDFLOW_INFERENCE_URL", "")
+	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "")
+
+	public := GetPublicWildFlowCatalog(context.Background())
+	for _, offering := range public {
+		assert.NotEqual(t, WildFlowModelInternalASR, offering.ID)
+		assert.NotEqual(t, WildFlowModelExamDualASR, offering.ID)
+	}
+	require.Len(t, public, 3)
 }
 
 func TestGetWildFlowCatalogFailsClosedButStillDisplaysCanonicalModels(t *testing.T) {

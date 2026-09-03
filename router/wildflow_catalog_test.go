@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T) {
+func TestWildFlowCatalogIsPublicAndOmitsInternalASR(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("WILDFLOW_INFERENCE_URL", "")
 	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "")
@@ -64,18 +64,6 @@ func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T
 				"description":"Ideogram 4 图片生成，仅限团队内部非商业评测使用，不提供商用承诺。",
 				"required_parameters":["prompt","width","height","seed","steps"],
 				"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内部非商业评测 · 暂不扣零售余额"},
-				"callable":false,
-				"status":"unavailable"
-			},
-			{
-				"id":"wildflow/exam-replay-dual-asr-v1",
-				"display_name":"直播回放双 ASR",
-				"kind":"asr",
-				"vendor":"WildFlow",
-				"model_version_ref":"wildflow/exam-replay-dual-asr-v1",
-				"description":"同时输出分段转写与逐词时间戳，适用于直播回放、课程和访谈素材；当前为团队内测。",
-				"required_parameters":["input_artifact_ids"],
-				"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内测 · 暂不扣零售余额"},
 				"callable":false,
 				"status":"unavailable"
 			}

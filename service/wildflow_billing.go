@@ -191,8 +191,8 @@ func ValidateWildFlowCompletedArtifacts(operation *model.WildFlowOperation, arti
 	if operation == nil {
 		return nil
 	}
-	if operation.ProductModelRef == WildFlowModelExamDualASR {
-		return validateWildFlowExamDualASRArtifact(artifacts)
+	if IsWildFlowASRModelRef(operation.ProductModelRef) {
+		return validateWildFlowExamDualASRArtifact(operation.ProductModelRef, artifacts)
 	}
 	if operation.ProductModelRef != WildFlowModelVoxCPM2 {
 		return nil
@@ -239,7 +239,7 @@ func ValidateWildFlowCompletedArtifacts(operation *model.WildFlowOperation, arti
 	return nil
 }
 
-func validateWildFlowExamDualASRArtifact(artifacts []inferenceclient.Artifact) error {
+func validateWildFlowExamDualASRArtifact(expectedModelVersion string, artifacts []inferenceclient.Artifact) error {
 	if len(artifacts) != 1 {
 		return ErrWildFlowInvalidArtifact
 	}
@@ -257,12 +257,15 @@ func validateWildFlowExamDualASRArtifact(artifacts []inferenceclient.Artifact) e
 	sourceArtifactID, sourceOK := artifact.Metadata["source_artifact_id"].(string)
 	const vibeVoice = "d0c9efdb8d614685062c04425d91e01b6f37d944"
 	const whisper = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
-	const runtime = "exam-dual-asr-runtime-v1-a09e48e-94da20d"
+	expectedRuntime := "internal-vibevoice-faster-whisper-asr-runtime-v1-a09e48e-94da20d"
+	if expectedModelVersion == WildFlowModelExamDualASR {
+		expectedRuntime = "exam-dual-asr-runtime-v1-a09e48e-94da20d"
+	}
 	if !schemaOK || schemaVersion != 1 || !durationOK || duration <= 0 || duration > 7_200 ||
-		!versionOK || modelVersion != WildFlowModelExamDualASR ||
+		!versionOK || modelVersion != expectedModelVersion ||
 		!revisionOK || modelRevision != vibeVoice+"_"+whisper ||
 		!vibeVoiceOK || vibeVoiceRevision != vibeVoice || !whisperOK || whisperRevision != whisper ||
-		!runtimeOK || runtimeVersion != runtime ||
+		!runtimeOK || runtimeVersion != expectedRuntime ||
 		!sourceOK || !validWildFlowResourceID(sourceArtifactID) {
 		return ErrWildFlowInvalidArtifact
 	}

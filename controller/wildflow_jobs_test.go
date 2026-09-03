@@ -91,11 +91,6 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 		c.Set("id", userID)
 		c.Set("token_id", 7)
 		c.Set(common.RequestIdKey, "request-public-1")
-		userGroup := "default"
-		if raw := strings.TrimSpace(c.GetHeader("X-Test-User-Group")); raw != "" {
-			userGroup = raw
-		}
-		common.SetContextKey(c, constant.ContextKeyUserGroup, userGroup)
 		if raw := c.GetHeader("X-Test-Model-Limits"); raw != "" {
 			limits := make(map[string]bool)
 			for _, modelName := range strings.Split(raw, ",") {
@@ -117,36 +112,15 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	return engine, server
 }
 
-func TestInternalASRCreateFailsClosedBeforeInferenceOrPersistence(t *testing.T) {
-	t.Setenv("WILDFLOW_INTERNAL_ASR_GROUPS", "company-internal")
+func TestRetiredASRCreateFailsClosedBeforeInferenceOrPersistence(t *testing.T) {
 	requests := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		requests++
 	}))
-	body := `{"model":"wildflow/internal-vibevoice-faster-whisper-asr-v1","input_artifact_ids":["input-1"],"parameters":{}}`
-
-	for name, headers := range map[string]map[string]string{
-		"ordinary user with self-limited key": {
-			"Idempotency-Key": "ordinary-user",
-			"X-Test-Model-Limits": "wildflow/internal-vibevoice-faster-whisper-asr-v1",
-		},
-		"company user with unrestricted key": {
-			"Idempotency-Key": "unrestricted-company-key",
-			"X-Test-User-Group": "company-internal",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			response := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, headers)
-			require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
-		})
-	}
-
 	legacy := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs",
 		`{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{}}`,
 		map[string]string{
 			"Idempotency-Key": "retired-identity",
-			"X-Test-User-Group": "company-internal",
-			"X-Test-Model-Limits": "wildflow/exam-replay-dual-asr-v1",
 		})
 	require.Equal(t, http.StatusGone, legacy.Code, legacy.Body.String())
 
@@ -157,7 +131,6 @@ func TestInternalASRCreateFailsClosedBeforeInferenceOrPersistence(t *testing.T) 
 }
 
 func TestInternalASRCreateRequiresCallableRuntimeBeforePersistence(t *testing.T) {
-	t.Setenv("WILDFLOW_INTERNAL_ASR_GROUPS", "company-internal")
 	requests := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -170,8 +143,6 @@ func TestInternalASRCreateRequiresCallableRuntimeBeforePersistence(t *testing.T)
 		`{"model":"wildflow/internal-vibevoice-faster-whisper-asr-v1","input_artifact_ids":["input-1"],"parameters":{}}`,
 		map[string]string{
 			"Idempotency-Key": "runtime-unavailable",
-			"X-Test-User-Group": "company-internal",
-			"X-Test-Model-Limits": "wildflow/internal-vibevoice-faster-whisper-asr-v1",
 		})
 	require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
 	assert.Equal(t, "5", response.Header().Get("Retry-After"))
@@ -186,6 +157,11 @@ func TestCreateWildFlowInputArtifactAllowsStandardRegisteredUserTokenAndStreamsF
 	payload := []byte("fLaCcontrolled-audio")
 	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/catalog" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":true}]}`))
+			return
+		}
 		requests++
 		require.Equal(t, "/internal/v1/input-artifacts", r.URL.Path)
 		require.Equal(t, "Bearer internal-token", r.Header.Get("Authorization"))
@@ -225,15 +201,36 @@ func TestCreateWildFlowInputArtifactRejectsInvalidHeadersBeforeInference(t *test
 	assert.Zero(t, requests)
 }
 
-func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemainsHiddenAndUnbilled(t *testing.T) {
+func TestCreateWildFlowInputArtifactHonorsExistingGenericTokenModelScope(t *testing.T) {
+	requests := 0
+	payload := []byte("fLaCcontrolled-audio")
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+
+	response := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/input-artifacts", payload, map[string]string{
+		"Content-Type": "audio/flac", "X-WildFlow-Content-SHA256": digest,
+		"X-Test-Model-Limits": "VoxCPM2",
+	})
+	require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+	assert.Zero(t, requests)
+}
+
+func TestCreateInternalASRJobAllowsRegisteredUserTokenAndRemainsUnbilled(t *testing.T) {
 	submissions := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/catalog" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":true}]}`))
+			return
+		}
 		require.Equal(t, "/internal/v1/jobs", r.URL.Path)
 		submissions++
 		var body map[string]any
 		require.NoError(t, common.DecodeJson(r.Body, &body))
-		assert.Equal(t, "exam-replay-dual-asr", body["product_model_ref"])
-		assert.Equal(t, service.WildFlowModelExamDualASR, body["model_version_ref"])
+		assert.Equal(t, "internal-vibevoice-faster-whisper-asr", body["product_model_ref"])
+		assert.Equal(t, service.WildFlowModelInternalASR, body["model_version_ref"])
 		assert.Equal(t, []any{"input-1"}, body["input_artifact_ids"])
 		deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
 		require.NoError(t, err)
@@ -245,7 +242,7 @@ func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemains
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"job":{"id":"job-asr-1","state":"queued"}}`))
 	}))
-	body := `{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"申论课程","hotwords":["青蜂六边形"]}}`
+	body := `{"model":"wildflow/internal-vibevoice-faster-whisper-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"申论课程","hotwords":["青蜂六边形"]}}`
 
 	response := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{
 		"Idempotency-Key": "asr-standard-token",
@@ -260,7 +257,7 @@ func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemains
 	require.NoError(t, model.DB.Where("operation_id = ?", response.Header().Get("Location")[len("/v1/jobs/"):]).First(&operation).Error)
 	assert.Equal(t, 1_000_000, user.Quota)
 	assert.Equal(t, 1_000_000, token.RemainQuota)
-	assert.Equal(t, service.WildFlowModelExamDualASR, operation.ProductModelRef)
+	assert.Equal(t, service.WildFlowModelInternalASR, operation.ProductModelRef)
 	assert.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
 	assert.Equal(t, model.WildFlowBillingSourceTeamTrial, operation.BillingSource)
 }
@@ -403,6 +400,26 @@ func TestInternalExamDualASROperationReadAllowsStandardRegisteredUserToken(t *te
 
 	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/op-asr-read", "", nil)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Zero(t, requests)
+}
+
+func TestRetiredASRNonterminalOperationCannotResumeOrCancel(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	require.NoError(t, model.DB.Create(&model.WildFlowOperation{
+		OperationID: "op-retired-asr-queued", UserID: 42, TokenID: 7,
+		IdempotencyKeyDigest: "key-retired-asr-queued", RequestDigest: "request-retired-asr-queued",
+		RequestID: "request-retired-asr-queued", ProductModelRef: service.WildFlowModelExamDualASR,
+		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-retired-asr-queued", State: "queued",
+		BillingState: model.WildFlowBillingStatePending,
+	}).Error)
+
+	read := performWildFlowRequest(t, engine, http.MethodGet, "/v1/jobs/op-retired-asr-queued", "", nil)
+	require.Equal(t, http.StatusGone, read.Code, read.Body.String())
+	cancel := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs/op-retired-asr-queued/cancel", "", nil)
+	require.Equal(t, http.StatusGone, cancel.Code, cancel.Body.String())
 	assert.Zero(t, requests)
 }
 

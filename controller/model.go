@@ -393,12 +393,7 @@ func RetrieveModel(c *gin.Context, modelType int) {
 }
 
 func wildFlowOfferingIsCallable(ctx context.Context, modelID string) bool {
-	for _, offering := range service.GetWildFlowCatalog(ctx) {
-		if offering.ID == modelID {
-			return offering.Callable
-		}
-	}
-	return false
+	return service.IsWildFlowOfferingCallable(ctx, modelID)
 }
 
 func wildFlowRequestContext(c *gin.Context) context.Context {

@@ -30,10 +30,6 @@ const wildFlowJobRequestLimit = 256 * 1024
 const wildFlowInputArtifactLimit = int64(2 << 30)
 
 func CreateWildFlowInputArtifact(c *gin.Context) {
-	if !wildFlowTokenAllowsModel(c, service.WildFlowModelExamDualASR) {
-		wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token is not allowed to use this internal workflow")
-		return
-	}
 	mediaType, parameters, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
 	if err != nil || mediaType != "audio/flac" || len(parameters) != 0 {
 		wildFlowJobError(c, http.StatusUnsupportedMediaType, "unsupported_media_type", "input artifact must be audio/flac")
@@ -51,6 +47,15 @@ func CreateWildFlowInputArtifact(c *gin.Context) {
 	decodedDigest, err := hex.DecodeString(digest)
 	if err != nil || len(decodedDigest) != sha256.Size {
 		wildFlowJobError(c, http.StatusBadRequest, "invalid_digest", "a valid SHA-256 digest is required")
+		return
+	}
+	if !wildFlowTokenAllowsModel(c, service.WildFlowModelInternalASR) {
+		wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token model limits do not include this model")
+		return
+	}
+	if !service.IsWildFlowOfferingCallable(c.Request.Context(), service.WildFlowModelInternalASR) {
+		c.Header("Retry-After", "5")
+		wildFlowJobError(c, http.StatusServiceUnavailable, "model_unavailable", "internal ASR runtime is unavailable")
 		return
 	}
 	client, err := newWildFlowInferenceClient()
@@ -90,6 +95,12 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 	}
 	if !wildFlowTokenAllowsModel(c, request.Model) {
 		wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token is not allowed to use this model")
+		return
+	}
+	if request.Model == service.WildFlowModelInternalASR &&
+		!service.IsWildFlowOfferingCallable(c.Request.Context(), request.Model) {
+		c.Header("Retry-After", "5")
+		wildFlowJobError(c, http.StatusServiceUnavailable, "model_unavailable", "internal ASR runtime is unavailable")
 		return
 	}
 
@@ -250,7 +261,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		return
 	}
 	deadlineAfter := 30 * time.Minute
-	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
+	if service.IsWildFlowASRModelRef(operation.ProductModelRef) {
 		deadlineAfter = 6 * time.Hour
 	}
 	job, err := client.SubmitJob(c.Request.Context(), inferenceclient.JobCreateRequest{
@@ -490,6 +501,10 @@ func CancelWildFlowJob(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
+		wildFlowJobError(c, http.StatusGone, "retired_model", "the legacy ASR model is read-only")
+		return
+	}
 	if operation.JobID == "" {
 		wildFlowJobError(c, http.StatusConflict, "job_not_submitted", "job has not been submitted")
 		return
@@ -573,7 +588,7 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 	c.Status(http.StatusOK)
 	writer := io.Writer(c.Writer)
 	var contentDigest hash.Hash
-	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
+	if service.IsWildFlowASRModelRef(operation.ProductModelRef) {
 		contentDigest = sha256.New()
 		writer = io.MultiWriter(c.Writer, contentDigest)
 	}
@@ -590,7 +605,7 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 		logger.LogError(c.Request.Context(), "stream WildFlow artifact: "+err.Error())
 		return
 	}
-	if operation.ProductModelRef != service.WildFlowModelExamDualASR {
+	if !service.IsWildFlowASRModelRef(operation.ProductModelRef) {
 		return
 	}
 	actualDigest := hex.EncodeToString(contentDigest.Sum(nil))
@@ -687,6 +702,22 @@ func loadOwnedWildFlowArtifact(c *gin.Context) (inferenceclient.Artifact, *model
 }
 
 func authorizeWildFlowOperationModel(c *gin.Context, operation *model.WildFlowOperation) bool {
+	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
+		switch operation.State {
+		case "succeeded", "failed", "cancelled", "recovery_required":
+			return true
+		default:
+			wildFlowJobError(c, http.StatusGone, "retired_model", "the legacy ASR model is read-only")
+			return false
+		}
+	}
+	if operation.ProductModelRef == service.WildFlowModelInternalASR {
+		if wildFlowTokenAllowsModel(c, operation.ProductModelRef) {
+			return true
+		}
+		wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token model limits do not include this model")
+		return false
+	}
 	if !service.IsWildFlowTeamTrialOffering(operation.ProductModelRef) ||
 		wildFlowTokenAllowsModel(c, operation.ProductModelRef) {
 		return true
@@ -846,6 +877,8 @@ func writeWildFlowOperationError(c *gin.Context, err error) {
 		wildFlowJobError(c, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, service.ErrWildFlowUnsupportedModel):
 		wildFlowJobError(c, http.StatusBadRequest, "unsupported_model", err.Error())
+	case errors.Is(err, service.ErrWildFlowRetiredModel):
+		wildFlowJobError(c, http.StatusGone, "retired_model", err.Error())
 	case errors.Is(err, service.ErrWildFlowIdempotencyConflict):
 		wildFlowJobError(c, http.StatusConflict, "idempotency_conflict", err.Error())
 	default:

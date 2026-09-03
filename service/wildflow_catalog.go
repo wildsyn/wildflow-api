@@ -27,6 +27,7 @@ type WildFlowOffering struct {
 	Callable           bool                   `json:"callable"`
 	Status             string                 `json:"status"`
 	RuntimeOfferingID  string                 `json:"-"`
+	Visibility         string                 `json:"-"`
 }
 
 type WildFlowVoice struct {
@@ -100,16 +101,17 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 		},
 	},
 	{
-		ID:                 WildFlowModelExamDualASR,
-		DisplayName:        "直播回放双 ASR",
+		ID:                 WildFlowModelInternalASR,
+		DisplayName:        "VibeVoice + Faster Whisper 内部 ASR",
 		Kind:               "asr",
 		Vendor:             "WildFlow",
-		ModelVersionRef:    WildFlowModelExamDualASR,
-		RuntimeOfferingID:  "exam-replay-dual-asr",
-		Description:        "同时输出分段转写与逐词时间戳，适用于直播回放、课程和访谈素材；当前为团队内测。",
+		ModelVersionRef:    WildFlowModelInternalASR,
+		RuntimeOfferingID:  "internal-vibevoice-faster-whisper-asr",
+		Visibility:         "company_internal_authenticated",
+		Description:        "公司内部使用的复合 ASR Runtime，同时输出分段转写与逐词时间戳。",
 		RequiredParameters: []string{"input_artifact_ids"},
 		Pricing: WildFlowCatalogPricing{
-			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内测 · 暂不扣零售余额",
+			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "公司内部使用 · 不对外定价",
 		},
 	},
 }
@@ -146,6 +148,27 @@ func GetWildFlowCatalog(ctx context.Context) []WildFlowOffering {
 		}
 	}
 	return catalog
+}
+
+func GetPublicWildFlowCatalog(ctx context.Context) []WildFlowOffering {
+	catalog := GetWildFlowCatalog(ctx)
+	public := make([]WildFlowOffering, 0, len(catalog))
+	for _, offering := range catalog {
+		if offering.Visibility == "company_internal_authenticated" {
+			continue
+		}
+		public = append(public, offering)
+	}
+	return public
+}
+
+func IsWildFlowOfferingCallable(ctx context.Context, modelID string) bool {
+	for _, offering := range GetWildFlowCatalog(ctx) {
+		if offering.ID == modelID {
+			return offering.Callable
+		}
+	}
+	return false
 }
 
 func fetchWildFlowRuntimeCatalog(ctx context.Context) ([]wildFlowRuntimeOffering, error) {

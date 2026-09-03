@@ -10,6 +10,6 @@ import (
 func GetWildFlowCatalog(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    service.GetWildFlowCatalog(c.Request.Context()),
+		"data":    service.GetPublicWildFlowCatalog(c.Request.Context()),
 	})
 }
