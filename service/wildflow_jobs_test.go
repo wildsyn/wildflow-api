@@ -135,6 +135,20 @@ func TestPrepareWildFlowRuntimeParametersInjectsOnlyTrustedIdeogramEntitlement(t
 	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
 }
 
+func TestWildFlowDurableJobOfferingRejectsQwenChatCatalogEntry(t *testing.T) {
+	t.Parallel()
+
+	offering, ok := findWildFlowJobOffering("Qwen/Qwen3.8-27B-FP8@gpu-4090-06")
+	require.False(t, ok)
+	require.Empty(t, offering.ID)
+
+	_, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
+		Model:      "Qwen/Qwen3.8-27B-FP8@gpu-4090-06",
+		Parameters: map[string]any{"input": "hello"},
+	})
+	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
+}
+
 func TestValidateWildFlowParametersAcceptsEveryDocumentedVoice(t *testing.T) {
 	t.Parallel()
 
