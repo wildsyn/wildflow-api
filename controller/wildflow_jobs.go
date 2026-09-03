@@ -1,12 +1,12 @@
 package controller
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"mime"
 	"net/http"
@@ -28,6 +28,9 @@ import (
 
 const wildFlowJobRequestLimit = 256 * 1024
 const wildFlowInputArtifactLimit = int64(2 << 30)
+const wildFlowArtifactVerificationConcurrency = 2
+
+var wildFlowArtifactVerificationSlots = make(chan struct{}, wildFlowArtifactVerificationConcurrency)
 
 func CreateWildFlowInputArtifact(c *gin.Context) {
 	if !wildFlowTokenAllowsModel(c, service.WildFlowModelExamDualASR) {
@@ -530,6 +533,13 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 	if !ok {
 		return
 	}
+	select {
+	case wildFlowArtifactVerificationSlots <- struct{}{}:
+		defer func() { <-wildFlowArtifactVerificationSlots }()
+	default:
+		wildFlowJobError(c, http.StatusServiceUnavailable, "artifact_download_busy", "artifact download is busy")
+		return
+	}
 	client, err := newWildFlowInferenceClient()
 	if err != nil {
 		wildFlowJobError(c, http.StatusServiceUnavailable, "inference_unavailable", "inference service is unavailable")
@@ -565,19 +575,20 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 	} else if artifact.MediaType == "application/json" {
 		filename = artifact.ID + ".json"
 	}
-	c.Header("Content-Type", content.MediaType)
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeWildFlowFilename(filename)))
-	if content.ContentLength >= 0 {
-		c.Header("Content-Length", strconv.FormatInt(content.ContentLength, 10))
+	file, err := os.CreateTemp("", "wildflow-artifact-*")
+	if err != nil {
+		wildFlowInternalError(c, err)
+		return
 	}
-	c.Status(http.StatusOK)
-	writer := io.Writer(c.Writer)
-	var contentDigest hash.Hash
-	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
-		contentDigest = sha256.New()
-		writer = io.MultiWriter(c.Writer, contentDigest)
-	}
-	written, err := io.Copy(writer, content.Body)
+	defer func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	}()
+	digest := sha256.New()
+	written, err := io.Copy(
+		io.MultiWriter(file, digest),
+		io.LimitReader(content.Body, artifact.SizeBytes+1),
+	)
 	if err != nil {
 		if updateErr := model.UpdateWildFlowOperationExecution(
 			operation.OperationID,
@@ -588,32 +599,91 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 			logger.LogError(c.Request.Context(), "persist WildFlow artifact stream recovery: "+updateErr.Error())
 		}
 		logger.LogError(c.Request.Context(), "stream WildFlow artifact: "+err.Error())
+		wildFlowJobError(c, http.StatusServiceUnavailable, "artifact_stream_error", "artifact content requires recovery")
 		return
 	}
-	if operation.ProductModelRef != service.WildFlowModelExamDualASR {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		wildFlowInternalError(c, err)
 		return
 	}
-	actualDigest := hex.EncodeToString(contentDigest.Sum(nil))
-	if written != artifact.SizeBytes || actualDigest != strings.ToLower(artifact.SHA256) {
+	magic := make([]byte, 12)
+	magicSize, err := file.Read(magic)
+	if err != nil && err != io.EOF {
+		wildFlowInternalError(c, err)
+		return
+	}
+	actualDigest := hex.EncodeToString(digest.Sum(nil))
+	if written != artifact.SizeBytes ||
+		actualDigest != strings.ToLower(artifact.SHA256) ||
+		!validWildFlowArtifactMagic(artifact.MediaType, magic[:magicSize]) {
 		if updateErr := model.UpdateWildFlowOperationExecution(
 			operation.OperationID,
 			operation.JobID,
 			"recovery_required",
 			"artifact_integrity_error",
 		); updateErr != nil {
-			logger.LogError(c.Request.Context(), "persist WildFlow artifact integrity recovery: "+updateErr.Error())
+			wildFlowInternalError(c, updateErr)
+			return
 		}
-		logger.LogError(c.Request.Context(), "WildFlow artifact stream digest or size differs from metadata")
+		wildFlowJobError(c, http.StatusServiceUnavailable, "artifact_integrity_error", "artifact content requires recovery")
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		wildFlowInternalError(c, err)
+		return
+	}
+	c.Header("Content-Type", content.MediaType)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeWildFlowFilename(filename)))
+	c.Header("Content-Length", strconv.FormatInt(written, 10))
+	c.Status(http.StatusOK)
+	sent, err := io.Copy(c.Writer, file)
+	if err != nil {
+		logger.LogError(c.Request.Context(), "send verified WildFlow artifact: "+err.Error())
+		return
+	}
+	if sent != written {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("send verified WildFlow artifact: wrote %d of %d bytes", sent, written))
+		return
+	}
+	if operation.ProductModelRef != service.WildFlowModelExamDualASR {
 		return
 	}
 	tenantDigest := sha256.Sum256([]byte(wildFlowTenantRef(operation.UserID)))
 	if _, _, err := model.RecordWildFlowArtifactDownloadReceipt(&model.WildFlowArtifactDownloadReceipt{
 		OperationID: operation.OperationID, JobID: operation.JobID, ArtifactID: artifact.ID,
 		UserID: operation.UserID, TenantRefSHA256: hex.EncodeToString(tenantDigest[:]),
-		ArtifactMediaType: artifact.MediaType, ArtifactSizeBytes: written,
+		ArtifactMediaType: artifact.MediaType, ArtifactSizeBytes: sent,
 		ArtifactSHA256: actualDigest, CompletedAt: time.Now().UTC(),
 	}); err != nil {
 		logger.LogError(c.Request.Context(), "persist WildFlow artifact download receipt: "+err.Error())
+	}
+}
+
+func validWildFlowArtifactMagic(mediaType string, magic []byte) bool {
+	switch mediaType {
+	case "application/json":
+		for _, value := range magic {
+			if value == ' ' || value == '\n' || value == '\r' || value == '\t' {
+				continue
+			}
+			return value == '{' || value == '['
+		}
+		return false
+	case "audio/mpeg":
+		return bytes.HasPrefix(magic, []byte("ID3")) ||
+			(len(magic) >= 2 && magic[0] == 0xff && magic[1]&0xe0 == 0xe0)
+	case "audio/wav":
+		return len(magic) >= 12 && bytes.Equal(magic[:4], []byte("RIFF")) && bytes.Equal(magic[8:12], []byte("WAVE"))
+	case "image/png":
+		return bytes.HasPrefix(magic, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
+	case "image/jpeg":
+		return len(magic) >= 3 && magic[0] == 0xff && magic[1] == 0xd8 && magic[2] == 0xff
+	case "image/gif":
+		return bytes.HasPrefix(magic, []byte("GIF87a")) || bytes.HasPrefix(magic, []byte("GIF89a"))
+	case "image/webp":
+		return len(magic) >= 12 && bytes.Equal(magic[:4], []byte("RIFF")) && bytes.Equal(magic[8:12], []byte("WEBP"))
+	default:
+		return false
 	}
 }
 
