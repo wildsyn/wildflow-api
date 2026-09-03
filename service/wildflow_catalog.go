@@ -87,6 +87,19 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 		},
 	},
 	{
+		ID:                 WildFlowModelIdeogram4MixedV3,
+		DisplayName:        "Ideogram 4 mixed-v3",
+		Kind:               "image",
+		Vendor:             "Ideogram",
+		ModelVersionRef:    "ideogram-4-mixed-v3@bbee2ab2",
+		RuntimeOfferingID:  "ideogram-4-mixed-v3",
+		Description:        "Ideogram 4 图片生成，仅限团队内部非商业评测使用，不提供商用承诺。",
+		RequiredParameters: []string{"prompt", "width", "height", "seed", "steps"},
+		Pricing: WildFlowCatalogPricing{
+			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内部非商业评测 · 暂不扣零售余额",
+		},
+	},
+	{
 		ID:                "Qwen/Qwen3.8-27B-FP8",
 		DisplayName:       "Qwen3.8-27B (FP8) 对话",
 		Kind:              "chat",

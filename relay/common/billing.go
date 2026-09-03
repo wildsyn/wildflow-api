@@ -13,6 +13,10 @@ type BillingSettler interface {
 	// 通过 gopool 异步执行。如果已经结算或退款则不做任何操作。
 	Refund(c *gin.Context)
 
+	// RefundUnsent 仅释放本次会话创建且尚未触达 Provider 的预占。重复请求
+	// 不能借此释放已有请求的预占，避免结果未知时错误退款。
+	RefundUnsent(c *gin.Context)
+
 	// NeedsRefund 返回会话是否存在需要退还的预扣状态（未结算且未退款）。
 	NeedsRefund() bool
 

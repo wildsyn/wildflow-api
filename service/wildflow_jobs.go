@@ -29,9 +29,11 @@ type WildFlowJobRequest struct {
 }
 
 const (
-	WildFlowModelVoxCPM2     = "VoxCPM2"
-	WildFlowModelFlux2       = "FLUX.2 [klein] 4B"
-	WildFlowModelExamDualASR = "wildflow/exam-replay-dual-asr-v1"
+	WildFlowModelVoxCPM2          = "VoxCPM2"
+	WildFlowModelFlux2            = "FLUX.2 [klein] 4B"
+	WildFlowModelIdeogram4MixedV3 = "Ideogram 4 mixed-v3"
+	WildFlowModelExamDualASR      = "wildflow/exam-replay-dual-asr-v1"
+	wildFlowIdeogram4Entitlement  = "internal-noncommercial-evaluation-only"
 )
 
 var wildFlowTTSVoices = map[string]struct{}{
@@ -64,6 +66,10 @@ func NormalizeWildFlowJobRequest(request WildFlowJobRequest) (WildFlowJobRequest
 	case WildFlowModelFlux2:
 	case "flux2-klein-4b", "flux2", "black-forest-labs/FLUX.2-klein-4B":
 		request.Model = WildFlowModelFlux2
+	case WildFlowModelIdeogram4MixedV3:
+		if _, exists := request.Parameters["guidance_scale"]; !exists {
+			request.Parameters["guidance_scale"] = float64(7)
+		}
 	case WildFlowModelExamDualASR:
 	default:
 		return WildFlowJobRequest{}, ErrWildFlowUnsupportedModel
@@ -175,6 +181,28 @@ func ResolveWildFlowRuntimeOfferingRef(publicModelRef string, modelVersionRef st
 	return offering.ID, nil
 }
 
+// PrepareWildFlowRuntimeParameters copies public parameters into the trusted
+// inference request and appends any entitlement that only the API may provide.
+func PrepareWildFlowRuntimeParameters(publicModelRef string, modelVersionRef string, parameters map[string]any) (map[string]any, error) {
+	offering, ok := FindWildFlowOffering(publicModelRef)
+	if !ok || offering.ModelVersionRef != modelVersionRef {
+		return nil, ErrWildFlowUnsupportedModel
+	}
+	runtimeParameters := make(map[string]any, len(parameters)+1)
+	for key, value := range parameters {
+		runtimeParameters[key] = value
+	}
+	if offering.ID == WildFlowModelIdeogram4MixedV3 {
+		runtimeParameters["license_entitlement"] = wildFlowIdeogram4Entitlement
+	}
+	return runtimeParameters, nil
+}
+
+func IsWildFlowTeamTrialOffering(publicModelRef string) bool {
+	offering, ok := FindWildFlowOffering(publicModelRef)
+	return ok && offering.Pricing.Unit == "team_trial"
+}
+
 func sha256Hex(value []byte) string {
 	digest := sha256.Sum256(value)
 	return hex.EncodeToString(digest[:])
@@ -193,12 +221,47 @@ func validateWildFlowParameters(kind string, parameters map[string]any) error {
 	return ErrWildFlowUnsupportedModel
 }
 
+func validateWildFlowIdeogram4Parameters(parameters map[string]any) error {
+	allowed := map[string]bool{
+		"prompt": true, "width": true, "height": true, "seed": true, "steps": true, "guidance_scale": true,
+	}
+	for key := range parameters {
+		if !allowed[key] {
+			return ErrWildFlowInvalidParameters
+		}
+	}
+	prompt, ok := parameters["prompt"].(string)
+	if !ok || strings.TrimSpace(prompt) == "" || utf8.RuneCountInString(prompt) > 4_000 {
+		return ErrWildFlowInvalidParameters
+	}
+	width, widthOK := boundedInteger(parameters["width"], 1_024, 1_536)
+	height, heightOK := boundedInteger(parameters["height"], 1_024, 1_536)
+	if !widthOK || !heightOK || !((width == 1_024 && height == 1_024) ||
+		(width == 1_024 && height == 1_536) || (width == 1_536 && height == 1_024)) {
+		return ErrWildFlowInvalidParameters
+	}
+	if _, valid := boundedInteger(parameters["seed"], 0, 4_294_967_295); !valid {
+		return ErrWildFlowInvalidParameters
+	}
+	if _, valid := boundedInteger(parameters["steps"], 1, 100); !valid {
+		return ErrWildFlowInvalidParameters
+	}
+	guidanceScale, valid := finiteNumber(parameters["guidance_scale"])
+	if !valid || guidanceScale <= 0 || guidanceScale > 30 {
+		return ErrWildFlowInvalidParameters
+	}
+	return nil
+}
+
 func validateWildFlowRequest(kind string, request WildFlowJobRequest) error {
 	if kind == "asr" {
 		return validateWildFlowASRRequest(request)
 	}
 	if len(request.InputArtifactIDs) != 0 {
 		return ErrWildFlowInvalidParameters
+	}
+	if request.Model == WildFlowModelIdeogram4MixedV3 {
+		return validateWildFlowIdeogram4Parameters(request.Parameters)
 	}
 	return validateWildFlowParameters(kind, request.Parameters)
 }

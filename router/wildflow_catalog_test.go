@@ -56,6 +56,18 @@ func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T
 				"status":"unavailable"
 			},
 			{
+				"id":"Ideogram 4 mixed-v3",
+				"display_name":"Ideogram 4 mixed-v3",
+				"kind":"image",
+				"vendor":"Ideogram",
+				"model_version_ref":"ideogram-4-mixed-v3@bbee2ab2",
+				"description":"Ideogram 4 图片生成，仅限团队内部非商业评测使用，不提供商用承诺。",
+				"required_parameters":["prompt","width","height","seed","steps"],
+				"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内部非商业评测 · 暂不扣零售余额"},
+				"callable":false,
+				"status":"unavailable"
+			},
+			{
 				"id":"Qwen/Qwen3.8-27B-FP8",
 				"display_name":"Qwen3.8-27B (FP8) 对话",
 				"kind":"chat",
