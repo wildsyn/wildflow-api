@@ -152,7 +152,7 @@ func TestNormalizeAndValidateInternalExamDualASRRequest(t *testing.T) {
 	t.Parallel()
 
 	request, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
-		Model:            WildFlowModelExamDualASR,
+		Model:            "wildflow/internal-vibevoice-faster-whisper-asr-v1",
 		InputArtifactIDs: []string{"input-artifact-1"},
 		Parameters: map[string]any{
 			"language": "zh", "context": "申论课程",
@@ -160,7 +160,7 @@ func TestNormalizeAndValidateInternalExamDualASRRequest(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Equal(t, WildFlowModelExamDualASR, request.Model)
+	require.Equal(t, "wildflow/internal-vibevoice-faster-whisper-asr-v1", request.Model)
 	offering, ok := findWildFlowJobOffering(request.Model)
 	require.True(t, ok)
 	require.Equal(t, "asr", offering.Kind)
@@ -181,24 +181,36 @@ func TestNormalizeAndValidateInternalExamDualASRRequest(t *testing.T) {
 	}
 }
 
-func TestPublicWildFlowCatalogExposesTeamDualASR(t *testing.T) {
+func TestNormalizeWildFlowJobRequestRejectsRetiredExamReplayASRIdentity(t *testing.T) {
 	t.Parallel()
 
-	public, visible := FindWildFlowOffering(WildFlowModelExamDualASR)
+	_, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
+		Model:            WildFlowModelExamDualASR,
+		InputArtifactIDs: []string{"input-1"},
+		Parameters:       map[string]any{},
+	})
+	require.Error(t, err)
+}
+
+func TestCanonicalWildFlowCatalogUsesInternalASRIdentity(t *testing.T) {
+	t.Parallel()
+
+	public, visible := FindWildFlowOffering("wildflow/internal-vibevoice-faster-whisper-asr-v1")
 	require.True(t, visible)
-	require.Equal(t, WildFlowModelExamDualASR, public.ModelVersionRef)
-	require.Equal(t, "直播回放双 ASR", public.DisplayName)
+	require.Equal(t, "wildflow/internal-vibevoice-faster-whisper-asr-v1", public.ModelVersionRef)
+	_, legacyVisible := FindWildFlowOffering(WildFlowModelExamDualASR)
+	require.False(t, legacyVisible)
 }
 
 func TestResolveWildFlowRuntimeOfferingRefKeepsPublicAndRuntimeIdentityDistinct(t *testing.T) {
 	t.Parallel()
 
 	runtimeRef, err := ResolveWildFlowRuntimeOfferingRef(
-		WildFlowModelExamDualASR,
-		WildFlowModelExamDualASR,
+		"wildflow/internal-vibevoice-faster-whisper-asr-v1",
+		"wildflow/internal-vibevoice-faster-whisper-asr-v1",
 	)
 	require.NoError(t, err)
-	require.Equal(t, "exam-replay-dual-asr", runtimeRef)
+	require.Equal(t, "internal-vibevoice-faster-whisper-asr", runtimeRef)
 
 	runtimeRef, err = ResolveWildFlowRuntimeOfferingRef(
 		WildFlowModelIdeogram4MixedV3,

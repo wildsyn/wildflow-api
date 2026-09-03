@@ -35,12 +35,49 @@ func withCallableWildFlowRuntime(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[
 			{"id":"VoxCPM2","model_version_ref":"openbmb/VoxCPM2","callable":true},
 			{"id":"FLUX.2 [klein] 4B","model_version_ref":"black-forest-labs/FLUX.2-klein-4B","callable":true},
-			{"id":"exam-replay-dual-asr","model_version_ref":"wildflow/exam-replay-dual-asr-v1","callable":true}
+			{"id":"internal-vibevoice-faster-whisper-asr","model_version_ref":"wildflow/internal-vibevoice-faster-whisper-asr-v1","callable":true}
 		]}`))
 	}))
 	t.Cleanup(server.Close)
 	t.Setenv("WILDFLOW_INFERENCE_URL", server.URL)
 	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "model-list-test-token")
+}
+
+func TestInternalASRModelDirectoryRequiresCompanyGroupAndExplicitKeyLimit(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	setupModelListControllerTestDB(t)
+	withCallableWildFlowRuntime(t)
+	t.Setenv("WILDFLOW_INTERNAL_ASR_GROUPS", "company-internal")
+	const internalASR = "wildflow/internal-vibevoice-faster-whisper-asr-v1"
+
+	for name, setup := range map[string]func(*gin.Context){
+		"ordinary user with explicit key limit": func(ctx *gin.Context) {
+			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+			common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{internalASR: true})
+		},
+		"company user with unrestricted key": func(ctx *gin.Context) {
+			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "company-internal")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			setup(ctx)
+			ListModels(ctx, constant.ChannelTypeOpenAI)
+			assert.NotContains(t, decodeListModelsResponse(t, recorder), internalASR)
+		})
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "company-internal")
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
+	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{internalASR: true})
+	ListModels(ctx, constant.ChannelTypeOpenAI)
+	assert.Contains(t, decodeListModelsResponse(t, recorder), internalASR)
 }
 
 type listModelsResponse struct {
