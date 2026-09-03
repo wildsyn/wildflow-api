@@ -195,16 +195,17 @@ func TestCreateDualASRJobAllowsStandardRegisteredUserTokenAndPreauthorizesRetail
 	require.NoError(t, model.DB.First(&user, 42).Error)
 	require.NoError(t, model.DB.First(&token, 7).Error)
 	require.NoError(t, model.DB.Where("operation_id = ?", response.Header().Get("Location")[len("/v1/jobs/"):]).First(&operation).Error)
-	assert.Equal(t, 178_082, user.Quota)
-	assert.Equal(t, 178_082, token.RemainQuota)
+	assert.Equal(t, 589_041, user.Quota)
+	assert.Equal(t, 589_041, token.RemainQuota)
 	assert.Equal(t, service.WildFlowModelExamDualASR, operation.ProductModelRef)
 	assert.Equal(t, "wildflow/exam-replay-dual-asr-v1", operation.ModelVersionRef)
 	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
 	assert.Equal(t, model.WildFlowBillingSourceWallet, operation.BillingSource)
-	assert.Equal(t, 821_918, operation.BillingQuota)
-	assert.Equal(t, int64(12_000_000), operation.BillingAmountMicros)
+	assert.Equal(t, 410_959, operation.BillingQuota)
+	assert.Equal(t, int64(6_000_000), operation.BillingAmountMicros)
 	assert.Equal(t, "audio_millisecond", operation.BillingUnit)
 	assert.Equal(t, int64(7_200_000), operation.BillingBillableUnits)
+	assert.Equal(t, "wildflow-retail-cny-v2", operation.BillingPriceVersion)
 }
 
 func TestDualASRJSONArtifactIsDownloadable(t *testing.T) {

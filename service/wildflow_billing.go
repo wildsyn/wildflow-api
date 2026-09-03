@@ -16,8 +16,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const wildFlowRetailPriceVersion = "wildflow-retail-cny-v1"
+const (
+	wildFlowPreviousRetailPriceVersion = "wildflow-retail-cny-v1"
+	wildFlowRetailPriceVersion         = "wildflow-retail-cny-v2"
+)
 const wildFlowASRMaximumDurationMilliseconds int64 = 7_200_000
+
+func supportedWildFlowRetailPriceVersion(value string) bool {
+	return value == wildFlowRetailPriceVersion || value == wildFlowPreviousRetailPriceVersion
+}
 
 var (
 	ErrWildFlowBillingInsufficientQuota = errors.New("insufficient quota for WildFlow job")
