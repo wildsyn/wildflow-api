@@ -303,6 +303,46 @@ func TestSettleWildFlowBillingIsIdempotentAndDoesNotMoveReservedQuota(t *testing
 	assert.Equal(t, "usage-wallet-settle", second.BillingUsageEventID)
 }
 
+func TestSettleDualASRBillingRefundsUnusedPreauthorization(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	user, token, operation := createWildFlowBillingFixture(t, db, "dual-asr-settle")
+	operation.ProductModelRef = "wildflow/dual-asr-v1"
+	operation.ModelVersionRef = "wildflow/exam-replay-dual-asr-v1"
+	require.NoError(t, db.Save(operation).Error)
+	quote := WildFlowBillingQuote{
+		Currency: "CNY", AmountMicros: 12_000_000, Unit: "audio_millisecond",
+		BillableUnits: 7_200_000, Quota: 80_000, QuotaPerUnit: "500000",
+		USDExchangeRate: "7.5", PriceVersion: "wildflow-retail-cny-v1",
+	}
+	_, err := ReserveWildFlowWalletBilling(operation.OperationID, quote)
+	require.NoError(t, err)
+	require.NoError(t, UpdateWildFlowOperationExecution(operation.OperationID, "job-dual-asr", "succeeded", ""))
+	_, err = StoreWildFlowOperationResult(operation.OperationID, `{"id":"op-dual-asr-settle","state":"succeeded"}`, time.Now().Add(time.Hour).Unix())
+	require.NoError(t, err)
+	replayed, err := RecordWildFlowUsageEvent(&WildFlowUsageEvent{
+		EventID: "usage-dual-asr", PayloadDigest: strings.Repeat("a", 64),
+		OperationID: operation.OperationID, JobID: "job-dual-asr",
+		ModelVersionRef: operation.ModelVersionRef,
+		Kind: "audio_duration", Quantity: 45_000, Unit: "millisecond",
+	})
+	require.NoError(t, err)
+	assert.False(t, replayed)
+
+	settled, changed, err := SettleWildFlowOperationBilling(operation.OperationID)
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, WildFlowBillingStateSettled, settled.BillingState)
+	assert.Equal(t, int64(45_000), settled.BillingBillableUnits)
+	assert.Equal(t, int64(75_000), settled.BillingAmountMicros)
+	assert.Equal(t, 500, settled.BillingQuota)
+	require.NoError(t, db.First(user, user.Id).Error)
+	require.NoError(t, db.First(token, token.Id).Error)
+	assert.Equal(t, 99_500, user.Quota)
+	assert.Equal(t, 500, user.UsedQuota)
+	assert.Equal(t, 99_500, token.RemainQuota)
+	assert.Equal(t, 500, token.UsedQuota)
+}
+
 func TestRecordWildFlowUsageEventRejectsBillingMismatchBeforePersistence(t *testing.T) {
 	db := setupWildFlowBillingModelTest(t)
 	_, _, operation := createWildFlowBillingFixture(t, db, "usage-mismatch")

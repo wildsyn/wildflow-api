@@ -235,6 +235,14 @@ func TestNormalizeAndValidateInternalExamDualASRRequest(t *testing.T) {
 	}
 }
 
+func TestNormalizeLegacyASRModelNameToNeutralPublicID(t *testing.T) {
+	request, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
+		Model: "wildflow/exam-replay-dual-asr-v1", InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "wildflow/dual-asr-v1", request.Model)
+}
+
 func TestPublicWildFlowCatalogExposesTeamDualASR(t *testing.T) {
 	t.Parallel()
 

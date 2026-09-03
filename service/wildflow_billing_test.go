@@ -60,6 +60,16 @@ func TestQuoteWildFlowBillingUsesRetailCNYPrices(t *testing.T) {
 			billableUnit: 1,
 			quota:        3_425,
 		},
+		{
+			name: "dual ASR preauthorizes the two hour maximum at 0.10 CNY per audio minute",
+			request: WildFlowJobRequest{
+				Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
+			},
+			amountMicros: 12_000_000,
+			billingUnit:  "audio_millisecond",
+			billableUnit: 7_200_000,
+			quota:        821_918,
+		},
 	}
 
 	for _, test := range tests {
@@ -227,11 +237,10 @@ func TestQuoteWildFlowBillingRejectsUnsupportedModel(t *testing.T) {
 	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
 }
 
-func TestInternalExamDualASRTrialDoesNotCreateRetailBilling(t *testing.T) {
+func TestDualASRUsesRetailBilling(t *testing.T) {
 	operation := &model.WildFlowOperation{
 		OperationID: "op-internal-asr", ProductModelRef: WildFlowModelExamDualASR,
-		ModelVersionRef: WildFlowModelExamDualASR, BillingState: model.WildFlowBillingStatePending,
-		BillingSource: model.WildFlowBillingSourceTeamTrial,
+		ModelVersionRef: wildFlowModelVersionDualASR, BillingState: model.WildFlowBillingStatePending,
 	}
 	request := WildFlowJobRequest{
 		Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
@@ -239,14 +248,12 @@ func TestInternalExamDualASRTrialDoesNotCreateRetailBilling(t *testing.T) {
 
 	reserved, err := ReserveWildFlowOperationBilling(operation, request)
 	require.NoError(t, err)
-	assert.Same(t, operation, reserved)
-	assert.Equal(t, model.WildFlowBillingStatePending, reserved.BillingState)
-	assert.Equal(t, model.WildFlowBillingSourceTeamTrial, reserved.BillingSource)
-	_, err = QuoteWildFlowBilling(request)
-	require.ErrorIs(t, err, ErrWildFlowUnsupportedModel)
-	operation.BillingState = model.WildFlowBillingStateReserved
-	_, err = ReserveWildFlowOperationBilling(operation, request)
-	require.ErrorIs(t, err, model.ErrWildFlowBillingStateConflict)
+	assert.Equal(t, model.WildFlowBillingStateReserved, reserved.BillingState)
+	assert.Equal(t, model.WildFlowBillingSourceWallet, reserved.BillingSource)
+	quote, err := QuoteWildFlowBilling(request)
+	require.NoError(t, err)
+	assert.Equal(t, "audio_millisecond", quote.Unit)
+	assert.Equal(t, int64(7_200_000), quote.BillableUnits)
 }
 
 func TestWildFlowBillingServiceIgnoresUnbilledAndNonTerminalOperations(t *testing.T) {
