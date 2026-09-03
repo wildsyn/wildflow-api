@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -64,6 +65,7 @@ func TestRedisIPRateLimiterThresholdTTLAndNamespace(t *testing.T) {
 	limitedResponse := performRateLimitRequest(router, "/limited", remoteAddr)
 	assert.Equal(t, http.StatusTooManyRequests, limitedResponse.Code)
 	assert.Equal(t, "37", limitedResponse.Header().Get("Retry-After"))
+	assert.JSONEq(t, `{"success":false,"code":"rate_limited","message":"Too many requests. Please retry later.","retry_after":37}`, limitedResponse.Body.String())
 
 	key := redisIPRateLimitKey("TEST", "192.0.2.10")
 	count, err := redisServer.Get(key)
@@ -71,6 +73,56 @@ func TestRedisIPRateLimiterThresholdTTLAndNamespace(t *testing.T) {
 	assert.Equal(t, "3", count)
 	assert.Equal(t, 37*time.Second, redisServer.TTL(key))
 	assert.True(t, redisServer.Exists(legacyKey), "the v2 counter must not touch an old list key")
+}
+
+func TestRedisUserRateLimiterSeparatesUsersAndScopesBehindSharedIP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	redisServer, _ := useRateLimitMiniRedis(t)
+
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	router.GET(
+		"/token-key",
+		func(c *gin.Context) {
+			userID, err := strconv.Atoi(c.GetHeader("X-Test-User"))
+			require.NoError(t, err)
+			c.Set("id", userID)
+		},
+		userRateLimitFactory(1, 31, "UC:token-key-read"),
+		func(c *gin.Context) { c.Status(http.StatusNoContent) },
+	)
+	router.GET(
+		"/auth-flow",
+		func(c *gin.Context) { c.Set("id", 101) },
+		userRateLimitFactory(1, 31, "UC:auth-flow"),
+		func(c *gin.Context) { c.Status(http.StatusNoContent) },
+	)
+
+	sharedIP := "192.0.2.70:12345"
+	authRequest := httptest.NewRequest(http.MethodGet, "/auth-flow", nil)
+	authRequest.RemoteAddr = sharedIP
+	authResponse := httptest.NewRecorder()
+	router.ServeHTTP(authResponse, authRequest)
+	assert.Equal(t, http.StatusNoContent, authResponse.Code)
+
+	requestForUser := func(userID string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "/token-key", nil)
+		request.RemoteAddr = sharedIP
+		request.Header.Set("X-Test-User", userID)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+
+	assert.Equal(t, http.StatusNoContent, requestForUser("101").Code)
+	assert.Equal(t, http.StatusNoContent, requestForUser("202").Code)
+	limitedResponse := requestForUser("101")
+	assert.Equal(t, http.StatusTooManyRequests, limitedResponse.Code)
+	assert.Equal(t, "31", limitedResponse.Header().Get("Retry-After"))
+
+	assert.True(t, redisServer.Exists(redisUserRateLimitKey("UC:auth-flow", 101)))
+	assert.True(t, redisServer.Exists(redisUserRateLimitKey("UC:token-key-read", 101)))
+	assert.True(t, redisServer.Exists(redisUserRateLimitKey("UC:token-key-read", 202)))
 }
 
 func TestRedisUserRateLimiterUsesSharedFixedWindow(t *testing.T) {
