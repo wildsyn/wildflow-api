@@ -330,7 +330,7 @@ func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *te
 			"faster_whisper_model_revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",
 			"duration_seconds":              float64(120),
 			"source_artifact_id":            "input-1",
-			"runtime_version_ref":           "exam-dual-asr-runtime-v1-a09e48e-94da20d",
+			"runtime_version_ref":           "exam-dual-asr-http-runtime-v1-1a2854c",
 		},
 	}
 	operation := &model.WildFlowOperation{ProductModelRef: WildFlowModelExamDualASR}
