@@ -250,6 +250,9 @@ func ReserveWildFlowSubscriptionBilling(operationID string, quote WildFlowBillin
 
 func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, bool, error) {
 	var result *WildFlowOperation
+	var tokenKey string
+	userQuotaRefund := 0
+	tokenQuotaRefund := 0
 	changed := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		operation, err := loadWildFlowOperationForBilling(tx, operationID)
@@ -285,6 +288,50 @@ func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 		if !wildFlowUsageEventMatchesOperation(operation, &usageEvent) {
 			return ErrWildFlowBillingStateConflict
 		}
+		actualAmountMicros, actualQuota, actualTokenQuota, actualBillableUnits, err :=
+			wildFlowActualUsageBilling(operation, &usageEvent)
+		if err != nil {
+			return err
+		}
+		userQuotaRefund = operation.BillingQuota - actualQuota
+		tokenQuotaRefund = operation.BillingTokenQuota - actualTokenQuota
+		if userQuotaRefund < 0 || tokenQuotaRefund < 0 {
+			return ErrWildFlowBillingStateConflict
+		}
+		if userQuotaRefund > 0 {
+			switch operation.BillingSource {
+			case WildFlowBillingSourceWallet:
+				if err := tx.Model(&User{}).Where("id = ?", operation.UserID).
+					Update("quota", gorm.Expr("quota + ?", userQuotaRefund)).Error; err != nil {
+					return err
+				}
+			case WildFlowBillingSourceSubscription:
+				if err := postConsumeUserSubscriptionDeltaTx(tx, operation.BillingSubscriptionID, -int64(userQuotaRefund)); err != nil {
+					return err
+				}
+				update := tx.Model(&SubscriptionPreConsumeRecord{}).
+					Where("request_id = ? AND status = ? AND pre_consumed = ?", operation.OperationID, "consumed", operation.BillingQuota).
+					Update("pre_consumed", actualQuota)
+				if update.Error != nil || update.RowsAffected != 1 {
+					return ErrWildFlowBillingStateConflict
+				}
+			default:
+				return ErrWildFlowBillingStateConflict
+			}
+		}
+		if tokenQuotaRefund > 0 && operation.TokenID > 0 {
+			var token Token
+			if err := lockForUpdate(tx).Where("id = ? AND user_id = ?", operation.TokenID, operation.UserID).First(&token).Error; err != nil {
+				return err
+			}
+			tokenKey = token.Key
+			if err := tx.Model(&Token{}).Where("id = ?", token.Id).Updates(map[string]any{
+				"remain_quota": gorm.Expr("remain_quota + ?", tokenQuotaRefund),
+				"used_quota":   gorm.Expr("used_quota - ?", tokenQuotaRefund),
+			}).Error; err != nil {
+				return err
+			}
+		}
 		now := time.Now().Unix()
 		update := tx.Model(&WildFlowOperation{}).
 			Where("id = ? AND billing_state = ? AND state = ? AND result_json <> ? AND result_validated_time > 0",
@@ -292,6 +339,10 @@ func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 			Updates(map[string]any{
 				"billing_state":          WildFlowBillingStateSettled,
 				"billing_usage_event_id": usageEvent.EventID,
+				"billing_quota":          actualQuota,
+				"billing_token_quota":    actualTokenQuota,
+				"billing_amount_micros":  actualAmountMicros,
+				"billing_billable_units": actualBillableUnits,
 				"billing_settled_time":   now,
 				"updated_time":           now,
 			})
@@ -306,13 +357,17 @@ func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 			return nil
 		}
 		if err := tx.Model(&User{}).Where("id = ?", operation.UserID).Updates(map[string]any{
-			"used_quota":    gorm.Expr("used_quota + ?", operation.BillingQuota),
+			"used_quota":    gorm.Expr("used_quota + ?", actualQuota),
 			"request_count": gorm.Expr("request_count + 1"),
 		}).Error; err != nil {
 			return err
 		}
 		operation.BillingState = WildFlowBillingStateSettled
 		operation.BillingUsageEventID = usageEvent.EventID
+		operation.BillingQuota = actualQuota
+		operation.BillingTokenQuota = actualTokenQuota
+		operation.BillingAmountMicros = actualAmountMicros
+		operation.BillingBillableUnits = actualBillableUnits
 		operation.BillingSettledTime = now
 		operation.UpdatedTime = now
 		if _, err := ensureWildFlowCanonicalBillingLogTx(tx, operation, LogTypeConsume, "WildFlow job settled"); err != nil {
@@ -322,7 +377,46 @@ func SettleWildFlowOperationBilling(operationID string) (*WildFlowOperation, boo
 		changed = true
 		return nil
 	})
+	if err == nil && changed && (userQuotaRefund > 0 || tokenQuotaRefund > 0) {
+		userID := 0
+		if result != nil && result.BillingSource == WildFlowBillingSourceWallet {
+			userID = result.UserID
+		}
+		syncWildFlowBillingQuotaCache(userID, tokenKey, userQuotaRefund, tokenQuotaRefund)
+	}
 	return result, changed, err
+}
+
+func wildFlowActualUsageBilling(
+	operation *WildFlowOperation,
+	usageEvent *WildFlowUsageEvent,
+) (int64, int, int, int64, error) {
+	if operation == nil || usageEvent == nil {
+		return 0, 0, 0, 0, ErrWildFlowBillingStateConflict
+	}
+	if operation.BillingUnit != "audio_millisecond" {
+		return operation.BillingAmountMicros, operation.BillingQuota,
+			operation.BillingTokenQuota, operation.BillingBillableUnits, nil
+	}
+	maximum := operation.BillingBillableUnits
+	actual := usageEvent.Quantity
+	if maximum <= 0 || actual <= 0 || actual > maximum {
+		return 0, 0, 0, 0, ErrWildFlowBillingStateConflict
+	}
+	amountMicros := ceilProportionalInt64(operation.BillingAmountMicros, actual, maximum)
+	quota := ceilProportionalInt64(int64(operation.BillingQuota), actual, maximum)
+	tokenQuota := ceilProportionalInt64(int64(operation.BillingTokenQuota), actual, maximum)
+	if amountMicros <= 0 || quota <= 0 || quota > int64(^uint(0)>>1) || tokenQuota < 0 || tokenQuota > int64(^uint(0)>>1) {
+		return 0, 0, 0, 0, ErrWildFlowBillingStateConflict
+	}
+	return amountMicros, int(quota), int(tokenQuota), actual, nil
+}
+
+func ceilProportionalInt64(total int64, actual int64, maximum int64) int64 {
+	if total == 0 {
+		return 0
+	}
+	return (total*actual + maximum - 1) / maximum
 }
 
 func RefundWildFlowOperationBilling(operationID string) (*WildFlowOperation, bool, error) {

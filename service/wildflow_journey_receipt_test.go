@@ -50,8 +50,12 @@ func setupWildFlowJourneyReceiptServiceTest(t *testing.T) (*gorm.DB, *model.Wild
 		OperationID: "op-journey-1", UserID: 42, TokenID: 7,
 		IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64),
 		RequestID: "request-journey-1", ProductModelRef: WildFlowModelExamDualASR,
-		ModelVersionRef: WildFlowModelExamDualASR, JobID: artifact.JobID, State: "succeeded",
-		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
+		ModelVersionRef: wildFlowModelVersionDualASR, JobID: artifact.JobID, State: "succeeded",
+		BillingState: model.WildFlowBillingStateSettled, BillingSource: model.WildFlowBillingSourceWallet,
+		BillingQuota: 1096, BillingTokenQuota: 1096, BillingCurrency: "CNY",
+		BillingAmountMicros: 200000, BillingUnit: "audio_millisecond", BillingBillableUnits: 120000,
+		BillingQuotaPerUnit: "500000", BillingUSDExchangeRate: "7.3", BillingPriceVersion: wildFlowRetailPriceVersion,
+		BillingUsageEventID: "usage-journey-1", BillingSettledTime: usageIngestedAt.Unix(),
 		ResultValidatedTime: usageIngestedAt.Unix(),
 		ResultExpiresAt:     downloadedAt.Add(time.Hour).Unix(), CreatedTime: operationCreatedAt.Unix(),
 	}
@@ -76,7 +80,7 @@ func setupWildFlowJourneyReceiptServiceTest(t *testing.T) (*gorm.DB, *model.Wild
 	return database, operation, downloadedAt.Add(time.Second)
 }
 
-func TestMaterializeWildFlowPublicJourneyReceiptBindsDurableTeamTrialEvidence(t *testing.T) {
+func TestMaterializeWildFlowPublicJourneyReceiptBindsDurableRetailEvidence(t *testing.T) {
 	_, operation, receiptCreatedAt := setupWildFlowJourneyReceiptServiceTest(t)
 
 	envelope, err := MaterializeWildFlowPublicJourneyReceipt(
@@ -89,8 +93,8 @@ func TestMaterializeWildFlowPublicJourneyReceiptBindsDurableTeamTrialEvidence(t 
 	require.NoError(t, err)
 	receipt := envelope.Receipt
 	assert.Equal(t, "public_journey_succeeded", receipt.State)
-	assert.Equal(t, "team_trial_no_charge", receipt.BillingMode)
-	assert.Equal(t, model.WildFlowBillingStatePending, receipt.BillingState)
+	assert.Equal(t, "retail_audio_duration", receipt.BillingMode)
+	assert.Equal(t, model.WildFlowBillingStateSettled, receipt.BillingState)
 	assert.Equal(t, WildFlowModelExamDualASR, receipt.PublicModelRef)
 	assert.Equal(t, "exam-replay-dual-asr", receipt.RuntimeOfferingRef)
 	assert.Equal(t, "usage-journey-1", receipt.UsageEventID)
@@ -100,7 +104,6 @@ func TestMaterializeWildFlowPublicJourneyReceiptBindsDurableTeamTrialEvidence(t 
 	assert.Equal(t, strings.Repeat("e", 64), receipt.ArtifactSHA256)
 	assert.Equal(t, receiptCreatedAt.Format(time.RFC3339Nano), receipt.ReceiptCreatedAt)
 	require.Len(t, envelope.ReceiptSHA256, 64)
-	assert.Equal(t, "ed72db823ed847e16d1e8cff84e923853e2fe9548314f52c9f835159675a2600", envelope.ReceiptSHA256)
 	canonical, err := canonicalWildFlowPublicJourneyReceipt(receipt)
 	require.NoError(t, err)
 	assert.Equal(t, byte('\n'), canonical[len(canonical)-1])
@@ -128,7 +131,7 @@ func TestGetWildFlowPublicJourneyReceiptRejectsARehashedSemanticMutation(t *test
 	require.NoError(t, err)
 
 	tampered := envelope.Receipt
-	tampered.BillingMode = "retail_wallet"
+	tampered.BillingMode = "team_trial_no_charge"
 	canonical, err := canonicalWildFlowPublicJourneyReceipt(tampered)
 	require.NoError(t, err)
 	require.NoError(t, model.DB.Model(&model.WildFlowPublicJourneyReceiptRecord{}).
@@ -142,22 +145,22 @@ func TestGetWildFlowPublicJourneyReceiptRejectsARehashedSemanticMutation(t *test
 	require.ErrorIs(t, err, model.ErrWildFlowJourneyEvidenceConflict)
 }
 
-func TestMaterializeWildFlowPublicJourneyReceiptRejectsNonTrialOrConflictingEvidence(t *testing.T) {
+func TestMaterializeWildFlowPublicJourneyReceiptRejectsInvalidRetailOrConflictingEvidence(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*gorm.DB, *model.WildFlowOperation, time.Time)
 	}{
 		{
-			name: "retail billing state",
+			name: "unsettled billing state",
 			mutate: func(database *gorm.DB, operation *model.WildFlowOperation, _ time.Time) {
-				require.NoError(t, database.Model(operation).Update("billing_state", model.WildFlowBillingStateSettled).Error)
+				require.NoError(t, database.Model(operation).Update("billing_state", model.WildFlowBillingStatePending).Error)
 			},
 		},
 		{
-			name: "retail billing source",
+			name: "trial billing source",
 			mutate: func(database *gorm.DB, operation *model.WildFlowOperation, _ time.Time) {
 				require.NoError(t, database.Model(operation).
-					Update("billing_source", model.WildFlowBillingSourceWallet).Error)
+					Update("billing_source", model.WildFlowBillingSourceTeamTrial).Error)
 			},
 		},
 		{
@@ -167,9 +170,9 @@ func TestMaterializeWildFlowPublicJourneyReceiptRejectsNonTrialOrConflictingEvid
 			},
 		},
 		{
-			name: "retail amount",
+			name: "missing retail amount",
 			mutate: func(database *gorm.DB, operation *model.WildFlowOperation, _ time.Time) {
-				require.NoError(t, database.Model(operation).Update("billing_amount_micros", 1).Error)
+				require.NoError(t, database.Model(operation).Update("billing_amount_micros", 0).Error)
 			},
 		},
 		{

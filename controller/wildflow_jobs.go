@@ -34,7 +34,7 @@ var wildFlowArtifactVerificationSlots = make(chan struct{}, wildFlowArtifactVeri
 
 func CreateWildFlowInputArtifact(c *gin.Context) {
 	if !wildFlowTokenAllowsModel(c, service.WildFlowModelExamDualASR) {
-		wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token is not allowed to use this internal workflow")
+		wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token is not allowed to use this model")
 		return
 	}
 	mediaType, parameters, err := mime.ParseMediaType(c.GetHeader("Content-Type"))

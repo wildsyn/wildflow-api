@@ -32,8 +32,9 @@ const (
 	WildFlowModelVoxCPM2          = "VoxCPM2"
 	WildFlowModelFlux2            = "FLUX.2 [klein] 4B"
 	WildFlowModelIdeogram4MixedV3 = "Ideogram 4 mixed-v3"
-	WildFlowModelExamDualASR      = "wildflow/exam-replay-dual-asr-v1"
+	WildFlowModelExamDualASR      = "wildflow/dual-asr-v1"
 	WildFlowModelIndexTTS25       = "IndexTTS-2.5"
+	wildFlowModelVersionDualASR   = "wildflow/exam-replay-dual-asr-v1"
 	wildFlowIdeogram4Entitlement  = "internal-noncommercial-evaluation-only"
 )
 
@@ -72,6 +73,8 @@ func NormalizeWildFlowJobRequest(request WildFlowJobRequest) (WildFlowJobRequest
 			request.Parameters["guidance_scale"] = float64(7)
 		}
 	case WildFlowModelExamDualASR:
+	case wildFlowModelVersionDualASR:
+		request.Model = WildFlowModelExamDualASR
 	case WildFlowModelIndexTTS25, "indextts-2.5", "indextts25-internal", "indextts-2.5@0b328234":
 		request.Model = WildFlowModelIndexTTS25
 		input, hasInput := request.Parameters["input"]
@@ -109,18 +112,18 @@ func PrepareWildFlowOperation(
 	if err := validateWildFlowRequest(offering.Kind, request); err != nil {
 		return nil, false, err
 	}
-	canonical, err := common.Marshal(request)
+	requestDigests, err := wildFlowCompatibleRequestDigests(request)
 	if err != nil {
-		return nil, false, fmt.Errorf("encode WildFlow request: %w", err)
+		return nil, false, err
 	}
-	requestDigest := sha256Hex(canonical)
+	requestDigest := requestDigests[0]
 	keyDigest := sha256Hex([]byte(idempotencyKey))
 	existing, err := model.GetWildFlowOperationByUserAndKey(userID, keyDigest)
 	if err != nil {
 		return nil, false, err
 	}
 	if existing != nil {
-		if existing.RequestDigest != requestDigest {
+		if !wildFlowRequestDigestMatches(existing.RequestDigest, requestDigests) {
 			return nil, false, ErrWildFlowIdempotencyConflict
 		}
 		return existing, false, nil
@@ -151,12 +154,43 @@ func PrepareWildFlowOperation(
 		if existing == nil {
 			return nil, false, err
 		}
-		if existing.RequestDigest != requestDigest {
+		if !wildFlowRequestDigestMatches(existing.RequestDigest, requestDigests) {
 			return nil, false, ErrWildFlowIdempotencyConflict
 		}
 		return existing, false, nil
 	}
 	return operation, true, nil
+}
+
+func wildFlowCompatibleRequestDigests(request WildFlowJobRequest) ([]string, error) {
+	canonical, err := common.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("encode WildFlow request: %w", err)
+	}
+	digests := []string{sha256Hex(canonical)}
+	if request.Model != WildFlowModelExamDualASR {
+		return digests, nil
+	}
+	legacy := request
+	legacy.Model = wildFlowModelVersionDualASR
+	legacyCanonical, err := common.Marshal(legacy)
+	if err != nil {
+		return nil, fmt.Errorf("encode legacy WildFlow request: %w", err)
+	}
+	legacyDigest := sha256Hex(legacyCanonical)
+	if legacyDigest != digests[0] {
+		digests = append(digests, legacyDigest)
+	}
+	return digests, nil
+}
+
+func wildFlowRequestDigestMatches(persisted string, compatible []string) bool {
+	for _, digest := range compatible {
+		if persisted == digest {
+			return true
+		}
+	}
+	return false
 }
 
 func findWildFlowJobOffering(id string) (WildFlowOffering, bool) {
@@ -180,6 +214,9 @@ func FindWildFlowOffering(id string) (WildFlowOffering, bool) {
 // an Operation to the exact Offering identity accepted by inference. The model
 // version is checked independently so catalog drift fails before submission.
 func ResolveWildFlowRuntimeOfferingRef(publicModelRef string, modelVersionRef string) (string, error) {
+	if publicModelRef == wildFlowModelVersionDualASR && modelVersionRef == wildFlowModelVersionDualASR {
+		return "exam-replay-dual-asr", nil
+	}
 	offering, ok := FindWildFlowOffering(publicModelRef)
 	if !ok || offering.ModelVersionRef != modelVersionRef {
 		return "", ErrWildFlowUnsupportedModel

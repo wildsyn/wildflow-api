@@ -210,14 +210,14 @@ func wildFlowUsageEventMatchesOperation(operation *WildFlowOperation, event *Wil
 	if operation.BillingState == "" || operation.BillingState == WildFlowBillingStatePending {
 		return true
 	}
-	if event.Quantity != operation.BillingBillableUnits {
-		return false
-	}
 	switch operation.BillingUnit {
 	case "10k_characters":
-		return event.Kind == "characters" && event.Unit == "character"
+		return event.Quantity == operation.BillingBillableUnits && event.Kind == "characters" && event.Unit == "character"
 	case "image":
-		return event.Kind == "images" && event.Unit == "image"
+		return event.Quantity == operation.BillingBillableUnits && event.Kind == "images" && event.Unit == "image"
+	case "audio_millisecond":
+		return event.Kind == "audio_duration" && event.Unit == "millisecond" &&
+			event.Quantity > 0 && event.Quantity <= operation.BillingBillableUnits
 	default:
 		return false
 	}

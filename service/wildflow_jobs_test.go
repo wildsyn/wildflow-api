@@ -202,15 +202,15 @@ func TestValidateWildFlowParametersAcceptsEveryDocumentedVoice(t *testing.T) {
 	}
 }
 
-func TestNormalizeAndValidateInternalExamDualASRRequest(t *testing.T) {
+func TestNormalizeAndValidateDualASRRequest(t *testing.T) {
 	t.Parallel()
 
 	request, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{
 		Model:            WildFlowModelExamDualASR,
 		InputArtifactIDs: []string{"input-artifact-1"},
 		Parameters: map[string]any{
-			"language": "zh", "context": "申论课程",
-			"hotwords": []any{"青蜂六边形", "归纳概括"}, "source_offset_seconds": float64(0),
+			"language": "zh", "context": "行业访谈",
+			"hotwords": []any{"青蜂六边形", "产品名称"}, "source_offset_seconds": float64(0),
 		},
 	})
 	require.NoError(t, err)
@@ -243,13 +243,25 @@ func TestNormalizeLegacyASRModelNameToNeutralPublicID(t *testing.T) {
 	assert.Equal(t, "wildflow/dual-asr-v1", request.Model)
 }
 
-func TestPublicWildFlowCatalogExposesTeamDualASR(t *testing.T) {
+func TestDualASRRequestDigestsPreserveLegacyIdempotentReplay(t *testing.T) {
+	request := WildFlowJobRequest{
+		Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
+	}
+
+	digests, err := wildFlowCompatibleRequestDigests(request)
+	require.NoError(t, err)
+	require.Len(t, digests, 2)
+	assert.NotEqual(t, digests[0], digests[1])
+}
+
+func TestPublicWildFlowCatalogExposesRetailDualASR(t *testing.T) {
 	t.Parallel()
 
 	public, visible := FindWildFlowOffering(WildFlowModelExamDualASR)
 	require.True(t, visible)
-	require.Equal(t, WildFlowModelExamDualASR, public.ModelVersionRef)
-	require.Equal(t, "直播回放双 ASR", public.DisplayName)
+	require.Equal(t, wildFlowModelVersionDualASR, public.ModelVersionRef)
+	require.Equal(t, "双引擎语音识别", public.DisplayName)
+	require.Equal(t, "audio_minute", public.Pricing.Unit)
 }
 
 func TestResolveWildFlowRuntimeOfferingRefKeepsPublicAndRuntimeIdentityDistinct(t *testing.T) {
@@ -257,7 +269,7 @@ func TestResolveWildFlowRuntimeOfferingRefKeepsPublicAndRuntimeIdentityDistinct(
 
 	runtimeRef, err := ResolveWildFlowRuntimeOfferingRef(
 		WildFlowModelExamDualASR,
-		WildFlowModelExamDualASR,
+		wildFlowModelVersionDualASR,
 	)
 	require.NoError(t, err)
 	require.Equal(t, "exam-replay-dual-asr", runtimeRef)

@@ -162,7 +162,7 @@ func TestCreateWildFlowInputArtifactRejectsInvalidHeadersBeforeInference(t *test
 	assert.Zero(t, requests)
 }
 
-func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemainsHiddenAndUnbilled(t *testing.T) {
+func TestCreateDualASRJobAllowsStandardRegisteredUserTokenAndPreauthorizesRetailPrice(t *testing.T) {
 	submissions := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/internal/v1/jobs", r.URL.Path)
@@ -170,7 +170,7 @@ func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemains
 		var body map[string]any
 		require.NoError(t, common.DecodeJson(r.Body, &body))
 		assert.Equal(t, "exam-replay-dual-asr", body["product_model_ref"])
-		assert.Equal(t, service.WildFlowModelExamDualASR, body["model_version_ref"])
+		assert.Equal(t, "wildflow/exam-replay-dual-asr-v1", body["model_version_ref"])
 		assert.Equal(t, []any{"input-1"}, body["input_artifact_ids"])
 		deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
 		require.NoError(t, err)
@@ -182,7 +182,7 @@ func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemains
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"job":{"id":"job-asr-1","state":"queued"}}`))
 	}))
-	body := `{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"申论课程","hotwords":["青蜂六边形"]}}`
+	body := `{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"行业访谈","hotwords":["青蜂六边形"]}}`
 
 	response := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{
 		"Idempotency-Key": "asr-standard-token",
@@ -195,17 +195,22 @@ func TestCreateInternalExamDualASRJobAllowsStandardRegisteredUserTokenAndRemains
 	require.NoError(t, model.DB.First(&user, 42).Error)
 	require.NoError(t, model.DB.First(&token, 7).Error)
 	require.NoError(t, model.DB.Where("operation_id = ?", response.Header().Get("Location")[len("/v1/jobs/"):]).First(&operation).Error)
-	assert.Equal(t, 1_000_000, user.Quota)
-	assert.Equal(t, 1_000_000, token.RemainQuota)
+	assert.Equal(t, 178_082, user.Quota)
+	assert.Equal(t, 178_082, token.RemainQuota)
 	assert.Equal(t, service.WildFlowModelExamDualASR, operation.ProductModelRef)
-	assert.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
-	assert.Equal(t, model.WildFlowBillingSourceTeamTrial, operation.BillingSource)
+	assert.Equal(t, "wildflow/exam-replay-dual-asr-v1", operation.ModelVersionRef)
+	assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+	assert.Equal(t, model.WildFlowBillingSourceWallet, operation.BillingSource)
+	assert.Equal(t, 821_918, operation.BillingQuota)
+	assert.Equal(t, int64(12_000_000), operation.BillingAmountMicros)
+	assert.Equal(t, "audio_millisecond", operation.BillingUnit)
+	assert.Equal(t, int64(7_200_000), operation.BillingBillableUnits)
 }
 
-func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T) {
+func TestDualASRJSONArtifactIsDownloadable(t *testing.T) {
 	content := []byte(`{"schema_version":1}`)
 	digest := fmt.Sprintf("%x", sha256.Sum256(content))
-	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, service.WildFlowModelExamDualASR)
+	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, "wildflow/exam-replay-dual-asr-v1")
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/internal/v1/artifacts/artifact-asr":
@@ -223,7 +228,7 @@ func TestInternalExamDualASRJSONArtifactIsDownloadableWhileUnbilled(t *testing.T
 		OperationID: "op-asr-download", UserID: 42, TokenID: 7,
 		IdempotencyKeyDigest: "key-asr-download", RequestDigest: "request-asr-download",
 		RequestID: "request-asr-download", ProductModelRef: service.WildFlowModelExamDualASR,
-		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr", State: "succeeded",
+		ModelVersionRef: "wildflow/exam-replay-dual-asr-v1", JobID: "job-asr", State: "succeeded",
 		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
 		ResultJSON: `{}`, ResultValidatedTime: time.Now().Unix(), ResultExpiresAt: time.Now().Add(time.Hour).Unix(),
 	}).Error)
@@ -250,7 +255,7 @@ func TestInternalExamDualASRDownloadRejectsSameLengthDigestMismatchWithoutReceip
 	actual := []byte(`{"schema_version":2}`)
 	require.Len(t, actual, len(expected))
 	digest := fmt.Sprintf("%x", sha256.Sum256(expected))
-	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, service.WildFlowModelExamDualASR)
+	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, "wildflow/exam-replay-dual-asr-v1")
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/internal/v1/artifacts/artifact-asr-mismatch":
@@ -268,7 +273,7 @@ func TestInternalExamDualASRDownloadRejectsSameLengthDigestMismatchWithoutReceip
 		OperationID: "op-asr-mismatch", UserID: 42, TokenID: 7,
 		IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64),
 		RequestID: "request-asr-mismatch", ProductModelRef: service.WildFlowModelExamDualASR,
-		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr-mismatch", State: "succeeded",
+		ModelVersionRef: "wildflow/exam-replay-dual-asr-v1", JobID: "job-asr-mismatch", State: "succeeded",
 		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
 		ResultJSON: `{}`, ResultValidatedTime: time.Now().Unix(), ResultExpiresAt: time.Now().Add(time.Hour).Unix(),
 	}).Error)
@@ -291,7 +296,7 @@ func TestInternalExamDualASRDownloadRejectsShortStreamWithoutReceipt(t *testing.
 	actual := []byte(`{"short":true}`)
 	require.Less(t, len(actual), len(expected))
 	digest := fmt.Sprintf("%x", sha256.Sum256(expected))
-	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, service.WildFlowModelExamDualASR)
+	metadata := fmt.Sprintf(`{"schema_version":1,"model_version_ref":%q,"model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-runtime-v1-a09e48e-94da20d","duration_seconds":120,"source_artifact_id":"input-1"}`, "wildflow/exam-replay-dual-asr-v1")
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/internal/v1/artifacts/artifact-asr-short":
@@ -309,7 +314,7 @@ func TestInternalExamDualASRDownloadRejectsShortStreamWithoutReceipt(t *testing.
 		OperationID: "op-asr-short", UserID: 42, TokenID: 7,
 		IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64),
 		RequestID: "request-asr-short", ProductModelRef: service.WildFlowModelExamDualASR,
-		ModelVersionRef: service.WildFlowModelExamDualASR, JobID: "job-asr-short", State: "succeeded",
+		ModelVersionRef: "wildflow/exam-replay-dual-asr-v1", JobID: "job-asr-short", State: "succeeded",
 		BillingState: model.WildFlowBillingStatePending, BillingSource: model.WildFlowBillingSourceTeamTrial,
 		ResultJSON: `{}`, ResultValidatedTime: time.Now().Unix(), ResultExpiresAt: time.Now().Add(time.Hour).Unix(),
 	}).Error)
@@ -336,7 +341,7 @@ func TestInternalExamDualASROperationReadAllowsStandardRegisteredUserToken(t *te
 		OperationID: "op-asr-read", UserID: 42, TokenID: 7,
 		IdempotencyKeyDigest: "key-asr-read", RequestDigest: "request-asr-read",
 		RequestID: "request-asr-read", ProductModelRef: service.WildFlowModelExamDualASR,
-		ModelVersionRef: service.WildFlowModelExamDualASR, State: "recovery_required",
+		ModelVersionRef: "wildflow/exam-replay-dual-asr-v1", State: "recovery_required",
 		BillingState: model.WildFlowBillingStatePending,
 	}).Error)
 

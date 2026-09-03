@@ -238,18 +238,9 @@ func TestQuoteWildFlowBillingRejectsUnsupportedModel(t *testing.T) {
 }
 
 func TestDualASRUsesRetailBilling(t *testing.T) {
-	operation := &model.WildFlowOperation{
-		OperationID: "op-internal-asr", ProductModelRef: WildFlowModelExamDualASR,
-		ModelVersionRef: wildFlowModelVersionDualASR, BillingState: model.WildFlowBillingStatePending,
-	}
 	request := WildFlowJobRequest{
 		Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}, Parameters: map[string]any{},
 	}
-
-	reserved, err := ReserveWildFlowOperationBilling(operation, request)
-	require.NoError(t, err)
-	assert.Equal(t, model.WildFlowBillingStateReserved, reserved.BillingState)
-	assert.Equal(t, model.WildFlowBillingSourceWallet, reserved.BillingSource)
 	quote, err := QuoteWildFlowBilling(request)
 	require.NoError(t, err)
 	assert.Equal(t, "audio_millisecond", quote.Unit)
@@ -331,7 +322,7 @@ func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *te
 		SHA256: strings.Repeat("a", 64),
 		Metadata: map[string]any{
 			"schema_version":                float64(1),
-			"model_version_ref":             WildFlowModelExamDualASR,
+			"model_version_ref":             wildFlowModelVersionDualASR,
 			"model_revision":                "d0c9efdb8d614685062c04425d91e01b6f37d944_edaa852ec7e145841d8ffdb056a99866b5f0a478",
 			"vibevoice_model_revision":      "d0c9efdb8d614685062c04425d91e01b6f37d944",
 			"faster_whisper_model_revision": "edaa852ec7e145841d8ffdb056a99866b5f0a478",

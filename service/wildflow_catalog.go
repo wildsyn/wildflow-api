@@ -113,15 +113,15 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 	},
 	{
 		ID:                 WildFlowModelExamDualASR,
-		DisplayName:        "直播回放双 ASR",
+		DisplayName:        "双引擎语音识别",
 		Kind:               "asr",
 		Vendor:             "WildFlow",
-		ModelVersionRef:    WildFlowModelExamDualASR,
+		ModelVersionRef:    wildFlowModelVersionDualASR,
 		RuntimeOfferingID:  "exam-replay-dual-asr",
-		Description:        "同时输出分段转写与逐词时间戳，适用于直播回放、课程和访谈素材；当前为团队内测。",
+		Description:        "同时输出分段转写与逐词时间戳，适用于通用音频转写、字幕整理和检索。",
 		RequiredParameters: []string{"input_artifact_ids"},
 		Pricing: WildFlowCatalogPricing{
-			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内测 · 暂不扣零售余额",
+			Currency: "CNY", Amount: 0.10, Unit: "audio_minute", Display: "¥0.10 / 音频分钟",
 		},
 	},
 	{
