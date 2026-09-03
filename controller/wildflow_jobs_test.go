@@ -1054,7 +1054,7 @@ func TestCreateWildFlowJobSubmitsIdeogram4WithValidatedTeamTrialParameters(t *te
 }
 
 func TestIdeogramTeamTrialArtifactIsReadableAfterSuccess(t *testing.T) {
-	content := []byte("png-data")
+	content := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'd', 'a', 't', 'a'}
 	digest := fmt.Sprintf("%x", sha256.Sum256(content))
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

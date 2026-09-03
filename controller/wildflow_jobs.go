@@ -585,7 +585,10 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 		_ = os.Remove(file.Name())
 	}()
 	digest := sha256.New()
-	written, err := io.Copy(io.MultiWriter(file, digest), content.Body)
+	written, err := io.Copy(
+		io.MultiWriter(file, digest),
+		io.LimitReader(content.Body, artifact.SizeBytes+1),
+	)
 	if err != nil {
 		if updateErr := model.UpdateWildFlowOperationExecution(
 			operation.OperationID,
@@ -629,9 +632,19 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 		wildFlowInternalError(c, err)
 		return
 	}
-	c.DataFromReader(http.StatusOK, written, content.MediaType, file, map[string]string{
-		"Content-Disposition": fmt.Sprintf("attachment; filename=%q", safeWildFlowFilename(filename)),
-	})
+	c.Header("Content-Type", content.MediaType)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeWildFlowFilename(filename)))
+	c.Header("Content-Length", strconv.FormatInt(written, 10))
+	c.Status(http.StatusOK)
+	sent, err := io.Copy(c.Writer, file)
+	if err != nil {
+		logger.LogError(c.Request.Context(), "send verified WildFlow artifact: "+err.Error())
+		return
+	}
+	if sent != written {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("send verified WildFlow artifact: wrote %d of %d bytes", sent, written))
+		return
+	}
 	if operation.ProductModelRef != service.WildFlowModelExamDualASR {
 		return
 	}
@@ -639,7 +652,7 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 	if _, _, err := model.RecordWildFlowArtifactDownloadReceipt(&model.WildFlowArtifactDownloadReceipt{
 		OperationID: operation.OperationID, JobID: operation.JobID, ArtifactID: artifact.ID,
 		UserID: operation.UserID, TenantRefSHA256: hex.EncodeToString(tenantDigest[:]),
-		ArtifactMediaType: artifact.MediaType, ArtifactSizeBytes: written,
+		ArtifactMediaType: artifact.MediaType, ArtifactSizeBytes: sent,
 		ArtifactSHA256: actualDigest, CompletedAt: time.Now().UTC(),
 	}); err != nil {
 		logger.LogError(c.Request.Context(), "persist WildFlow artifact download receipt: "+err.Error())
