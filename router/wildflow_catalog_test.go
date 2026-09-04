@@ -102,6 +102,23 @@ func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T
 					"callable":false,
 					"status":"unavailable"
 				}
+			,{
+				"id":"wildflow/whisper-asr-v1", "display_name":"Whisper 语音识别",
+				"kind":"asr", "vendor":"Systran / OpenAI",
+				"model_version_ref":"wildflow/exam-replay-dual-asr-v1",
+				"description":"仅运行 faster-whisper large-v3，输出转写文本与时间戳。与其他 ASR 入口共享总容量。",
+				"required_parameters":["input_artifact_ids"],
+				"pricing":{"currency":"CNY","amount":0.02,"unit":"audio_minute","display":"¥0.02 / 音频分钟"},
+				"callable":false, "status":"unavailable"
+			},{
+				"id":"wildflow/vibevoice-asr-v1", "display_name":"VibeVoice 语音识别",
+				"kind":"asr", "vendor":"Microsoft",
+				"model_version_ref":"wildflow/exam-replay-dual-asr-v1",
+				"description":"仅运行 VibeVoice-ASR，输出含说话人标签的分段转写。与其他 ASR 入口共享总容量。",
+				"required_parameters":["input_artifact_ids"],
+				"pricing":{"currency":"CNY","amount":0.04,"unit":"audio_minute","display":"¥0.04 / 音频分钟"},
+				"callable":false, "status":"unavailable"
+			}
 		]
 	}`, response.Body.String())
 }
