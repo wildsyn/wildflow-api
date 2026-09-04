@@ -174,8 +174,9 @@ func TestCreateDualASRJobAllowsStandardRegisteredUserTokenAndPreauthorizesRetail
 		assert.Equal(t, []any{"input-1"}, body["input_artifact_ids"])
 		deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
 		require.NoError(t, err)
-		assert.GreaterOrEqual(t, time.Until(deadline), 5*time.Hour)
-		assert.LessOrEqual(t, time.Until(deadline), 6*time.Hour+time.Minute)
+		// Bulk ASR may queue behind 180 audio hours on two execution slots.
+		assert.GreaterOrEqual(t, time.Until(deadline), 14*24*time.Hour-time.Minute)
+		assert.LessOrEqual(t, time.Until(deadline), 14*24*time.Hour+time.Minute)
 		_, hasDescriptors := body["inputs"]
 		assert.False(t, hasDescriptors)
 		w.Header().Set("Content-Type", "application/json")
@@ -1028,6 +1029,9 @@ func TestCreateWildFlowJobSubmitsTTSOnceAndReplaysTheOperation(t *testing.T) {
 		assert.Equal(t, "VoxCPM2", body["product_model_ref"])
 		assert.Equal(t, "openbmb/VoxCPM2", body["model_version_ref"])
 		assert.Equal(t, "user:42", body["tenant_ref"])
+		deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
+		require.NoError(t, err)
+		assert.InDelta(t, (30*time.Minute).Seconds(), time.Until(deadline).Seconds(), 60)
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"job":{"id":"job-tts-1","state":"queued"}}`))
 	}))
