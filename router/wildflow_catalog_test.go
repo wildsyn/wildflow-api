@@ -84,7 +84,7 @@ func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T
 				"kind":"asr",
 				"vendor":"WildFlow",
 				"model_version_ref":"wildflow/exam-replay-dual-asr-v1",
-				"description":"同时输出分段转写与逐词时间戳，适用于通用音频转写、字幕整理和检索。",
+				"description":"同时输出两种引擎的转写文本与段级时间戳，适用于通用音频转写、字幕整理和检索。",
 				"required_parameters":["input_artifact_ids"],
 				"pricing":{"currency":"CNY","amount":0.05,"unit":"audio_minute","display":"¥0.05 / 音频分钟"},
 					"callable":false,

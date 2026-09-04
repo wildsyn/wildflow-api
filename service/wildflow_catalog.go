@@ -118,7 +118,7 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 		Vendor:             "WildFlow",
 		ModelVersionRef:    wildFlowModelVersionDualASR,
 		RuntimeOfferingID:  "exam-replay-dual-asr",
-		Description:        "同时输出分段转写与逐词时间戳，适用于通用音频转写、字幕整理和检索。",
+		Description:        "同时输出两种引擎的转写文本与段级时间戳，适用于通用音频转写、字幕整理和检索。",
 		RequiredParameters: []string{"input_artifact_ids"},
 		Pricing: WildFlowCatalogPricing{
 			Currency: "CNY", Amount: 0.05, Unit: "audio_minute", Display: "¥0.05 / 音频分钟",
