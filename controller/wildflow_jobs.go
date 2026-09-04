@@ -254,7 +254,9 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 	}
 	deadlineAfter := 30 * time.Minute
 	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
-		deadlineAfter = 6 * time.Hour
+		// This bounds queue residence, not the worker's per-attempt execution time.
+		// Large audio batches must survive multi-day draining on limited GPU slots.
+		deadlineAfter = 14 * 24 * time.Hour
 	}
 	job, err := client.SubmitJob(c.Request.Context(), inferenceclient.JobCreateRequest{
 		OperationID:          operation.OperationID,
