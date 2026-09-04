@@ -162,6 +162,49 @@ func TestCreateWildFlowInputArtifactRejectsInvalidHeadersBeforeInference(t *test
 	assert.Zero(t, requests)
 }
 
+func TestCreateSingleASRJobsRouteAndReserveOnce(t *testing.T) {
+	for _, tc := range []struct {
+		id, mode string
+		reserve  int64
+	}{
+		{service.WildFlowModelWhisperASR, "whisper", 2_400_000},
+		{service.WildFlowModelVibeVoiceASR, "vibevoice", 4_800_000},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			submissions := 0
+			engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				submissions++
+				var body map[string]any
+				require.NoError(t, common.DecodeJson(r.Body, &body))
+				assert.Equal(t, "exam-replay-dual-asr", body["product_model_ref"])
+				parameters, ok := body["parameters"].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, tc.mode, parameters["asr_engine"])
+				deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
+				require.NoError(t, err)
+				assert.InDelta(t, (14 * 24 * time.Hour).Seconds(), time.Until(deadline).Seconds(), 60)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"job":{"id":"job-single-asr","state":"queued"}}`))
+			}))
+			body := fmt.Sprintf(`{"model":%q,"input_artifact_ids":["input-1"],"parameters":{}}`, tc.id)
+			for range 2 {
+				response := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{"Idempotency-Key": "single-asr"})
+				require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
+			}
+			assert.Equal(t, 1, submissions)
+			var operation model.WildFlowOperation
+			require.NoError(t, model.DB.Where("product_model_ref = ?", tc.id).First(&operation).Error)
+			assert.Equal(t, tc.reserve, operation.BillingAmountMicros)
+			assert.Equal(t, model.WildFlowBillingStateReserved, operation.BillingState)
+			injected := fmt.Sprintf(`{"model":%q,"input_artifact_ids":["input-1"],"parameters":{"asr_engine":"dual"}}`, tc.id)
+			response := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", injected, map[string]string{"Idempotency-Key": "injected"})
+			assert.Equal(t, http.StatusBadRequest, response.Code)
+			assert.Equal(t, 1, submissions)
+		})
+	}
+}
+
 func TestCreateDualASRJobAllowsStandardRegisteredUserTokenAndPreauthorizesRetailPrice(t *testing.T) {
 	submissions := 0
 	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1031,7 +1074,7 @@ func TestCreateWildFlowJobSubmitsTTSOnceAndReplaysTheOperation(t *testing.T) {
 		assert.Equal(t, "user:42", body["tenant_ref"])
 		deadline, err := time.Parse(time.RFC3339Nano, body["deadline_at"].(string))
 		require.NoError(t, err)
-		assert.InDelta(t, (30*time.Minute).Seconds(), time.Until(deadline).Seconds(), 60)
+		assert.InDelta(t, (30 * time.Minute).Seconds(), time.Until(deadline).Seconds(), 60)
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"job":{"id":"job-tts-1","state":"queued"}}`))
 	}))
