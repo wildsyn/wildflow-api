@@ -398,3 +398,44 @@ func TestReconcileWildFlowBillingRunsLocalRecoveryWithNilClient(t *testing.T) {
 	require.NoError(t, db.Where("operation_id = ?", operation.OperationID).First(operation).Error)
 	assert.Equal(t, "recovery_required", operation.State)
 }
+
+func TestReconcileWildFlowBillingRecoversSourceAddressedASROnce(t *testing.T) {
+	db := setupWildFlowBillingReconcilerTest(t)
+	require.NoError(t, db.Create(&model.User{Id: 130, Username: "asr-recovery", Quota: 10_000_000, Group: "default", AffCode: "asr-recovery"}).Error)
+	require.NoError(t, db.Create(&model.Token{Id: 230, UserId: 130, Key: "asr-recovery", RemainQuota: 10_000_000}).Error)
+	operation := &model.WildFlowOperation{OperationID: "op-asr-recovery", UserID: 130, TokenID: 230,
+		IdempotencyKeyDigest: "asr-key", RequestDigest: "asr-request", RequestID: "asr-request-id",
+		ProductModelRef: WildFlowModelExamDualASR, ModelVersionRef: wildFlowModelVersionDualASR,
+		JobID: "job-asr-recovery", State: "recovery_required", LastErrorCode: "invalid_artifact"}
+	require.NoError(t, db.Create(operation).Error)
+	quote, err := QuoteWildFlowBilling(WildFlowJobRequest{Model: WildFlowModelExamDualASR, InputArtifactIDs: []string{"input-1"}})
+	require.NoError(t, err)
+	_, err = model.ReserveWildFlowWalletBilling(operation.OperationID, quote)
+	require.NoError(t, err)
+	_, err = model.RecordWildFlowUsageEvent(&model.WildFlowUsageEvent{EventID: "usage-asr-recovery", PayloadDigest: strings.Repeat("a", 64),
+		OperationID: operation.OperationID, JobID: operation.JobID, ModelVersionRef: operation.ModelVersionRef,
+		Kind: "audio_duration", Quantity: 120_000, Unit: "millisecond"})
+	require.NoError(t, err)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method) // Never submit another inference job.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"job":{"id":"job-asr-recovery","state":"succeeded","artifacts":[{"id":"artifact-asr-recovery","job_id":"job-asr-recovery","media_type":"application/json","size_bytes":128,"sha256":%q,"metadata":{"schema_version":1,"duration_seconds":120,"model_version_ref":%q,"model_revision":"vibevoice-d0c9efdb-plus-faster-whisper-edaa852e","vibevoice_model_revision":"d0c9efdb8d614685062c04425d91e01b6f37d944","faster_whisper_model_revision":"edaa852ec7e145841d8ffdb056a99866b5f0a478","runtime_version_ref":"exam-dual-asr-http-runtime-v1-f002915fec1d","source_artifact_id":"input-1"}}]}}`, strings.Repeat("a", 64), wildFlowModelVersionDualASR)
+	}))
+	t.Cleanup(server.Close)
+	client, err := inferenceclient.New(inferenceclient.Config{BaseURL: server.URL, Token: "internal-token", Timeout: time.Second, AllowInternalHTTP: true})
+	require.NoError(t, err)
+	for _, expected := range []int{1, 0} {
+		processed, err := ReconcileWildFlowBillingOnce(context.Background(), client, 100)
+		require.NoError(t, err)
+		require.Equal(t, expected, processed)
+	}
+	require.NoError(t, db.Where("operation_id = ?", operation.OperationID).First(operation).Error)
+	assert.Equal(t, "succeeded", operation.State)
+	assert.Empty(t, operation.LastErrorCode)
+	assert.Equal(t, model.WildFlowBillingStateSettled, operation.BillingState)
+	assert.Equal(t, int64(100_000), operation.BillingAmountMicros)
+	assert.NotEmpty(t, operation.ResultJSON)
+	var count int64
+	require.NoError(t, db.Model(&model.WildFlowBillingLogEntry{}).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}
