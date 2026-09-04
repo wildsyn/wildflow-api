@@ -5,6 +5,9 @@ preserve all New API and QuantumNous attribution, `LICENSE`, `NOTICE`, `UPSTREAM
 identity. The `web/` source belongs in `wildflow-web`; GPU workers, leases, deployment credentials, and Artifact storage
 belong in the private `wildflow-inference` repository.
 
+Frontend development commands and conventions belong to
+[wildflow-web's AGENTS.md](https://github.com/wildsyn/wildflow-web/blob/main/AGENTS.md), not this repository.
+
 All changes go through pull requests. Authentication, billing, payment, idempotency, public routes, database migrations,
 and the internal inference contract require security and contract tests. A merged PR does not authorize deployment,
 database migration, DNS changes, or public release.
@@ -13,23 +16,21 @@ DO NOT send optional commentary
 
 ## Overview
 
-This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI providers (OpenAI, Claude, Gemini, Azure, AWS Bedrock, etc.) behind a unified API, with user management, billing, rate limiting, and an admin dashboard.
+This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI providers (OpenAI, Claude, Gemini, Azure, AWS Bedrock, etc.) behind a unified API, with user management, billing, rate limiting, and APIs for an independently deployed admin dashboard.
 
 ## Tech Stack
 
 - **Backend**: Go 1.22+, Gin web framework, GORM v2 ORM
-- **Frontend**: React 19, TypeScript, Rsbuild, Base UI, Tailwind CSS
 - **Databases**: SQLite, MySQL, PostgreSQL (all three must be supported)
 - **Cache**: Redis (go-redis) + in-memory cache
 - **Auth**: JWT, WebAuthn/Passkeys, OAuth (GitHub, Discord, OIDC, etc.)
-- **Frontend package manager**: Bun (preferred over npm/yarn/pnpm)
 
 ## Architecture
 
 Layered architecture: Router -> Controller -> Service -> Model
 
 ```
-router/        — HTTP routing (API, relay, dashboard, web)
+router/        — HTTP routing (API, relay, frontend redirects)
 controller/    — Request handlers
 service/       — Business logic
 model/         — Data models and DB access (GORM)
@@ -44,22 +45,12 @@ types/         — Type definitions (relay formats, file sources, errors)
 i18n/          — Backend internationalization (go-i18n, en/zh)
 oauth/         — OAuth provider implementations
 pkg/           — Internal packages (cachex, ionet)
-web/           — Frontend (React 19, Rsbuild, Base UI, Tailwind)
-  src/i18n/    — Frontend internationalization (i18next, en/zh/zh-TW/fr/ru/ja/vi)
 ```
 
-## Internationalization (i18n)
+## Backend Internationalization (`i18n/`)
 
-### Backend (`i18n/`)
 - Library: `nicksnyder/go-i18n/v2`
 - Languages: en, zh
-
-### Frontend (`web/src/i18n/`)
-- Library: `i18next` + `react-i18next` + `i18next-browser-languagedetector`
-- Languages: en (base), zh (fallback), zh-TW, fr, ru, ja, vi
-- Translation files: `web/src/i18n/locales/{lang}.json` — flat JSON, keys are English source strings
-- Usage: `useTranslation()` hook, call `t('English key')` in components
-- CLI tools: `bun run i18n:sync` (from `web/`)
 
 ## Rules
 
@@ -135,17 +126,6 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 - New or substantially rewritten Go backend tests MUST use `github.com/stretchr/testify/require` for setup and fatal assertions, and `github.com/stretchr/testify/assert` for non-fatal value checks.
 - Avoid hand-written assertion helpers unless they encode a reusable project-specific invariant.
 - When cleaning tests, preserve meaningful regression coverage. If a deleted test covered a real contract indirectly, replace it with a smaller test that asserts that contract directly.
-
-### Frontend Rules
-
-- Use `bun` as the preferred package manager and script runner for the frontend (`web/`):
-  - `bun install` for dependency installation
-  - `bun run dev` for development server
-  - `bun run build` for production build
-  - `bun run i18n:*` for i18n tooling
-- Frontend UI text must support i18n with `i18next`/`react-i18next`. Use flat JSON locale files in `web/src/i18n/locales/{lang}.json`, with English source strings as keys.
-- In React components, use `useTranslation()` and call `t('English key')` for user-facing text.
-- Follow `web/AGENTS.md` for detailed frontend conventions, including TypeScript, component structure, styling, accessibility, testing, and build checks.
 
 ### Project Governance
 
