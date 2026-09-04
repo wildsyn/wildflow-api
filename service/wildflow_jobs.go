@@ -33,6 +33,8 @@ const (
 	WildFlowModelFlux2            = "FLUX.2 [klein] 4B"
 	WildFlowModelIdeogram4MixedV3 = "Ideogram 4 mixed-v3"
 	WildFlowModelExamDualASR      = "wildflow/dual-asr-v1"
+	WildFlowModelWhisperASR       = "wildflow/whisper-asr-v1"
+	WildFlowModelVibeVoiceASR     = "wildflow/vibevoice-asr-v1"
 	WildFlowModelIndexTTS25       = "IndexTTS-2.5"
 	wildFlowModelVersionDualASR   = "wildflow/exam-replay-dual-asr-v1"
 	wildFlowIdeogram4Entitlement  = "internal-noncommercial-evaluation-only"
@@ -72,7 +74,7 @@ func NormalizeWildFlowJobRequest(request WildFlowJobRequest) (WildFlowJobRequest
 		if _, exists := request.Parameters["guidance_scale"]; !exists {
 			request.Parameters["guidance_scale"] = float64(7)
 		}
-	case WildFlowModelExamDualASR:
+	case WildFlowModelExamDualASR, WildFlowModelWhisperASR, WildFlowModelVibeVoiceASR:
 	case wildFlowModelVersionDualASR:
 		request.Model = WildFlowModelExamDualASR
 	case WildFlowModelIndexTTS25, "indextts-2.5", "indextts25-internal", "indextts-2.5@0b328234":
@@ -241,7 +243,20 @@ func PrepareWildFlowRuntimeParameters(publicModelRef string, modelVersionRef str
 	if offering.ID == WildFlowModelIdeogram4MixedV3 {
 		runtimeParameters["license_entitlement"] = wildFlowIdeogram4Entitlement
 	}
+	// This is a product choice, never a caller-controlled discount or selector.
+	// The existing ModelVersion identifies the installed, immutable asset bundle.
+	if offering.ID == WildFlowModelWhisperASR {
+		runtimeParameters["asr_engine"] = "whisper"
+	} else if offering.ID == WildFlowModelVibeVoiceASR {
+		runtimeParameters["asr_engine"] = "vibevoice"
+	} else if offering.ID == WildFlowModelExamDualASR {
+		delete(runtimeParameters, "asr_engine")
+	}
 	return runtimeParameters, nil
+}
+
+func IsWildFlowASRModel(id string) bool {
+	return id == WildFlowModelExamDualASR || id == WildFlowModelWhisperASR || id == WildFlowModelVibeVoiceASR
 }
 
 func IsWildFlowTeamTrialOffering(publicModelRef string) bool {

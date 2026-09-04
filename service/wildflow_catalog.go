@@ -139,6 +139,22 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 			Currency: "CNY", Amount: 0, Unit: "team_trial", Display: "团队内部使用 · 暂不扣零售余额",
 		},
 	},
+	{
+		ID: WildFlowModelWhisperASR, DisplayName: "Whisper 语音识别",
+		Kind: "asr", Vendor: "Systran / OpenAI",
+		ModelVersionRef: wildFlowModelVersionDualASR, RuntimeOfferingID: "exam-replay-dual-asr",
+		Description:        "仅运行 faster-whisper large-v3，输出转写文本与时间戳。与其他 ASR 入口共享总容量。",
+		RequiredParameters: []string{"input_artifact_ids"},
+		Pricing:            WildFlowCatalogPricing{Currency: "CNY", Amount: 0.02, Unit: "audio_minute", Display: "¥0.02 / 音频分钟"},
+	},
+	{
+		ID: WildFlowModelVibeVoiceASR, DisplayName: "VibeVoice 语音识别",
+		Kind: "asr", Vendor: "Microsoft",
+		ModelVersionRef: wildFlowModelVersionDualASR, RuntimeOfferingID: "exam-replay-dual-asr",
+		Description:        "仅运行 VibeVoice-ASR，输出含说话人标签的分段转写。与其他 ASR 入口共享总容量。",
+		RequiredParameters: []string{"input_artifact_ids"},
+		Pricing:            WildFlowCatalogPricing{Currency: "CNY", Amount: 0.04, Unit: "audio_minute", Display: "¥0.04 / 音频分钟"},
+	},
 }
 
 func ListCanonicalWildFlowOfferings() []WildFlowOffering {

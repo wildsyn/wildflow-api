@@ -297,7 +297,7 @@ func buildWildFlowPublicJourneyReceipt(
 
 func validWildFlowASRJourneyIdentity(publicModelRef string, modelVersionRef string) bool {
 	return modelVersionRef == wildFlowModelVersionDualASR &&
-		(publicModelRef == WildFlowModelExamDualASR || publicModelRef == wildFlowModelVersionDualASR)
+		(IsWildFlowASRModel(publicModelRef) || publicModelRef == wildFlowModelVersionDualASR)
 }
 
 func validWildFlowJourneyReceiptBilling(mode string, state string) bool {
@@ -325,7 +325,7 @@ func wildFlowJourneyOperationBillingMode(
 		operation.BillingSettledTime == 0 {
 		return "team_trial_no_charge", true
 	}
-	if operation.ProductModelRef == WildFlowModelExamDualASR &&
+	if IsWildFlowASRModel(operation.ProductModelRef) &&
 		operation.BillingState == model.WildFlowBillingStateSettled &&
 		((operation.BillingSource == model.WildFlowBillingSourceWallet && operation.BillingSubscriptionID == 0) ||
 			(operation.BillingSource == model.WildFlowBillingSourceSubscription && operation.BillingSubscriptionID > 0)) &&
