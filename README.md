@@ -30,12 +30,19 @@
 - `wildflow-inference`：通过内部 service-to-service 幂等接口/事件调用，不维护余额和退款状态；
 - 不复制生产用户、Key、余额、账单或运行配置到本仓库。
 
+## 开始开发
+
+本地启动、工作目录和前端连接方式统一见 [DEV.md](DEV.md)；开发任务与 PR 流程见
+[CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ## 本地验证
+
+以下命令从本仓 Git 根执行。`relaykit/` 是独立 Go module，须进入该目录关闭 workspace 后单独验证：
 
 ```bash
 go build ./...
 go test ./...
-GOWORK=off go test ./relaykit/...
+(cd relaykit && GOWORK=off go test ./...)
 bash scripts/check-local.sh
 ```
 
