@@ -33,7 +33,9 @@ const wildFlowArtifactVerificationConcurrency = 2
 var wildFlowArtifactVerificationSlots = make(chan struct{}, wildFlowArtifactVerificationConcurrency)
 
 func CreateWildFlowInputArtifact(c *gin.Context) {
-	if !wildFlowTokenAllowsModel(c, service.WildFlowModelExamDualASR) {
+	if !wildFlowTokenAllowsModel(c, service.WildFlowModelExamDualASR) &&
+		!wildFlowTokenAllowsModel(c, service.WildFlowModelWhisperASR) &&
+		!wildFlowTokenAllowsModel(c, service.WildFlowModelVibeVoiceASR) {
 		wildFlowJobError(c, http.StatusForbidden, "model_forbidden", "token is not allowed to use this model")
 		return
 	}
@@ -253,7 +255,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		return
 	}
 	deadlineAfter := 30 * time.Minute
-	if operation.ProductModelRef == service.WildFlowModelExamDualASR {
+	if service.IsWildFlowASRModel(operation.ProductModelRef) {
 		// This bounds queue residence, not the worker's per-attempt execution time.
 		// Large audio batches must survive multi-day draining on limited GPU slots.
 		deadlineAfter = 14 * 24 * time.Hour
@@ -647,7 +649,7 @@ func DownloadWildFlowArtifact(c *gin.Context) {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("send verified WildFlow artifact: wrote %d of %d bytes", sent, written))
 		return
 	}
-	if operation.ProductModelRef != service.WildFlowModelExamDualASR {
+	if !service.IsWildFlowASRModel(operation.ProductModelRef) {
 		return
 	}
 	tenantDigest := sha256.Sum256([]byte(wildFlowTenantRef(operation.UserID)))

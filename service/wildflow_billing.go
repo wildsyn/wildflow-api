@@ -72,7 +72,7 @@ func QuoteWildFlowBilling(request WildFlowJobRequest) (model.WildFlowBillingQuot
 		billableUnits = 1
 		unit = offering.Pricing.Unit
 		amountCNY = decimal.NewFromFloat(offering.Pricing.Amount)
-	case WildFlowModelExamDualASR:
+	case WildFlowModelExamDualASR, WildFlowModelWhisperASR, WildFlowModelVibeVoiceASR:
 		billableUnits = wildFlowASRMaximumDurationMilliseconds
 		unit = "audio_millisecond"
 		amountCNY = decimal.NewFromFloat(offering.Pricing.Amount).
@@ -205,8 +205,22 @@ func ValidateWildFlowCompletedArtifacts(operation *model.WildFlowOperation, arti
 	if operation == nil {
 		return nil
 	}
-	if operation.ProductModelRef == WildFlowModelExamDualASR {
-		return validateWildFlowExamDualASRArtifact(artifacts)
+	if IsWildFlowASRModel(operation.ProductModelRef) {
+		if err := validateWildFlowExamDualASRArtifact(artifacts); err != nil {
+			return err
+		}
+		expected := "dual"
+		if operation.ProductModelRef == WildFlowModelWhisperASR {
+			expected = "whisper"
+		} else if operation.ProductModelRef == WildFlowModelVibeVoiceASR {
+			expected = "vibevoice"
+		}
+		mode, exists := artifacts[0].Metadata["asr_engine"]
+		// Legacy dual artifacts predate the selector; singles must prove it.
+		if (!exists && expected != "dual") || (exists && mode != expected) {
+			return ErrWildFlowInvalidArtifact
+		}
+		return nil
 	}
 	if operation.ProductModelRef == WildFlowModelIndexTTS25 {
 		return validateWildFlowIndexTTS25Artifact(artifacts)
