@@ -338,6 +338,16 @@ func TestValidateWildFlowCompletedArtifactsAcceptsVersionedExamDualASRJSON(t *te
 	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
 	artifact.Metadata["runtime_version_ref"] = "exam-dual-asr-runtime-v1-a09e48e-94da20d"
 	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
+	// Source-addressed releases retain the same model/output contract. A new
+	// runtime digest must not strand successful jobs or their reserved balance.
+	for _, version := range []string{"exam-dual-asr-http-runtime-v1-f002915fec1d", "exam-dual-asr-http-runtime-v1-0123456789ab"} {
+		artifact.Metadata["runtime_version_ref"] = version
+		require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
+	}
+	for _, version := range []string{"exam-dual-asr-http-runtime-v1-latest", "exam-dual-asr-http-runtime-v1-0123456789ag", "exam-dual-asr-http-runtime-v1-0123456789ab-extra", "other-runtime-v1-0123456789ab"} {
+		artifact.Metadata["runtime_version_ref"] = version
+		require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
+	}
 	artifact.Metadata["runtime_version_ref"] = "exam-dual-asr-http-runtime-v1-ed59136"
 	require.NoError(t, FinalizeWildFlowOperationBilling(context.Background(), &model.WildFlowOperation{
 		ProductModelRef: WildFlowModelExamDualASR, State: "succeeded", BillingState: model.WildFlowBillingStatePending,

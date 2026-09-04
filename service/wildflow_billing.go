@@ -307,6 +307,13 @@ func validateWildFlowExamDualASRArtifact(artifacts []inferenceclient.Artifact) e
 		modelRevision == "vibevoice-d0c9efdb-plus-faster-whisper-edaa852e"
 	validRuntimeVersion := runtimeVersion == "exam-dual-asr-runtime-v1-a09e48e-94da20d" ||
 		runtimeVersion == "exam-dual-asr-http-runtime-v1-ed59136"
+	// HTTP RuntimePack releases use a source digest, not a new artifact schema.
+	// Validate that immutable identity form while retaining the pinned model and
+	// output contract below; do not require an API rollout for every runtime build.
+	if digest, ok := strings.CutPrefix(runtimeVersion, "exam-dual-asr-http-runtime-v1-"); ok && len(digest) == 12 {
+		_, err := hex.DecodeString(digest)
+		validRuntimeVersion = err == nil && digest == strings.ToLower(digest)
+	}
 	if !schemaOK || schemaVersion != 1 || !durationOK || duration <= 0 || duration > 7_200 ||
 		!versionOK || modelVersion != wildFlowModelVersionDualASR ||
 		!revisionOK || !validModelRevision ||
