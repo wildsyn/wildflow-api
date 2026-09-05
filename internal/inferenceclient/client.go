@@ -22,7 +22,7 @@ import (
 
 const maxResponseBodyBytes = 1 << 20
 const maxArtifactBodyBytes = 320 << 20
-const maxInputArtifactBodyBytes = int64(2 << 30)
+const maxInputArtifactBodyBytes = int64(256 << 20)
 
 var resourceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$`)
 var sha256Pattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)

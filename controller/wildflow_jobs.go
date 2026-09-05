@@ -27,7 +27,7 @@ import (
 )
 
 const wildFlowJobRequestLimit = 256 * 1024
-const wildFlowInputArtifactLimit = int64(2 << 30)
+const wildFlowInputArtifactLimit = int64(256 << 20)
 const wildFlowArtifactVerificationConcurrency = 2
 
 var wildFlowArtifactVerificationSlots = make(chan struct{}, wildFlowArtifactVerificationConcurrency)
@@ -45,7 +45,7 @@ func CreateWildFlowInputArtifact(c *gin.Context) {
 		return
 	}
 	if c.Request.ContentLength > wildFlowInputArtifactLimit {
-		wildFlowJobError(c, http.StatusRequestEntityTooLarge, "input_too_large", "input artifact exceeds 2 GiB")
+		wildFlowJobError(c, http.StatusRequestEntityTooLarge, "input_too_large", "input artifact exceeds 256 MiB")
 		return
 	}
 	if c.Request.ContentLength < 4 {
