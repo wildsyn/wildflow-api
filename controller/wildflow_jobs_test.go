@@ -162,6 +162,19 @@ func TestCreateWildFlowInputArtifactRejectsInvalidHeadersBeforeInference(t *test
 	assert.Zero(t, requests)
 }
 
+func TestCreateWildFlowInputArtifactRejectsAbove256MiBBeforeInference(t *testing.T) {
+	requests := 0
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	request := httptest.NewRequest(http.MethodPost, "/v1/input-artifacts", strings.NewReader("fLaC"))
+	request.ContentLength = (256 << 20) + 1
+	request.Header.Set("Content-Type", "audio/flac")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	require.Equal(t, http.StatusRequestEntityTooLarge, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), "256 MiB")
+	assert.Zero(t, requests)
+}
+
 func TestCreateSingleASRJobsRouteAndReserveOnce(t *testing.T) {
 	for _, tc := range []struct {
 		id, mode string
