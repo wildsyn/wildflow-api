@@ -306,3 +306,9 @@ func TestIndexTTS25VoiceControls(t *testing.T) {
 		require.ErrorIs(t, validateWildFlowRequest("tts", WildFlowJobRequest{Model: WildFlowModelIndexTTS25, Parameters: invalid}), ErrWildFlowInvalidParameters)
 	}
 }
+
+func TestIndexTTSRuntimeInputsUseVoiceIDs(t *testing.T) {
+ assert.Equal(t,[]string{"custom-1","emotion-1"},WildFlowRuntimeInputArtifactIDs(WildFlowModelIndexTTS25,map[string]any{"voice_id":"custom-1","emotion_voice_id":"emotion-1"},nil))
+ assert.Empty(t,WildFlowRuntimeInputArtifactIDs(WildFlowModelIndexTTS25,map[string]any{"voice_id":"official-voice-01-v1"},nil))
+ assert.Equal(t,[]string{"custom-1"},WildFlowRuntimeInputArtifactIDs(WildFlowModelIndexTTS25,map[string]any{"voice_id":"custom-1","emotion_voice_id":"custom-1"},nil))
+}
