@@ -1,0 +1,588 @@
+{
+  "cases": [
+    {
+      "name": "mapped model and image fields survive submit",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "baseUrl": "https://api.example.invalid/v1/",
+          "apiKey": "fixture",
+          "upstreamModel": "gpt-image-2",
+          "requestBody": {
+            "prompt": "A blue circle",
+            "n": 1,
+            "size": "16:9",
+            "resolution": "2k",
+            "image_urls": [
+              "https://cdn.example.invalid/input.png"
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "url": "https://api.example.invalid/v1/images/generations",
+        "method": "POST",
+        "headers": {
+          "Authorization": "Bearer fixture",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "prompt": "A blue circle",
+          "n": 1,
+          "size": "16:9",
+          "resolution": "2k",
+          "image_urls": [
+            "https://cdn.example.invalid/input.png"
+          ],
+          "model": "gpt-image-2"
+        }
+      }
+    },
+    {
+      "name": "official output controls survive submit",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "baseUrl": "https://api.example.invalid/v1/",
+          "apiKey": "fixture",
+          "upstreamModel": "gpt-image-2-official",
+          "requestBody": {
+            "prompt": "A circle",
+            "n": 4,
+            "quality": "low",
+            "output_format": "webp",
+            "background": "transparent"
+          }
+        }
+      ],
+      "expected": {
+        "url": "https://api.example.invalid/v1/images/generations",
+        "method": "POST",
+        "headers": {
+          "Authorization": "Bearer fixture",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "model": "gpt-image-2-official",
+          "prompt": "A circle",
+          "n": 4,
+          "quality": "low",
+          "output_format": "webp",
+          "background": "transparent"
+        }
+      }
+    },
+    {
+      "name": "standard rejects multiple images",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "baseUrl": "https://api.example.invalid/v1/",
+          "apiKey": "fixture",
+          "upstreamModel": "gpt-image-2",
+          "requestBody": {
+            "prompt": "x",
+            "n": 2
+          }
+        }
+      ],
+      "expectedError": "invalid image count"
+    },
+    {
+      "name": "empty prompt fails before provider",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "baseUrl": "https://api.example.invalid/v1/",
+          "apiKey": "fixture",
+          "upstreamModel": "gpt-image-2",
+          "requestBody": {
+            "prompt": " "
+          }
+        }
+      ],
+      "expectedError": "prompt is required"
+    },
+    {
+      "name": "base64 response is not silently ignored",
+      "hook": "buildSubmitRequest",
+      "args": [
+        {
+          "baseUrl": "https://api.example.invalid/v1/",
+          "apiKey": "fixture",
+          "upstreamModel": "gpt-image-2",
+          "requestBody": {
+            "prompt": "x",
+            "response_format": "b64_json"
+          }
+        }
+      ],
+      "expectedError": "only URL"
+    },
+    {
+      "name": "persist upstream id after submit",
+      "hook": "parseSubmitResponse",
+      "args": [
+        {
+          "baseUrl": "https://api.example.invalid/v1/",
+          "apiKey": "fixture",
+          "upstreamModel": "gpt-image-2",
+          "requestBody": {
+            "prompt": "A blue circle",
+            "n": 1,
+            "size": "16:9",
+            "resolution": "2k",
+            "image_urls": [
+              "https://cdn.example.invalid/input.png"
+            ]
+          }
+        },
+        {
+          "statusCode": 200,
+          "body": {
+            "code": 200,
+            "data": [
+              {
+                "status": "submitted",
+                "task_id": "task-1"
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "taskId": "task-1",
+        "taskData": {
+          "code": 200,
+          "data": [
+            {
+              "status": "submitted",
+              "task_id": "task-1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject malformed successful submit",
+      "hook": "parseSubmitResponse",
+      "args": [
+        {
+          "baseUrl": "https://api.example.invalid/v1/",
+          "apiKey": "fixture",
+          "upstreamModel": "gpt-image-2",
+          "requestBody": {
+            "prompt": "A blue circle",
+            "n": 1,
+            "size": "16:9",
+            "resolution": "2k",
+            "image_urls": [
+              "https://cdn.example.invalid/input.png"
+            ]
+          }
+        },
+        {
+          "statusCode": 200,
+          "body": {
+            "code": 200,
+            "data": []
+          }
+        }
+      ],
+      "expectedError": "invalid APIMart submission"
+    },
+    {
+      "name": "query uses original upstream id",
+      "hook": "buildQueryRequest",
+      "args": [
+        {
+          "baseUrl": "https://api.example.invalid/v1/",
+          "apiKey": "fixture",
+          "upstreamModel": "gpt-image-2",
+          "requestBody": {
+            "prompt": "A blue circle",
+            "n": 1,
+            "size": "16:9",
+            "resolution": "2k",
+            "image_urls": [
+              "https://cdn.example.invalid/input.png"
+            ]
+          },
+          "taskId": "task/a",
+          "publicTaskId": "public-b"
+        }
+      ],
+      "expected": {
+        "url": "https://api.example.invalid/v1/tasks/task%2Fa",
+        "method": "GET",
+        "headers": {
+          "Authorization": "Bearer fixture"
+        }
+      }
+    },
+    {
+      "name": "normalize pending",
+      "hook": "parseTaskResult",
+      "args": [
+        {
+          "taskId": "task-1"
+        },
+        {
+          "code": 200,
+          "data": {
+            "id": "task-1",
+            "status": "pending",
+            "progress": 100,
+            "credits_cost": 0.085,
+            "result": {
+              "images": [
+                {
+                  "url": [
+                    "https://cdn.example.invalid/a.png",
+                    "https://cdn.example.invalid/b.png"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "status": 200
+        }
+      ],
+      "expected": {
+        "status": "QUEUED",
+        "progress": "100%"
+      }
+    },
+    {
+      "name": "normalize processing",
+      "hook": "parseTaskResult",
+      "args": [
+        {
+          "taskId": "task-1"
+        },
+        {
+          "code": 200,
+          "data": {
+            "id": "task-1",
+            "status": "processing",
+            "progress": 100,
+            "credits_cost": 0.085,
+            "result": {
+              "images": [
+                {
+                  "url": [
+                    "https://cdn.example.invalid/a.png",
+                    "https://cdn.example.invalid/b.png"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "status": 200
+        }
+      ],
+      "expected": {
+        "status": "IN_PROGRESS",
+        "progress": "100%"
+      }
+    },
+    {
+      "name": "normalize future",
+      "hook": "parseTaskResult",
+      "args": [
+        {
+          "taskId": "task-1"
+        },
+        {
+          "code": 200,
+          "data": {
+            "id": "task-1",
+            "status": "future",
+            "progress": 100,
+            "credits_cost": 0.085,
+            "result": {
+              "images": [
+                {
+                  "url": [
+                    "https://cdn.example.invalid/a.png",
+                    "https://cdn.example.invalid/b.png"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "status": 200
+        }
+      ],
+      "expected": {
+        "status": "UNKNOWN",
+        "progress": "100%"
+      }
+    },
+    {
+      "name": "normalize completed",
+      "hook": "parseTaskResult",
+      "args": [
+        {
+          "taskId": "task-1"
+        },
+        {
+          "code": 200,
+          "data": {
+            "id": "task-1",
+            "status": "completed",
+            "progress": 100,
+            "credits_cost": 0.085,
+            "result": {
+              "images": [
+                {
+                  "url": [
+                    "https://cdn.example.invalid/a.png",
+                    "https://cdn.example.invalid/b.png"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "status": 200
+        }
+      ],
+      "expected": {
+        "status": "SUCCESS",
+        "progress": "100%"
+      }
+    },
+    {
+      "name": "mismatched task does not settle",
+      "hook": "parseTaskResult",
+      "args": [
+        {
+          "taskId": "different"
+        },
+        {
+          "code": 200,
+          "data": {
+            "id": "task-1",
+            "status": "completed",
+            "progress": 100,
+            "credits_cost": 0.085,
+            "result": {
+              "images": [
+                {
+                  "url": [
+                    "https://cdn.example.invalid/a.png",
+                    "https://cdn.example.invalid/b.png"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "status": 200
+        }
+      ],
+      "expectedError": "invalid APIMart task"
+    },
+    {
+      "name": "query outage does not mark provider failure",
+      "hook": "parseTaskResult",
+      "args": [
+        {
+          "taskId": "task-1"
+        },
+        {
+          "code": 200,
+          "data": {
+            "id": "task-1",
+            "status": "completed",
+            "progress": 100,
+            "credits_cost": 0.085,
+            "result": {
+              "images": [
+                {
+                  "url": [
+                    "https://cdn.example.invalid/a.png",
+                    "https://cdn.example.invalid/b.png"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "status": 503
+        }
+      ],
+      "expectedError": "invalid APIMart task"
+    },
+    {
+      "name": "empty completion cannot succeed",
+      "hook": "parseTaskResult",
+      "args": [
+        {
+          "taskId": "task-1"
+        },
+        {
+          "code": 200,
+          "data": {
+            "id": "task-1",
+            "status": "completed"
+          }
+        },
+        {
+          "status": 200
+        }
+      ],
+      "expectedError": "no image result"
+    },
+    {
+      "name": "artifact listing never leaks CDN URL",
+      "hook": "listArtifacts",
+      "args": [
+        {
+          "status": "SUCCESS",
+          "data": {
+            "code": 200,
+            "data": {
+              "id": "task-1",
+              "status": "completed",
+              "progress": 100,
+              "credits_cost": 0.085,
+              "result": {
+                "images": [
+                  {
+                    "url": [
+                      "https://cdn.example.invalid/a.png",
+                      "https://cdn.example.invalid/b.png"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "expected": [
+        {
+          "key": "image-0",
+          "type": "image"
+        },
+        {
+          "key": "image-1",
+          "type": "image"
+        }
+      ]
+    },
+    {
+      "name": "content does not leak provider key",
+      "hook": "buildContentRequest",
+      "args": [
+        {
+          "artifactKey": "image-1",
+          "data": {
+            "code": 200,
+            "data": {
+              "id": "task-1",
+              "status": "completed",
+              "progress": 100,
+              "credits_cost": 0.085,
+              "result": {
+                "images": [
+                  {
+                    "url": [
+                      "https://cdn.example.invalid/a.png",
+                      "https://cdn.example.invalid/b.png"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "apiKey": "fixture-secret",
+          "clientRequest": {
+            "method": "HEAD"
+          }
+        }
+      ],
+      "expected": {
+        "url": "https://cdn.example.invalid/b.png",
+        "method": "HEAD",
+        "credentialless": true
+      }
+    },
+    {
+      "name": "unknown artifact is rejected",
+      "hook": "buildContentRequest",
+      "args": [
+        {
+          "artifactKey": "image-2",
+          "data": {
+            "code": 200,
+            "data": {
+              "id": "task-1",
+              "status": "completed",
+              "progress": 100,
+              "credits_cost": 0.085,
+              "result": {
+                "images": [
+                  {
+                    "url": [
+                      "https://cdn.example.invalid/a.png",
+                      "https://cdn.example.invalid/b.png"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          "clientRequest": {
+            "method": "GET"
+          }
+        }
+      ],
+      "expectedError": "image artifact not found"
+    },
+    {
+      "name": "upstream usage facts do not invent retail price",
+      "hook": "extractUsageOnComplete",
+      "args": [
+        {},
+        {
+          "status": "SUCCESS"
+        },
+        {
+          "code": 200,
+          "data": {
+            "id": "task-1",
+            "status": "completed",
+            "progress": 100,
+            "credits_cost": 0.085,
+            "result": {
+              "images": [
+                {
+                  "url": [
+                    "https://cdn.example.invalid/a.png",
+                    "https://cdn.example.invalid/b.png"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "expected": {
+        "images": 2,
+        "credits": 0.085
+      }
+    }
+  ]
+}
