@@ -1063,7 +1063,7 @@ func pluginTaskStatus(taskStatus string) string {
 		return pluginResponseStatusCompleted
 	case "FAILURE":
 		return pluginResponseStatusFailed
-	case "IN_PROGRESS":
+	case "IN_PROGRESS", "PERSISTING":
 		return pluginResponseStatusInProgress
 	case "NOT_START", "SUBMITTED", "QUEUED", "UNKNOWN", "":
 		return pluginResponseStatusQueued

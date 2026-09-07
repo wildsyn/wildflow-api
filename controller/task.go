@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -127,7 +128,18 @@ func writeTaskArtifacts(c *gin.Context, task *model.Task, dashboard bool) {
 }
 
 func projectTaskArtifacts(task *model.Task) ([]relaychannel.TaskArtifact, error) {
-	if task == nil || task.Status != model.TaskStatusSuccess || !taskHasPluginExecution(task) {
+	if task == nil || task.Status != model.TaskStatusSuccess {
+		return []relaychannel.TaskArtifact{}, nil
+	}
+	if len(task.PrivateData.StoredArtifacts) > 0 {
+		artifacts := make([]relaychannel.TaskArtifact, 0, len(task.PrivateData.StoredArtifacts))
+		for key, ref := range task.PrivateData.StoredArtifacts {
+			artifacts = append(artifacts, relaychannel.TaskArtifact{Key: key, Type: "image", MimeType: ref.MimeType})
+		}
+		sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Key < artifacts[j].Key })
+		return validateProjectedTaskArtifacts(artifacts)
+	}
+	if !taskHasPluginExecution(task) {
 		return []relaychannel.TaskArtifact{}, nil
 	}
 	adaptor := relay.GetTaskAdaptor(task.Platform)

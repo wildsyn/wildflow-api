@@ -437,6 +437,7 @@ func TestPluginResponsesMachinePendingResponse(t *testing.T) {
 		{name: "queued from submitted", taskStatus: "SUBMITTED", wantStatus: "queued"},
 		{name: "queued from not start", taskStatus: "NOT_START", wantStatus: "queued"},
 		{name: "in progress", taskStatus: "IN_PROGRESS", wantStatus: "in_progress"},
+		{name: "image storage remains in progress", taskStatus: "PERSISTING", wantStatus: "in_progress"},
 		{name: "background flag", taskStatus: "QUEUED", background: true, wantStatus: "queued", wantBackground: true},
 		{name: "terminal input stays pending", taskStatus: "SUCCESS", wantStatus: "in_progress"},
 	}

@@ -21,7 +21,7 @@ func (t TaskStatus) ToVideoStatus() string {
 	switch t {
 	case TaskStatusNotStart, TaskStatusQueued, TaskStatusSubmitted:
 		status = dto.VideoStatusQueued
-	case TaskStatusInProgress:
+	case TaskStatusInProgress, TaskStatusPersisting:
 		status = dto.VideoStatusInProgress
 	case TaskStatusSuccess:
 		status = dto.VideoStatusCompleted
@@ -38,6 +38,7 @@ const (
 	TaskStatusSubmitted             = "SUBMITTED"
 	TaskStatusQueued                = "QUEUED"
 	TaskStatusInProgress            = "IN_PROGRESS"
+	TaskStatusPersisting            = "PERSISTING"
 	TaskStatusFailure               = "FAILURE"
 	TaskStatusSuccess               = "SUCCESS"
 	TaskStatusUnknown               = "UNKNOWN"
@@ -109,6 +110,7 @@ func (m Properties) Value() (driver.Value, error) {
 }
 
 type TaskPrivateData struct {
+	ImageCompletion *commonRelay.TaskInfo         `json:"image_completion,omitempty"`
 	StoredArtifacts map[string]StoredTaskArtifact `json:"stored_artifacts,omitempty"`
 	Key             string                        `json:"key,omitempty"`
 	UpstreamTaskID  string                        `json:"upstream_task_id,omitempty"` // 上游真实 task ID
@@ -213,7 +215,7 @@ func (p TaskPrivateData) Value() (driver.Value, error) {
 	if p.Key == "" && p.UpstreamTaskID == "" && p.ResultURL == "" &&
 		p.Execution == nil && p.BillingSource == "" && p.SubscriptionId == 0 &&
 		p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
-		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 && len(p.StoredArtifacts) == 0 {
+		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 && len(p.StoredArtifacts) == 0 && p.ImageCompletion == nil {
 		return nil, nil
 	}
 	// 同 Properties.Value:string 避免 PG simple protocol 的 bytea 编码。
@@ -360,7 +362,7 @@ func TaskGetAllTasks(startIdx int, num int, queryParams SyncTaskQueryParams) []*
 func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 	var tasks []*Task
 	err := DB.Where("progress != ?", "100%").
-		Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess}).
+		Where("status NOT IN ?", []string{TaskStatusFailure, TaskStatusSuccess, TaskStatusPersisting}).
 		Where("submit_time < ?", cutoffUnix).
 		Order("submit_time").
 		Limit(limit).

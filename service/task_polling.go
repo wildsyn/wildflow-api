@@ -64,6 +64,9 @@ type BatchTaskResult struct {
 // 打破 service -> relay -> relay/channel -> service 的循环依赖。
 var GetTaskAdaptorFunc func(platform constant.TaskPlatform) TaskPollingAdaptor
 
+// PersistTaskImagesFunc is injected by main at startup, before polling begins.
+var PersistTaskImagesFunc func(context.Context, *model.Task) error
+
 // sweepTimedOutTasks 在主轮询之前独立清理超时任务。
 // 每次最多处理 100 条，剩余的下个周期继续处理。
 // 使用 per-task CAS (UpdateWithStatus) 防止覆盖被正常轮询已推进的任务。
@@ -146,6 +149,12 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 	summary.UnfinishedTasks = len(allTasks)
 	platformTask := make(map[constant.TaskPlatform][]*model.Task)
 	for _, t := range allTasks {
+		if t.Status == model.TaskStatusPersisting {
+			if err := resumeTaskImagePersistence(ctx, GetTaskAdaptorFunc(t.Platform), t); err != nil {
+				logger.LogWarn(ctx, fmt.Sprintf("task image persistence pending task=%s", t.TaskID))
+			}
+			continue
+		}
 		platformTask[t.Platform] = append(platformTask[t.Platform], t)
 	}
 
@@ -549,6 +558,22 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		task.PrivateData.PollFailures = 0
 	}
 
+	if parsedStatus == model.TaskStatusSuccess && task.Action == "image_generation" {
+		// Save the provider's paid success before downloading any result. The
+		// dedicated state is excluded from timeout refunds and provider polling.
+		task.PrivateData.ImageCompletion = taskResult
+		task.Status = model.TaskStatusPersisting
+		task.Progress = "99%"
+		won, err := task.UpdateWithStatus(snap.Status)
+		if err != nil {
+			return err
+		}
+		if !won {
+			return nil
+		}
+		return resumeTaskImagePersistence(ctx, adaptor, task)
+	}
+
 	now := time.Now().Unix()
 	shouldFinalizeBilling := false
 
@@ -621,6 +646,41 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		}
 	}
 
+	return nil
+}
+
+// resumeTaskImagePersistence never queries or resubmits the provider. On any
+// storage error the paid result remains recoverable in the same task row.
+func resumeTaskImagePersistence(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task) error {
+	if task.Status != model.TaskStatusPersisting || task.PrivateData.ImageCompletion == nil {
+		return fmt.Errorf("missing pending image completion")
+	}
+	if PersistTaskImagesFunc == nil || adaptor == nil {
+		return fmt.Errorf("image persistence dependencies unavailable")
+	}
+	if err := PersistTaskImagesFunc(ctx, task); err != nil {
+		// Preserve partial progress without overwriting a concurrent completion.
+		if _, saveErr := task.UpdateWithStatus(model.TaskStatusPersisting); saveErr != nil {
+			return saveErr
+		}
+		return err
+	}
+	if len(task.PrivateData.StoredArtifacts) == 0 {
+		return fmt.Errorf("image persistence produced no stored artifacts")
+	}
+	completion := task.PrivateData.ImageCompletion
+	task.Status = model.TaskStatusSuccess
+	task.Progress = taskcommon.ProgressComplete
+	task.FinishTime = time.Now().Unix()
+	task.PrivateData.ImageCompletion = nil
+	task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
+	won, err := task.UpdateWithStatus(model.TaskStatusPersisting)
+	if err != nil {
+		return err
+	}
+	if won {
+		settleTaskBillingOnComplete(ctx, adaptor, task, completion)
+	}
 	return nil
 }
 

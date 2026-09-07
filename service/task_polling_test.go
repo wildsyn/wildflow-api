@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -996,4 +997,66 @@ func TestUpdateBatchTasksPollClassification(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPaidImageCompletionSurvivesStorageFailureAndTimeout(t *testing.T) {
+	truncate(t)
+	previousLimit := constant.TaskQueryLimit
+	constant.TaskQueryLimit = 100
+	t.Cleanup(func() { constant.TaskQueryLimit = previousLimit })
+	const channelID = 907
+	seedTaskPollingChannel(t, channelID, true)
+	task := seedPollingTask(t, channelID, "paid-image", "upstream-paid-image")
+	task.Action = "image_generation"
+	task.SubmitTime = time.Now().Add(-2 * time.Hour).Unix()
+	require.NoError(t, model.DB.Save(task).Error)
+	ch, err := model.CacheGetChannel(channelID)
+	require.NoError(t, err)
+	adaptor := &scriptedPollingAdaptor{statusCode: 200, body: []byte(`{"images":["saved-provider-result"]}`), parse: &relaycommon.TaskInfo{Status: model.TaskStatusSuccess, UsageFacts: map[string]any{"images": 2}}}
+	previousPersist, previousFactory := PersistTaskImagesFunc, GetTaskAdaptorFunc
+	previousTimeout := constant.TaskTimeoutMinutes
+	t.Cleanup(func() {
+		PersistTaskImagesFunc = previousPersist
+		GetTaskAdaptorFunc = previousFactory
+		constant.TaskTimeoutMinutes = previousTimeout
+	})
+	GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return adaptor }
+	failStorage := true
+	calls := 0
+	PersistTaskImagesFunc = func(_ context.Context, pending *model.Task) error {
+		calls++
+		require.EqualValues(t, model.TaskStatusPersisting, pending.Status)
+		require.NotNil(t, pending.PrivateData.ImageCompletion)
+		require.Contains(t, string(pending.Data), "saved-provider-result")
+		if pending.PrivateData.StoredArtifacts == nil {
+			pending.PrivateData.StoredArtifacts = map[string]model.StoredTaskArtifact{}
+		}
+		pending.PrivateData.StoredArtifacts["image-0"] = model.StoredTaskArtifact{Backend: "inference", ObjectKey: strings.Repeat("a", 64), MimeType: "image/png", Size: 12}
+		if failStorage {
+			return errors.New("storage unavailable")
+		}
+		pending.PrivateData.StoredArtifacts["image-1"] = model.StoredTaskArtifact{Backend: "inference", ObjectKey: strings.Repeat("b", 64), MimeType: "image/png", Size: 12}
+		return nil
+	}
+	require.ErrorContains(t, updateVideoSingleTask(t.Context(), adaptor, ch, task.GetUpstreamTaskID(), map[string]*model.Task{task.GetUpstreamTaskID(): task}), "storage unavailable")
+	var saved model.Task
+	require.NoError(t, model.DB.First(&saved, task.ID).Error)
+	require.EqualValues(t, model.TaskStatusPersisting, saved.Status)
+	require.NotNil(t, saved.PrivateData.ImageCompletion)
+	require.Len(t, saved.PrivateData.StoredArtifacts, 1)
+	constant.TaskTimeoutMinutes = 1
+	sweepTimedOutTasks(t.Context())
+	require.NoError(t, model.DB.First(&saved, task.ID).Error)
+	require.EqualValues(t, model.TaskStatusPersisting, saved.Status)
+	// A restarted polling pass uses persisted provider success even if the
+	// original channel is gone and all later upstream queries would fail.
+	require.NoError(t, model.DB.Delete(&model.Channel{}, channelID).Error)
+	adaptor.fetchErr = errors.New("must not query provider again")
+	failStorage = false
+	RunTaskPollingOnce(t.Context(), nil)
+	require.NoError(t, model.DB.First(&saved, task.ID).Error)
+	require.EqualValues(t, model.TaskStatusSuccess, saved.Status)
+	require.Nil(t, saved.PrivateData.ImageCompletion)
+	require.Len(t, saved.PrivateData.StoredArtifacts, 2)
+	require.Equal(t, 2, calls)
 }

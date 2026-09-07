@@ -39,11 +39,23 @@ each containing `id` and a host artifact `url`. Provider URLs never appear there
 Only non-streaming sync and background modes are declared. The host pins task
 identity for later reads; end-to-end channel switching still needs verification.
 
-Durable recovery and Beijing OSS persistence must be completed before release.
-The upstream artifact store is currently a disabled placeholder; its
-proxy URL does not prove permanent storage. Reuse the inference repository's
-artifact ownership and existing OSS configuration, rather than creating a second
-independent task or billing ledger. This candidate alone is not an onboarded model.
+The polling host now checkpoints successful `image_generation` results in the
+same task row with internal status `PERSISTING` (Responses: `in_progress`). These
+tasks are excluded from generation timeout refunds and provider polling. A later
+pass resumes image storage from the saved result; partial references are retained.
+Only after every image is stored does the host commit success and invoke existing
+completion settlement. Downloads require credentialless GET and retain the
+existing URL and redirect checks. Stored manifests and content reads do not need
+the original provider plugin; restoring still-missing bytes currently needs that
+plugin and channel. Missing dependencies leave the task pending, without resubmission.
+
+The inference-backed store is implemented but not yet enabled at startup. Storage
+admission checks, real Beijing OSS verification, the database compatibility matrix,
+and complete billing/restart journeys remain release requirements. Tests currently
+exercise HTTP download fixtures, storage failures and SQLite task recovery; they
+are not evidence of production OSS durability. This candidate alone is not an
+onboarded model. It reuses inference artifact ownership and the existing task and
+billing ledger.
 
 Sources checked 2026-09-07:
 

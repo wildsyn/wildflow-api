@@ -1,7 +1,15 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"github.com/QuantumNous/new-api/internal/inferenceclient"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -598,6 +606,10 @@ func TestStoredArtifactUnavailableDoesNotFallBackToProvider(t *testing.T) {
 	// Removing the source channel must not change a stored result into a
 	// plugin error or trigger a fetch from the original supplier.
 	require.NoError(t, model.DB.Delete(&model.Channel{}, task.ChannelId).Error)
+	artifacts, err := projectTaskArtifacts(task)
+	require.NoError(t, err)
+	require.Equal(t, []relaychannel.TaskArtifact{{Key: "image-0", Type: "image", MimeType: "image/png"}}, artifacts)
+
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Set("id", task.UserId)
@@ -606,4 +618,83 @@ func TestStoredArtifactUnavailableDoesNotFallBackToProvider(t *testing.T) {
 	TaskArtifactContent(c)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "artifact_storage_unavailable")
+}
+
+type imagePersistenceProviderFixture struct {
+	urls    []string
+	headers map[string]string
+}
+
+func (p imagePersistenceProviderFixture) ListArtifacts(task *model.Task) ([]relaychannel.TaskArtifact, error) {
+	if task.Status != model.TaskStatusSuccess {
+		return nil, nil
+	}
+	out := make([]relaychannel.TaskArtifact, len(p.urls))
+	for i := range p.urls {
+		out[i] = relaychannel.TaskArtifact{Key: fmt.Sprintf("image-%d", i), Type: "image"}
+	}
+	return out, nil
+}
+func (p imagePersistenceProviderFixture) BuildContentRequest(_ *model.Task, key string, _ relaychannel.TaskArtifactClientRequest) (*relaychannel.TaskContentRequest, error) {
+	for i, imageURL := range p.urls {
+		if key == fmt.Sprintf("image-%d", i) {
+			return &relaychannel.TaskContentRequest{URL: imageURL, Method: http.MethodGet, Credentialless: true, Headers: p.headers}, nil
+		}
+	}
+	return nil, errors.New("unknown artifact")
+}
+
+type imagePersistenceStorageFixture struct {
+	calls  int
+	failAt int
+}
+
+func (f *imagePersistenceStorageFixture) StoreTaskImage(_ context.Context, tenant, media string, payload []byte) (inferenceclient.TaskImage, error) {
+	f.calls++
+	if f.calls == f.failAt {
+		return inferenceclient.TaskImage{}, errors.New("storage unavailable")
+	}
+	digest := sha256.Sum256(payload)
+	return inferenceclient.TaskImage{SHA256: hex.EncodeToString(digest[:]), SizeBytes: int64(len(payload)), MediaType: media}, nil
+}
+func (*imagePersistenceStorageFixture) ReadTaskImage(context.Context, string, inferenceclient.TaskImage) ([]byte, error) {
+	return nil, errors.New("unused")
+}
+
+func TestImagePersistenceRetriesOnlyUnstoredImages(t *testing.T) {
+	allowPrivateTaskMediaTest(t)
+	var imageBytes bytes.Buffer
+	require.NoError(t, png.Encode(&imageBytes, image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	fetched := map[string]int{}
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Empty(t, r.Header.Get("Authorization"))
+		require.Empty(t, r.Header.Get("Cookie"))
+		fetched[r.URL.Path]++
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/second", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(imageBytes.Bytes())
+	}))
+	defer cdn.Close()
+	provider := imagePersistenceProviderFixture{urls: []string{cdn.URL + "/first", cdn.URL + "/redirect"}}
+	storage := &imagePersistenceStorageFixture{failAt: 2}
+	store := service.NewInferenceTaskArtifactStore(storage)
+	task := &model.Task{UserId: 7, TaskID: "images", Status: model.TaskStatusInProgress}
+	err := persistTaskImages(t.Context(), task, provider, store, "")
+	require.ErrorContains(t, err, "storage unavailable")
+	require.Len(t, task.PrivateData.StoredArtifacts, 1)
+	require.Equal(t, model.TaskStatus(model.TaskStatusInProgress), task.Status)
+	require.NoError(t, persistTaskImages(t.Context(), task, provider, store, ""))
+	require.Len(t, task.PrivateData.StoredArtifacts, 2)
+	require.Equal(t, 1, fetched["/first"])
+	require.Equal(t, 2, fetched["/second"])
+	require.Equal(t, 3, storage.calls)
+	// A plugin cannot inject channel credentials into a CDN request.
+	provider.headers = map[string]string{"Authorization": "provider-secret"}
+	fresh := &model.Task{UserId: 7, TaskID: "other-images"}
+	require.ErrorContains(t, persistTaskImages(t.Context(), fresh, provider, store, ""), "credentialless GET")
+	require.Empty(t, fresh.PrivateData.StoredArtifacts)
+	require.Equal(t, 1, fetched["/first"])
 }
