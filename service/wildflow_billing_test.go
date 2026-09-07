@@ -397,6 +397,11 @@ func TestValidateWildFlowCompletedArtifactsRequiresVersionedIndexTTSWAV(t *testi
 	require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
 	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact, artifact}), ErrWildFlowInvalidArtifact)
 
+ artifact.Metadata["reference_audio_mode"] = "voice_id"
+ artifact.Metadata["voice_id"] = "official-voice-01-v1"
+ artifact.Metadata["lang"] = "en"
+ require.NoError(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}))
+ artifact.Metadata["lang"] = "zh"
 	artifact.Metadata["reference_audio_mode"] = "client_supplied"
 	require.ErrorIs(t, ValidateWildFlowCompletedArtifacts(operation, []inferenceclient.Artifact{artifact}), ErrWildFlowInvalidArtifact)
 	artifact.Metadata["reference_audio_mode"] = "server_fixed"
