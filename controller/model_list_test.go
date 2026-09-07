@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	channeldto "github.com/QuantumNous/new-api/dto"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -585,7 +586,7 @@ func TestListModelsQwenUsesEnabledChatAbilityContract(t *testing.T) {
 
 	// The declared OpenAI endpoint resolves through the same enabled chat
 	// channel that made the model visible.
-	selected, err := model.GetRandomSatisfiedChannel("team", qwenModel, 0, "/v1/chat/completions")
+	selected, err := model.GetRandomSatisfiedChannel("team", qwenModel, 0, []channeldto.ChannelFilter{{Kind: channeldto.FilterRequestPath, RequestPath: "/v1/chat/completions"}})
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	require.Equal(t, channel.Id, selected.Id)
@@ -659,49 +660,21 @@ func TestRetrieveModelHidesForbiddenWildFlowJobModel(t *testing.T) {
 	require.Equal(t, "model_not_found", payload.Error.Code)
 }
 
-func TestCheckUpdatePasswordRequiresCurrentPassword(t *testing.T) {
-	db := setupModelListControllerTestDB(t)
-	hashedPassword, err := common.Password2Hash("CurrentPassword123")
+// The rc.34 password path validates the session and password in the same
+// transaction. Protect the legacy passwordless-account boundary on that path.
+func TestPasswordChangeRejectsHistoricalEmptyPassword(t *testing.T) {
+	user, identity := setupSecurityEnrollmentTest(t)
+	require.NoError(t, model.DB.Model(user).Update("password", "").Error)
+	err := model.ChangeUserPassword(identity, &model.User{Password: "NewPassword123"}, false)
+	require.ErrorIs(t, err, model.ErrAccountPasswordState)
+	stored, err := model.GetUserById(user.Id, true)
 	require.NoError(t, err)
-	user := &model.User{
-		Username: "password-user",
-		Password: hashedPassword,
-		Status:   common.UserStatusEnabled,
-	}
-	require.NoError(t, db.Create(user).Error)
-
-	updatePassword, err := checkUpdatePassword("", "", user.Id)
-	require.NoError(t, err)
-	assert.False(t, updatePassword)
-
-	updatePassword, err = checkUpdatePassword("", "NewPassword123", user.Id)
-	require.Error(t, err)
-	assert.False(t, updatePassword)
-	assert.ErrorIs(t, err, errOriginalPasswordFail)
-
-	updatePassword, err = checkUpdatePassword("CurrentPassword123", "NewPassword123", user.Id)
-	require.NoError(t, err)
-	assert.True(t, updatePassword)
-}
-
-func TestCheckUpdatePasswordRejectsHistoricalEmptyPassword(t *testing.T) {
-	db := setupModelListControllerTestDB(t)
-	user := &model.User{
-		Username: "legacy-passwordless-user",
-		Password: "",
-		Status:   common.UserStatusEnabled,
-	}
-	require.NoError(t, db.Create(user).Error)
-
-	updatePassword, err := checkUpdatePassword("", "NewPassword123", user.Id)
-	require.Error(t, err)
-	assert.False(t, updatePassword)
-	assert.ErrorIs(t, err, errUserPasswordUnset)
+	require.Empty(t, stored.Password)
 }
 
 func TestSetupLoginDoesNotTouchPasswordWhenPasswordFieldOmitted(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.UserSession{}))
+	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.AuditLog{}, &model.UserSession{}, &model.TwoFA{}, &model.PasskeyCredential{}))
 
 	hashedPassword, err := common.Password2Hash("CurrentPassword123")
 	require.NoError(t, err)
@@ -717,11 +690,12 @@ func TestSetupLoginDoesNotTouchPasswordWhenPasswordFieldOmitted(t *testing.T) {
 	router := gin.New()
 	router.GET("/", func(c *gin.Context) {
 		setupLogin(&model.User{
-			Id:       user.Id,
-			Username: user.Username,
-			Role:     user.Role,
-			Status:   user.Status,
-			Group:    user.Group,
+			Id:          user.Id,
+			AuthVersion: user.AuthVersion,
+			Username:    user.Username,
+			Role:        user.Role,
+			Status:      user.Status,
+			Group:       user.Group,
 		}, c)
 	})
 

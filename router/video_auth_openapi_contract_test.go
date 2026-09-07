@@ -43,7 +43,7 @@ func setupVideoContentContractDB(t *testing.T) {
 	previousRedis := common.RedisEnabled
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.Channel{}))
+	require.NoError(t, db.AutoMigrate(&model.AuthFlow{}, &model.User{}, &model.Token{}, &model.Task{}, &model.Channel{}))
 	model.DB = db
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	model.InitCol()
@@ -125,6 +125,7 @@ func TestVideoContentRouteResponsesMatchOpenAPIAuthContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	SetVideoRouter(router)
+	SetTaskPluginProtocolRouter(router)
 
 	missingResponse, missingBody := serveVideoContentRequest(router, "")
 	require.Equal(t, http.StatusUnauthorized, missingResponse.Code)
@@ -135,9 +136,11 @@ func TestVideoContentRouteResponsesMatchOpenAPIAuthContract(t *testing.T) {
 	previousSecret := common.SessionSecret
 	common.SessionSecret = "video-content-contract-session-secret"
 	t.Cleanup(func() { common.SessionSecret = previousSecret })
+	binding, err := service.BindVerificationOperation(service.VerificationOperation{Scope: service.VerificationScopeChannelKeyRead, Context: []byte(`{"channel_id":1}`)})
+	require.NoError(t, err)
 	dashboardProof, _, err := service.IssueSecurityProof(service.AuthIdentity{
 		UserID: 1, SessionID: "video-contract-session", UserAuthVersion: 1, SessionVersion: 1,
-	}, "2fa", []string{"channel.key.read"})
+	}, "2fa", binding)
 	require.NoError(t, err)
 	dashboardResponse, dashboardBody := serveVideoContentRequest(router, "Bearer "+dashboardProof)
 	require.Equal(t, http.StatusUnauthorized, dashboardResponse.Code)

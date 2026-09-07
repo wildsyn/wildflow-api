@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 type tokenAutoGroupsInput struct {
@@ -69,6 +70,16 @@ func isRecordNotFound(err error) bool {
 type tokenResponse struct {
 	*model.Token
 	AutoGroups []string `json:"auto_groups"`
+}
+
+func maxTokenQuota() int {
+	quota, err := common.WalletQuotaFromDecimalStrict(
+		decimal.NewFromInt(1_000_000_000).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
+	)
+	if err != nil {
+		return common.MaxWalletQuota
+	}
+	return quota
 }
 
 func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
@@ -224,6 +235,9 @@ func GetTokenKey(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params := tokenAuditParams(c)
+	params["id"], params["name"] = token.Id, token.Name
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{
 		"key": token.GetFullKey(),
 	})
@@ -311,13 +325,15 @@ func AddToken(c *gin.Context) {
 		common.ApiErrorI18nWithStatus(c, http.StatusBadRequest, i18n.MsgTokenNameTooLong)
 		return
 	}
+	params := tokenAuditParams(c)
+	params["name"] = token.Name
 	// 非无限额度时，检查额度值是否超出有效范围
 	if !token.UnlimitedQuota {
 		if token.RemainQuota < 0 {
 			common.ApiErrorI18nWithStatus(c, http.StatusBadRequest, i18n.MsgTokenQuotaNegative)
 			return
 		}
-		maxQuotaValue := int((1000000000 * common.QuotaPerUnit))
+		maxQuotaValue := maxTokenQuota()
 		if token.RemainQuota > maxQuotaValue {
 			common.ApiErrorI18nWithStatus(c, http.StatusBadRequest, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
 			return
@@ -372,6 +388,8 @@ func AddToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params["id"] = cleanToken.Id
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -381,7 +399,7 @@ func AddToken(c *gin.Context) {
 func DeleteToken(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	userId := c.GetInt("id")
-	err := model.DeleteTokenById(id, userId)
+	token, err := model.GetTokenByIds(id, userId)
 	if err != nil {
 		if isRecordNotFound(err) {
 			respondTokenRecordNotFound(c)
@@ -390,6 +408,14 @@ func DeleteToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params := tokenAuditParams(c)
+	params["id"], params["name"] = token.Id, token.Name
+	err = token.Delete()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -406,6 +432,10 @@ func UpdateToken(c *gin.Context) {
 		return
 	}
 	token := request.Token
+	params := tokenAuditParams(c)
+	if token.Id > 0 {
+		params["id"] = token.Id
+	}
 	if len(token.Name) > 50 {
 		common.ApiErrorI18nWithStatus(c, http.StatusBadRequest, i18n.MsgTokenNameTooLong)
 		return
@@ -415,7 +445,7 @@ func UpdateToken(c *gin.Context) {
 			common.ApiErrorI18nWithStatus(c, http.StatusBadRequest, i18n.MsgTokenQuotaNegative)
 			return
 		}
-		maxQuotaValue := int((1000000000 * common.QuotaPerUnit))
+		maxQuotaValue := maxTokenQuota()
 		if token.RemainQuota > maxQuotaValue {
 			common.ApiErrorI18nWithStatus(c, http.StatusBadRequest, i18n.MsgTokenQuotaExceedMax, map[string]any{"Max": maxQuotaValue})
 			return
@@ -433,6 +463,8 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params["name"] = cleanToken.Name
+	previous := *cleanToken
 	if statusOnly != "" && token.Status == common.TokenStatusEnabled {
 		if cleanToken.Status == common.TokenStatusExpired && cleanToken.ExpiredTime <= common.GetTimestamp() && cleanToken.ExpiredTime != -1 {
 			common.ApiErrorI18nWithStatus(c, http.StatusBadRequest, i18n.MsgTokenExpiredCannotEnable)
@@ -472,6 +504,34 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params["name"] = cleanToken.Name
+	if statusOnly != "" {
+		params["from"], params["to"] = previous.Status, cleanToken.Status
+	} else {
+		changedFields := []string{}
+		for _, field := range []struct {
+			name    string
+			changed bool
+		}{
+			{"name", previous.Name != cleanToken.Name},
+			{"expired_time", previous.ExpiredTime != cleanToken.ExpiredTime},
+			{"remain_quota", previous.RemainQuota != cleanToken.RemainQuota},
+			{"unlimited_quota", previous.UnlimitedQuota != cleanToken.UnlimitedQuota},
+			{"model_limits_enabled", previous.ModelLimitsEnabled != cleanToken.ModelLimitsEnabled},
+			{"model_limits", previous.ModelLimits != cleanToken.ModelLimits},
+			{"allow_ips", (previous.AllowIps == nil) != (cleanToken.AllowIps == nil) ||
+				(previous.AllowIps != nil && cleanToken.AllowIps != nil && *previous.AllowIps != *cleanToken.AllowIps)},
+			{"group", previous.Group != cleanToken.Group},
+			{"cross_group_retry", previous.CrossGroupRetry != cleanToken.CrossGroupRetry},
+			{"auto_groups", previous.AutoGroups != cleanToken.AutoGroups},
+		} {
+			if field.changed {
+				changedFields = append(changedFields, field.name)
+			}
+		}
+		params["changed_fields"] = changedFields
+	}
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -485,7 +545,12 @@ type TokenBatch struct {
 
 func DeleteTokenBatch(c *gin.Context) {
 	tokenBatch := TokenBatch{}
-	if err := c.ShouldBindJSON(&tokenBatch); err != nil || len(tokenBatch.Ids) == 0 {
+	if err := c.ShouldBindJSON(&tokenBatch); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	params := tokenBatchAuditParams(c, tokenBatch.Ids)
+	if len(tokenBatch.Ids) == 0 {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
@@ -495,6 +560,8 @@ func DeleteTokenBatch(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params["count"] = count
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -504,7 +571,12 @@ func DeleteTokenBatch(c *gin.Context) {
 
 func GetTokenKeysBatch(c *gin.Context) {
 	tokenBatch := TokenBatch{}
-	if err := c.ShouldBindJSON(&tokenBatch); err != nil || len(tokenBatch.Ids) == 0 {
+	if err := c.ShouldBindJSON(&tokenBatch); err != nil {
+		common.ApiErrorI18nWithStatus(c, http.StatusBadRequest, i18n.MsgInvalidParams)
+		return
+	}
+	params := tokenBatchAuditParams(c, tokenBatch.Ids)
+	if len(tokenBatch.Ids) == 0 {
 		common.ApiErrorI18nWithStatus(c, http.StatusBadRequest, i18n.MsgInvalidParams)
 		return
 	}
@@ -519,8 +591,13 @@ func GetTokenKeysBatch(c *gin.Context) {
 		return
 	}
 	keysMap := make(map[int]string)
+	returnedIDs := make([]int, 0, len(tokens))
 	for _, t := range tokens {
 		keysMap[t.Id] = t.GetFullKey()
+		returnedIDs = append(returnedIDs, t.Id)
 	}
+	params["count"] = len(tokens)
+	params["returned_ids"] = returnedIDs
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{"keys": keysMap})
 }

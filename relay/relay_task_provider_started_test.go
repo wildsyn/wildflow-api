@@ -23,7 +23,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const taskDispatchTestModel = "52_textgenerate"
+const taskDispatchTestModel = "52_text_to_video"
 
 // TestRelayTaskSubmitProviderStartedFailClosed exercises the real first-submit
 // path with Vidu's production adaptor and a local HTTP server.  The server is
