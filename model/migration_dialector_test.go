@@ -141,6 +141,25 @@ func TestMigrationSchemaStability(t *testing.T) {
 				require.NoError(t, db.Table(table).Create(&migrationConstraintV1{Name: "existing"}).Error)
 			})
 
+			if dialect == "postgres" {
+				t.Run("historical_named_unique_constraint", func(t *testing.T) {
+					const table = "migration_named_unique_test"
+					t.Cleanup(func() { _ = db.Migrator().DropTable(table) })
+					require.NoError(t, db.Exec("CREATE TABLE migration_named_unique_test (id bigint PRIMARY KEY, reference varchar(64), CONSTRAINT historical_reference_key UNIQUE (reference))").Error)
+					target := &struct {
+						ID        int    `gorm:"primaryKey"`
+						Reference string `gorm:"size:64;uniqueIndex:idx_migration_named_reference"`
+					}{}
+					require.NoError(t, db.Table(table).Create(map[string]any{"id": 1, "reference": "existing"}).Error)
+					require.NoError(t, db.Table(table).AutoMigrate(target))
+					recorder.reset()
+					require.NoError(t, db.Table(table).AutoMigrate(target))
+					assert.Empty(t, recorder.schemaMutations())
+					assert.True(t, db.Table(table).Migrator().HasConstraint(target, "historical_reference_key"))
+					assert.Error(t, db.Table(table).Create(map[string]any{"id": 2, "reference": "existing"}).Error)
+				})
+			}
+
 			if dialect == "mysql" {
 				t.Run("decimal_default_and_real_changes", func(t *testing.T) {
 					const table = "migration_decimal_test"
