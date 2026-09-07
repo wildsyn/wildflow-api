@@ -267,7 +267,7 @@ func createWildFlowJob(c *gin.Context, request service.WildFlowJobRequest) {
 		TenantRef:            wildFlowTenantRef(userID),
 		ProductModelRef:      runtimeOfferingRef,
 		ModelVersionRef:      operation.ModelVersionRef,
-		InputArtifactIDs:     request.InputArtifactIDs,
+		InputArtifactIDs:     service.WildFlowRuntimeInputArtifactIDs(operation.ProductModelRef, runtimeParameters, request.InputArtifactIDs),
 		Parameters:           runtimeParameters,
 		DeadlineAt:           time.Now().UTC().Add(deadlineAfter),
 		CallbackCapabilities: []string{},

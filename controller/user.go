@@ -1375,6 +1375,8 @@ func UpdateUserSetting(c *gin.Context) {
 
 	// 构建设置
 	settings := dto.UserSetting{
+		IndexTTSDefaultVoice:             existingSettings.IndexTTSDefaultVoice,
+		IndexTTSAccountVoices:            existingSettings.IndexTTSAccountVoices,
 		NotifyType:                       req.QuotaWarningType,
 		QuotaWarningThreshold:            req.QuotaWarningThreshold,
 		UpstreamModelUpdateNotifyEnabled: upstreamModelUpdateNotifyEnabled,

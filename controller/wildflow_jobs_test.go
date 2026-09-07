@@ -109,6 +109,11 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	})
 	engine.POST("/v1/jobs", CreateWildFlowJob)
 	engine.POST("/v1/input-artifacts", CreateWildFlowInputArtifact)
+	engine.POST("/v1/voices", CreateWildFlowVoice)
+	engine.GET("/v1/voices", ListWildFlowVoices)
+	engine.GET("/v1/voices/:voice_id", GetWildFlowVoice)
+	engine.PUT("/v1/voice-preference", SetWildFlowVoicePreference)
+	engine.GET("/v1/voice-preference", GetWildFlowVoicePreference)
 	engine.POST("/api/v1/audio/speech", CreateWildFlowLegacySpeechJob)
 	engine.POST("/api/v1/images/generations", CreateWildFlowLegacyImageJob)
 	engine.GET("/v1/jobs/:operation_id", GetWildFlowJob)
@@ -239,7 +244,7 @@ func TestCreateDualASRJobAllowsStandardRegisteredUserTokenAndPreauthorizesRetail
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"job":{"id":"job-asr-1","state":"queued"}}`))
 	}))
-	body := `{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"行业访谈","hotwords":["青蜂六边形"]}}`
+	body := `{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"行业访谈","hotwords":["播客账号六边形"]}}`
 
 	response := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{
 		"Idempotency-Key": "asr-standard-token",
@@ -1934,4 +1939,54 @@ func TestDownloadVoxCPM2ArtifactPersistsRecoveryAfterStreamFailure(t *testing.T)
 	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&persisted).Error)
 	assert.Equal(t, "recovery_required", persisted.State)
 	assert.Equal(t, "artifact_stream_error", persisted.LastErrorCode)
+}
+
+func TestVoiceUploadUsesExistingAccountAndKey(t *testing.T) {
+	payload := append([]byte("RIFFtest-reference"), make([]byte, 100)...)
+	digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/internal/v1/voices", r.URL.Path)
+		require.Equal(t, "user:42", r.Header.Get("X-WildFlow-Tenant-Ref"))
+		require.Equal(t, "Book account", r.Header.Get("X-WildFlow-Voice-Name"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprintf(w, `{"voice_id":"voice-1","name":"Book account","sha256":%q,"media_type":"audio/wav","size_bytes":%d,"retention_state":"active"}`, digest, len(payload))
+	}))
+	response := performWildFlowBytesRequest(t, engine, http.MethodPost, "/v1/voices", payload, map[string]string{"Content-Type": "audio/wav", "X-WildFlow-Content-SHA256": digest, "X-WildFlow-Voice-Name": "Book account"})
+	require.Equal(t, http.StatusCreated, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"voice_id":"voice-1"`)
+}
+
+func TestVoicePreferencePersistsWithoutChangingOtherSettings(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"voice_id":"voice-1","name":"Book account","retention_state":"active"}`))
+	}))
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", 42).Update("setting", `{"language":"zh"}`).Error)
+	response := performWildFlowRequest(t, engine, http.MethodPut, "/v1/voice-preference", `{"voice_id":"voice-1"}`, nil)
+	require.Equal(t, 200, response.Code, response.Body.String())
+	var stored model.User
+	require.NoError(t, model.DB.First(&stored, 42).Error)
+	assert.Equal(t, "zh", stored.GetSetting().Language)
+	assert.Equal(t, "voice-1", stored.GetSetting().IndexTTSDefaultVoice)
+}
+
+func TestContentAccountVoicesStayIndependent(t *testing.T) {
+	engine, _ := setupWildFlowJobsControllerTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		_, _ = w.Write([]byte(`{"voice_id":"` + id + `","name":"Account voice","retention_state":"active"}`))
+	}))
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", 42).Update("setting", `{"language":"zh","indextts_default_voice":"voice-general"}`).Error)
+	for _, body := range []string{`{"voice_id":"voice-book","content_account":"图书账号"}`, `{"voice_id":"voice-podcast","content_account":"播客账号"}`} {
+		response := performWildFlowRequest(t, engine, http.MethodPut, "/v1/voice-preference", body, nil)
+		require.Equal(t, 200, response.Code, response.Body.String())
+	}
+	var user model.User
+	require.NoError(t, model.DB.First(&user, 42).Error)
+	assert.Equal(t, "voice-general", user.GetSetting().IndexTTSDefaultVoice)
+	assert.Equal(t, map[string]string{"图书账号": "voice-book", "播客账号": "voice-podcast"}, user.GetSetting().IndexTTSAccountVoices)
+	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/voice-preference", "", nil)
+	require.Equal(t, 200, response.Code)
+	assert.Contains(t, response.Body.String(), "voice-podcast")
 }
