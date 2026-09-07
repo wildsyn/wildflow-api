@@ -24,7 +24,8 @@ var reservationFixtureSequence atomic.Uint64
 
 func seedReservationFixture(t *testing.T, userQuota, tokenQuota int) (int, int, string) {
 	t.Helper()
-	fixtureID := fmt.Sprintf("%s-%d", t.Name(), reservationFixtureSequence.Add(1))
+	// Keep fixture identities inside real database varchar limits.
+	fixtureID := fmt.Sprintf("%012x", reservationFixtureSequence.Add(1))
 	user := &User{Username: fmt.Sprintf("reservation-user-%s", fixtureID), Quota: userQuota, Group: "default", AffCode: fmt.Sprintf("reservation-aff-%s", fixtureID)}
 	require.NoError(t, DB.Create(user).Error)
 	token := &Token{
@@ -651,13 +652,13 @@ func TestBillingReservationCacheDeltaSigns(t *testing.T) {
 	// 预置缓存：用户 Quota=1000，Key RemainQuota=1000（带 TTL，否则 HINCRBY 跳过）
 	userKey := fmt.Sprintf("user:%d", userId)
 	tokenCacheKey := fmt.Sprintf("token:%s", common.GenerateHMAC(tokenKey))
-	require.NoError(t, common.RDB.HSet(context.Background(), userKey, "Quota", 1000).Err())
-	require.NoError(t, common.RDB.Expire(context.Background(), userKey, time.Minute).Err())
+	_, err := GetUserCache(userId)
+	require.NoError(t, err)
 	require.NoError(t, common.RDB.HSet(context.Background(), tokenCacheKey, "RemainQuota", 1000).Err())
 	require.NoError(t, common.RDB.Expire(context.Background(), tokenCacheKey, time.Minute).Err())
 
 	// 预占 400：DB 扣 400，缓存必须 -400
-	_, err := ReserveWalletBillingQuota("req-cache-1", userId, tokenId, tokenKey, 400, false)
+	_, err = ReserveWalletBillingQuota("req-cache-1", userId, tokenId, tokenKey, 400, false)
 	require.NoError(t, err)
 	userQuota, err := common.RDB.HGet(context.Background(), userKey, "Quota").Int64()
 	require.NoError(t, err)

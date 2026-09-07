@@ -459,9 +459,11 @@ func TestTokenFieldUpdateCannotRestoreDisableAfterFenceExpiry(t *testing.T) {
 	var stored Token
 	require.NoError(t, DB.First(&stored, token.Id).Error)
 	assert.Equal(t, common.TokenStatusDisabled, stored.Status)
-	cached, err := cacheGetTokenByKey(token.Key)
+	_, err := cacheGetTokenByKey(token.Key)
+	require.ErrorIs(t, err, ErrTokenCacheRevocationPending)
+	current, err := GetTokenByKey(token.Key, false)
 	require.NoError(t, err)
-	assert.Equal(t, common.TokenStatusDisabled, cached.Status)
+	assert.Equal(t, common.TokenStatusDisabled, current.Status)
 	_, err = ValidateUserToken(token.Key)
 	require.ErrorIs(t, err, ErrTokenInvalid)
 }
@@ -584,4 +586,32 @@ func TestTokenRevocationDeniesAcrossSharedRedis(t *testing.T) {
 	_, err = ValidateUserToken(token.Key)
 	require.ErrorIs(t, err, ErrTokenInvalid)
 	require.False(t, server.Exists(tokenCacheKey(token.Key)))
+}
+
+func TestUpstreamCacheInitHonorsWildFlowRevocationFence(t *testing.T) {
+	token := newRevocableToken(t, "upstream-init-revocation")
+	useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+	require.NoError(t, raiseTokenRevocationFence(common.GenerateHMAC(token.Key)))
+	code, err := cacheInitToken(*token)
+	require.NoError(t, err)
+	require.Zero(t, code)
+	_, err = cacheGetTokenByKey(token.Key)
+	require.ErrorIs(t, err, ErrTokenCacheRevocationPending)
+}
+
+func TestBackgroundCacheFillPreservesUpstreamQuotaReservation(t *testing.T) {
+	token := newRevocableToken(t, "upstream-init-quota")
+	useUserCacheMiniRedis(t)
+	drainTokenCacheFills(t)
+	require.NoError(t, DB.Model(token).Updates(map[string]interface{}{"remain_quota": 100, "used_quota": 0}).Error)
+	require.NoError(t, initTokenCacheFromDatabase(token.Id, token.Key))
+	result, err := cacheTryReserveTokenQuota(token.Id, token.Key, 40)
+	require.NoError(t, err)
+	require.Equal(t, cacheQuotaOK, result)
+	require.NoError(t, initTokenCacheFromDatabase(token.Id, token.Key))
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	require.Equal(t, 60, cached.RemainQuota)
+	require.Equal(t, 40, cached.UsedQuota)
 }

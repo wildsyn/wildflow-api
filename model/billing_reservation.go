@@ -480,70 +480,82 @@ func SettleBillingReservation(requestId string, delta int) error {
 	if requestId == "" {
 		return ErrBillingReservationNotFound
 	}
-	var cacheUserId int
-	var cacheUserDelta int
-	var cacheTokenDelta int
+	var effect billingReservationCacheEffect
 	err := transactionWithBillingReservationRetry(func() error {
-		cacheUserId, cacheUserDelta, cacheTokenDelta = 0, 0, 0
+		effect = billingReservationCacheEffect{}
 		return DB.Transaction(func(tx *gorm.DB) error {
-			var record BillingReservationRecord
-			if err := lockForUpdate(tx).Where("request_id = ?", requestId).First(&record).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return ErrBillingReservationNotFound
-				}
-				return err
-			}
-			if record.State == BillingReservationStateSettled || record.State == BillingReservationStateReleased {
-				// 已终结：结算重放按幂等 no-op 处理（账变只会发生一次）。
-				return nil
-			}
-			// SQLite has no SELECT FOR UPDATE equivalent in lockForUpdate. Claim the
-			// terminal transition with a state CAS before applying any balance delta,
-			// so a concurrent explicit release or stale recovery cannot settle an old
-			// provider_started snapshot after it has already refunded the reservation.
-			transition := tx.Model(&BillingReservationRecord{}).
-				Where("id = ? AND state = ?", record.Id, record.State).
-				Update("state", BillingReservationStateSettled)
-			if transition.Error != nil {
-				return transition.Error
-			}
-			if transition.RowsAffected == 0 {
-				return nil
-			}
-			if delta != 0 {
-				var applyErr error
-				switch record.Source {
-				case BillingReservationSourceWallet:
-					applyErr = adjustUserQuotaDeltaTx(tx, record.UserId, int64(delta))
-					if applyErr == nil {
-						cacheUserId = record.UserId
-						cacheUserDelta = -delta
-					}
-				case BillingReservationSourceSubscription:
-					applyErr = postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, int64(delta))
-				}
-				// 资金侧失败即整体回滚：不再继续调整 Key，保证账变原子。
-				if applyErr != nil {
-					return applyErr
-				}
-				// Key 额度与资金同步差额：非 unlimited Key 必须再次满足硬上限。
-				if tokenErr := adjustTokenQuotaDeltaTx(tx, record.TokenId, int64(delta), record.UnlimitedToken); tokenErr != nil {
-					return tokenErr
-				}
-				cacheTokenDelta = -delta
-			}
-			return nil
+			return settleBillingReservationTx(tx, requestId, delta, &effect)
 		})
 	})
-	if err != nil {
+	if err == nil {
+		effect.apply(requestId)
+	}
+	return err
+}
+
+// Balance changes must share the caller's durable transaction. Cache updates
+// are applied only after its commit, never after a rollback or retry.
+type billingReservationCacheEffect struct {
+	userID, userDelta, tokenDelta int
+}
+
+func (effect billingReservationCacheEffect) apply(requestID string) {
+	if effect.userDelta == 0 && effect.tokenDelta == 0 {
+		return
+	}
+	tokenKey := ""
+	if effect.tokenDelta != 0 {
+		tokenKey = billingReservationTokenKey(requestID)
+	}
+	syncBillingReservationCache(effect.userID, tokenKey, effect.userDelta, effect.tokenDelta)
+}
+
+func settleBillingReservationTx(tx *gorm.DB, requestId string, delta int, effect *billingReservationCacheEffect) error {
+	var record BillingReservationRecord
+	if err := lockForUpdate(tx).Where("request_id = ?", requestId).First(&record).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrBillingReservationNotFound
+		}
 		return err
 	}
-	if cacheUserDelta != 0 || cacheTokenDelta != 0 {
-		tokenKey := ""
-		if cacheTokenDelta != 0 {
-			tokenKey = billingReservationTokenKey(requestId)
+	if record.State == BillingReservationStateSettled || record.State == BillingReservationStateReleased {
+		// 已终结：结算重放按幂等 no-op 处理（账变只会发生一次）。
+		return nil
+	}
+	// SQLite has no SELECT FOR UPDATE equivalent in lockForUpdate. Claim the
+	// terminal transition with a state CAS before applying any balance delta,
+	// so a concurrent explicit release or stale recovery cannot settle an old
+	// provider_started snapshot after it has already refunded the reservation.
+	transition := tx.Model(&BillingReservationRecord{}).
+		Where("id = ? AND state = ?", record.Id, record.State).
+		Update("state", BillingReservationStateSettled)
+	if transition.Error != nil {
+		return transition.Error
+	}
+	if transition.RowsAffected == 0 {
+		return nil
+	}
+	if delta != 0 {
+		var applyErr error
+		switch record.Source {
+		case BillingReservationSourceWallet:
+			applyErr = adjustUserQuotaDeltaTx(tx, record.UserId, int64(delta))
+			if applyErr == nil {
+				effect.userID = record.UserId
+				effect.userDelta = -delta
+			}
+		case BillingReservationSourceSubscription:
+			applyErr = postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, int64(delta))
 		}
-		syncBillingReservationCache(cacheUserId, tokenKey, cacheUserDelta, cacheTokenDelta)
+		// 资金侧失败即整体回滚：不再继续调整 Key，保证账变原子。
+		if applyErr != nil {
+			return applyErr
+		}
+		// Key 额度与资金同步差额：非 unlimited Key 必须再次满足硬上限。
+		if tokenErr := adjustTokenQuotaDeltaTx(tx, record.TokenId, int64(delta), record.UnlimitedToken); tokenErr != nil {
+			return tokenErr
+		}
+		effect.tokenDelta = -delta
 	}
 	return nil
 }

@@ -17,7 +17,10 @@ func SetRouter(router *gin.Engine, _ WebAssets) {
 	SetApiRouter(router)
 	SetDashboardRouter(router)
 	SetRelayRouter(router)
+	SetTaskPluginProtocolRouter(router)
 	SetVideoRouter(router)
+	SetTaskRouter(router)
+	pluginDispatcher := SetPluginRouter(router)
 	frontendBaseUrl := os.Getenv("FRONTEND_BASE_URL")
 	if common.IsMasterNode && frontendBaseUrl != "" {
 		frontendBaseUrl = ""
@@ -33,7 +36,7 @@ func SetRouter(router *gin.Engine, _ WebAssets) {
 				"website":       "https://wildflow.cn",
 			})
 		})
-		router.NoRoute(func(c *gin.Context) {
+		router.NoRoute(pluginDispatcher, middleware.AccessTokenAudit(), func(c *gin.Context) {
 			c.Set(middleware.RouteTagKey, "web")
 			c.JSON(http.StatusNotFound, gin.H{
 				"error": "not found",
@@ -44,7 +47,7 @@ func SetRouter(router *gin.Engine, _ WebAssets) {
 	}
 	if frontendBaseUrl != "" {
 		frontendBaseUrl = strings.TrimSuffix(frontendBaseUrl, "/")
-		router.NoRoute(func(c *gin.Context) {
+		router.NoRoute(pluginDispatcher, middleware.AccessTokenAudit(), func(c *gin.Context) {
 			c.Set(middleware.RouteTagKey, "web")
 			c.Redirect(http.StatusMovedPermanently, fmt.Sprintf("%s%s", frontendBaseUrl, c.Request.RequestURI))
 		})

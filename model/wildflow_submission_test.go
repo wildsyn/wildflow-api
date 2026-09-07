@@ -1,6 +1,12 @@
 package model
 
 import (
+	"fmt"
+	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,4 +98,275 @@ func TestLegacySubmittingOperationWithoutLeaseBecomesStickyRecovery(t *testing.T
 	assert.Equal(t, "legacy_submission_state_unknown", operation.LastErrorCode)
 	assert.Equal(t, WildFlowSubmissionPhaseRecoveryRequired, operation.SubmissionPhase)
 	assert.Equal(t, WildFlowBillingStateReserved, operation.BillingState, "legacy provider side effects are unknown")
+}
+
+func TestTaskOperationReplayAndAtomicTaskAttachment(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	require.NoError(t, db.AutoMigrate(&Task{}))
+	candidate := func(user int, id, key, request string) *WildFlowOperation {
+		return &WildFlowOperation{OperationID: id, UserID: user, TokenID: 1, TaskID: "task_" + id, IdempotencyKeyDigest: strings.Repeat(key, 64), RequestDigest: strings.Repeat(request, 64), SubmissionLeaseExpiresAt: time.Now().Unix() + 60}
+	}
+	first, created, err := ReserveTaskOperation(candidate(7, "image-first", "a", "b"))
+	require.NoError(t, err)
+	require.True(t, created)
+	replay, created, err := ReserveTaskOperation(candidate(7, "image-second", "a", "b"))
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, first.TaskID, replay.TaskID)
+	_, _, err = ReserveTaskOperation(candidate(7, "image-different", "a", "c"))
+	require.ErrorIs(t, err, ErrTaskOperationConflict)
+	other, created, err := ReserveTaskOperation(candidate(8, "image-other", "a", "b"))
+	require.NoError(t, err)
+	require.True(t, created)
+	require.NotEqual(t, first.TaskID, other.TaskID)
+	// Force the insert to fail after the operation update; both must roll back.
+	require.NoError(t, db.Create(&Task{ID: 91, TaskID: "existing", UserId: 7}).Error)
+	task := &Task{ID: 91, TaskID: first.TaskID, UserId: 7, Status: TaskStatusSubmitted}
+	require.Error(t, InsertTaskForOperation(first.OperationID, task))
+	fresh, err := GetWildFlowOperationByUserAndKey(7, strings.Repeat("a", 64))
+	require.NoError(t, err)
+	require.Equal(t, TaskOperationSubmitting, fresh.State)
+	task.ID = 0
+	require.NoError(t, InsertTaskForOperation(first.OperationID, task))
+	require.ErrorIs(t, InsertTaskForOperation(first.OperationID, task), ErrTaskOperationState)
+	replay, created, err = ReserveTaskOperation(candidate(7, "image-third", "a", "b"))
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, TaskOperationAccepted, replay.State)
+	var count int64
+	require.NoError(t, db.Model(&Task{}).Where("task_id = ?", first.TaskID).Count(&count).Error)
+	require.EqualValues(t, 1, count)
+	pending, err := ListWildFlowOperationsForBillingReconciliation(100)
+	require.NoError(t, err)
+	require.Empty(t, pending, "task billing must not also enter inference job settlement")
+	// An expired uncertain submission stays recoverable, never a new winner.
+	require.NoError(t, db.Model(other).Update("submission_lease_expires_at", time.Now().Unix()-1).Error)
+	replay, created, err = ReserveTaskOperation(candidate(8, "image-fourth", "a", "b"))
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, "recovery_required", replay.State)
+	// The original in-flight request can still attach a late successful result;
+	// recovery forbids resubmission, not durable recording of known work.
+	require.NoError(t, InsertTaskForOperation(other.OperationID, &Task{TaskID: other.TaskID, UserId: 8}))
+}
+
+func TestConcurrentTaskOperationReservationHasOneSubmitWinner(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	pool, err := db.DB()
+	require.NoError(t, err)
+	pool.SetMaxOpenConns(1)
+	type reservation struct {
+		operation *WildFlowOperation
+		created   bool
+		err       error
+	}
+	start := make(chan struct{})
+	results := make(chan reservation, 2)
+	for _, id := range []string{"concurrent-a", "concurrent-b"} {
+		go func(id string) {
+			<-start
+			operation, created, err := ReserveTaskOperation(&WildFlowOperation{OperationID: id, TaskID: "task_" + id, UserID: 7, IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64), SubmissionLeaseExpiresAt: time.Now().Unix() + 60})
+			results <- reservation{operation, created, err}
+		}(id)
+	}
+	close(start)
+	first, second := <-results, <-results
+	require.NoError(t, first.err)
+	require.NoError(t, second.err)
+	require.NotEqual(t, first.created, second.created)
+	require.Equal(t, first.operation.OperationID, second.operation.OperationID)
+}
+
+// Stopping immediately after InsertTaskForOperation must leave both a durable
+// result identity and final funding state. No service-layer Settle is required.
+func TestTaskAcceptanceSettlesReservationInSameTransaction(t *testing.T) {
+	for _, actual := range []int{0, 400, 500, 600} {
+		t.Run(fmt.Sprint(actual), func(t *testing.T) {
+			db := setupWildFlowBillingModelTest(t)
+			require.NoError(t, db.AutoMigrate(&Task{}, &BillingReservationRecord{}))
+			userID, tokenID, tokenKey := seedReservationFixture(t, 2000, 2000)
+			reserved, err := ReserveWalletBillingQuota("image-billing", userID, tokenID, tokenKey, 500, false)
+			require.NoError(t, err)
+			require.True(t, reserved)
+			require.NoError(t, MarkBillingReservationProviderStarted("image-billing"))
+			op, created, err := ReserveTaskOperation(&WildFlowOperation{
+				OperationID: "image-atomic", TaskID: "task_image-atomic", UserID: userID, TokenID: tokenID,
+				RequestID: "image-billing", IdempotencyKeyDigest: strings.Repeat("a", 64),
+				RequestDigest: strings.Repeat("b", 64), SubmissionLeaseExpiresAt: time.Now().Unix() + 60,
+			})
+			require.NoError(t, err)
+			require.True(t, created)
+			require.NoError(t, db.Create(&Task{ID: 91, TaskID: "existing", UserId: userID}).Error)
+			task := &Task{ID: 91, TaskID: op.TaskID, UserId: userID, Quota: actual,
+				PrivateData: TaskPrivateData{TokenId: tokenID}}
+			require.Error(t, InsertTaskForOperation(op.OperationID, task))
+			var reservation BillingReservationRecord
+			require.NoError(t, db.Where("request_id = ?", op.RequestID).First(&reservation).Error)
+			assert.Equal(t, BillingReservationStateProviderStarted, reservation.State)
+			assert.Equal(t, 1500, reservationUserQuota(t, userID))
+			remain, used := reservationTokenState(t, tokenID)
+			assert.Equal(t, 1500, remain)
+			assert.Equal(t, 500, used)
+			task.ID = 0
+			require.NoError(t, InsertTaskForOperation(op.OperationID, task))
+			require.NoError(t, db.Where("request_id = ?", op.RequestID).First(&reservation).Error)
+			assert.Equal(t, BillingReservationStateSettled, reservation.State)
+			assert.Equal(t, 2000-actual, reservationUserQuota(t, userID))
+			remain, used = reservationTokenState(t, tokenID)
+			assert.Equal(t, 2000-actual, remain)
+			assert.Equal(t, actual, used)
+			require.ErrorIs(t, InsertTaskForOperation(op.OperationID, task), ErrTaskOperationState)
+			// The normal request continuation and recovery replay are no-ops.
+			require.NoError(t, SettleBillingReservation(op.RequestID, actual-500))
+			assert.Equal(t, 2000-actual, reservationUserQuota(t, userID))
+			assert.False(t, requireBillingReservationRelease(t, op.RequestID, tokenKey))
+		})
+	}
+}
+
+func TestTaskAcceptanceRejectsInvalidFundingWithoutPublishingTask(t *testing.T) {
+	for _, scenario := range []string{"missing", "wrong_user", "wrong_token", "released", "settled", "insufficient_token"} {
+		t.Run(scenario, func(t *testing.T) {
+			db := setupWildFlowBillingModelTest(t)
+			require.NoError(t, db.AutoMigrate(&Task{}, &BillingReservationRecord{}))
+			userID, tokenID, tokenKey := seedReservationFixture(t, 2000, 700)
+			reserved, err := ReserveWalletBillingQuota("image-invalid", userID, tokenID, tokenKey, 500, false)
+			require.NoError(t, err)
+			require.True(t, reserved)
+			require.NoError(t, MarkBillingReservationProviderStarted("image-invalid"))
+			op, _, err := ReserveTaskOperation(&WildFlowOperation{
+				OperationID: "invalid-acceptance", TaskID: "task_invalid-acceptance", UserID: userID, TokenID: tokenID,
+				RequestID: "image-invalid", IdempotencyKeyDigest: strings.Repeat("a", 64),
+				RequestDigest: strings.Repeat("b", 64), SubmissionLeaseExpiresAt: time.Now().Unix() + 60,
+			})
+			require.NoError(t, err)
+			task := &Task{TaskID: op.TaskID, UserId: userID, Quota: 500, PrivateData: TaskPrivateData{TokenId: tokenID}}
+			record := db.Model(&BillingReservationRecord{}).Where("request_id = ?", op.RequestID)
+			switch scenario {
+			case "missing":
+				require.NoError(t, record.Delete(&BillingReservationRecord{}).Error)
+			case "wrong_user":
+				require.NoError(t, record.Update("user_id", userID+1).Error)
+			case "wrong_token":
+				task.PrivateData.TokenId++
+			case "released":
+				require.True(t, requireBillingReservationRelease(t, op.RequestID, tokenKey))
+			case "settled":
+				require.NoError(t, SettleBillingReservation(op.RequestID, 0))
+			case "insufficient_token":
+				task.Quota = 800
+			}
+			before := reservationUserQuota(t, userID)
+			beforeRemain, beforeUsed := reservationTokenState(t, tokenID)
+			require.Error(t, InsertTaskForOperation(op.OperationID, task))
+			assert.Equal(t, before, reservationUserQuota(t, userID))
+			remain, used := reservationTokenState(t, tokenID)
+			assert.Equal(t, beforeRemain, remain)
+			assert.Equal(t, beforeUsed, used)
+			var count int64
+			require.NoError(t, db.Model(&Task{}).Count(&count).Error)
+			assert.Zero(t, count)
+			require.NoError(t, db.First(op, op.ID).Error)
+			assert.Equal(t, TaskOperationSubmitting, op.State)
+		})
+	}
+}
+
+func TestTaskConsumptionProjectionRecoversWithoutRepeatingUsage(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	require.NoError(t, db.AutoMigrate(&Task{}, &BillingReservationRecord{}, &Channel{}))
+	oldConsume, oldExport := common.LogConsumeEnabled, common.DataExportEnabled
+	common.LogConsumeEnabled, common.DataExportEnabled = true, true
+	CacheQuotaDataLock.Lock()
+	oldCache := CacheQuotaData
+	CacheQuotaData = make(map[string]*QuotaData)
+	CacheQuotaDataLock.Unlock()
+	t.Cleanup(func() {
+		common.LogConsumeEnabled, common.DataExportEnabled = oldConsume, oldExport
+		CacheQuotaDataLock.Lock()
+		CacheQuotaData = oldCache
+		CacheQuotaDataLock.Unlock()
+	})
+	userID, tokenID, tokenKey := seedReservationFixture(t, 2000, 2000)
+	channel := &Channel{Name: "original-channel", Type: 61}
+	require.NoError(t, db.Create(channel).Error)
+	reserved, err := ReserveWalletBillingQuota("image-log", userID, tokenID, tokenKey, 500, false)
+	require.NoError(t, err)
+	require.True(t, reserved)
+	require.NoError(t, MarkBillingReservationProviderStarted("image-log"))
+	op, _, err := ReserveTaskOperation(&WildFlowOperation{
+		OperationID: "image-log", TaskID: "task_image-log", UserID: userID, TokenID: tokenID,
+		RequestID: "image-log", ProductModelRef: "studio-image", IdempotencyKeyDigest: strings.Repeat("a", 64),
+		RequestDigest: strings.Repeat("b", 64), SubmissionLeaseExpiresAt: time.Now().Unix() + 60,
+	})
+	require.NoError(t, err)
+	snapshot := &Log{Username: "original-user", ModelName: "studio-image", TokenName: "original-token",
+		CreatedAt: time.Now().Unix(), Quota: 500, Group: "default", Content: "image generation",
+		Other: `{"is_task":true,"task_id":"task_image-log","model_price":0.01,"admin_info":{"original":true}}`}
+	task := &Task{TaskID: op.TaskID, UserId: userID, ChannelId: channel.Id, Quota: 500,
+		PrivateData: TaskPrivateData{TokenId: tokenID, ConsumptionLog: snapshot}}
+	// Failure to persist the canonical log intent must roll back task and funds.
+	require.NoError(t, db.Migrator().DropTable(&WildFlowBillingLogEntry{}))
+	require.Error(t, InsertTaskForOperation(op.OperationID, task))
+	var count int64
+	require.NoError(t, db.Model(&Task{}).Count(&count).Error)
+	assert.Zero(t, count)
+	assert.Equal(t, 1500, reservationUserQuota(t, userID))
+	var user User
+	require.NoError(t, db.First(&user, userID).Error)
+	assert.Zero(t, user.UsedQuota)
+	assert.Zero(t, user.RequestCount)
+	require.NoError(t, db.AutoMigrate(&WildFlowBillingLogEntry{}))
+	task.ID = 0
+	require.NoError(t, InsertTaskForOperation(op.OperationID, task))
+	// A separately configured log database is unavailable, while main DB remains
+	// committed. No request continuation or in-memory context is used to recover.
+	logDB, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "logs.db")), &gorm.Config{})
+	require.NoError(t, err)
+	LOG_DB = logDB
+	oldLogType := common.LogDatabaseType()
+	common.SetLogDatabaseType(common.DatabaseTypeSQLite)
+	t.Cleanup(func() { common.SetLogDatabaseType(oldLogType) })
+	logSQL, err := logDB.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = logSQL.Close() })
+	processed, err := ReconcileWildFlowBillingLogProjections(10)
+	require.Error(t, err)
+	assert.Zero(t, processed)
+	var audit WildFlowBillingLogEntry
+	require.NoError(t, db.Where("operation_id = ?", op.OperationID).First(&audit).Error)
+	assert.Equal(t, WildFlowBillingProjectionFailed, audit.ProjectionState)
+	require.NoError(t, logDB.AutoMigrate(&Log{}, &WildFlowBillingLogProjectionReceipt{}))
+	require.NoError(t, db.Model(&User{}).Where("id = ?", userID).Update("username", "renamed-user").Error)
+	require.NoError(t, db.Model(&Task{}).Where("task_id = ?", task.TaskID).Update("quota", 0).Error)
+	processed, err = ReconcileWildFlowBillingLogProjections(10)
+	require.NoError(t, err)
+	assert.Equal(t, 1, processed)
+	var delivered Log
+	require.NoError(t, logDB.First(&delivered).Error)
+	assert.Equal(t, snapshot.Username, delivered.Username)
+	assert.Equal(t, snapshot.ModelName, delivered.ModelName)
+	assert.Equal(t, snapshot.Other, delivered.Other)
+	assert.Equal(t, snapshot.CreatedAt, delivered.CreatedAt)
+	assert.Equal(t, channel.Id, delivered.ChannelId)
+	assert.Equal(t, 500, delivered.Quota, "later task adjustments cannot rewrite the original charge")
+	// Simulate the main DB losing the acknowledgement after log DB commit.
+	require.NoError(t, db.Model(&audit).Update("projection_state", WildFlowBillingProjectionFailed).Error)
+	_, err = ReconcileWildFlowBillingLogProjections(10)
+	require.NoError(t, err)
+	require.NoError(t, logDB.Model(&Log{}).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+	require.ErrorIs(t, InsertTaskForOperation(op.OperationID, task), ErrTaskOperationState)
+	require.NoError(t, db.First(&user, userID).Error)
+	require.NoError(t, db.First(channel, channel.Id).Error)
+	assert.Equal(t, 500, user.UsedQuota)
+	assert.Equal(t, 1, user.RequestCount)
+	assert.EqualValues(t, 500, channel.UsedQuota)
+	CacheQuotaDataLock.Lock()
+	defer CacheQuotaDataLock.Unlock()
+	require.Len(t, CacheQuotaData, 1)
+	for _, data := range CacheQuotaData {
+		assert.Equal(t, 1, data.Count)
+		assert.Equal(t, 500, data.Quota)
+	}
 }

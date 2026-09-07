@@ -834,6 +834,23 @@ func createWildFlowGenericBillingLog(operation *WildFlowOperation, entry *WildFl
 		RequestId: operation.OperationID,
 		Other:     common.MapToJsonStr(other),
 	}
+	if operation.BillingState == TaskOperationBillingState && operation.TaskID != "" {
+		var task Task
+		if err := DB.Where("task_id = ? AND user_id = ?", operation.TaskID, operation.UserID).First(&task).Error; err != nil {
+			return err
+		}
+		if snapshot := task.PrivateData.ConsumptionLog; snapshot != nil {
+			copied := *snapshot
+			logEntry = &copied
+		}
+		logEntry.Id = 0
+		logEntry.UserId = operation.UserID
+		logEntry.TokenId = operation.TokenID
+		logEntry.ChannelId = task.ChannelId
+		logEntry.Quota = entry.BillingQuota
+		logEntry.Type = entry.LogType
+		logEntry.RequestId = operation.OperationID
+	}
 	return LOG_DB.Transaction(func(tx *gorm.DB) error {
 		receipt := &WildFlowBillingLogProjectionReceipt{
 			OperationID: operation.OperationID,

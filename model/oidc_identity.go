@@ -21,23 +21,7 @@ func BindOIDCIdentity(userID int, subject string) (*User, error) {
 	}
 	var user User
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		if err := lockForUpdate(tx).First(&user, userID).Error; err != nil {
-			return err
-		}
-		if user.Status != common.UserStatusEnabled {
-			return ErrLegacyOIDCUserNotEligible
-		}
-		if user.OidcId != "" && user.OidcId != subject {
-			return ErrExternalIdentityAlreadyClaimed
-		}
-		if err := ClaimExternalIdentityWithTx(tx, ExternalIdentityProviderOIDC, subject, user.Id); err != nil {
-			return err
-		}
-		if err := tx.Model(&User{}).Where("id = ?", user.Id).Update("oidc_id", subject).Error; err != nil {
-			return err
-		}
-		user.OidcId = subject
-		return nil
+		return bindOIDCIdentityWithTx(tx, &user, userID, subject)
 	})
 	if err != nil {
 		return nil, err
@@ -46,6 +30,40 @@ func BindOIDCIdentity(userID int, subject string) (*User, error) {
 		return nil, err
 	}
 	return &user, nil
+}
+
+// BindOIDCIdentityForSessionWithTx keeps session validation, identity ownership,
+// and OAuth flow consumption in the caller's transaction.
+func BindOIDCIdentityForSessionWithTx(tx *gorm.DB, identity AuthSessionIdentity, subject string) error {
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return ErrExternalIdentityAlreadyClaimed
+	}
+	if err := ValidateAuthSessionWithTx(tx, identity); err != nil {
+		return err
+	}
+	var user User
+	return bindOIDCIdentityWithTx(tx, &user, identity.UserID, subject)
+}
+
+func bindOIDCIdentityWithTx(tx *gorm.DB, user *User, userID int, subject string) error {
+	if err := lockForUpdate(tx).First(user, userID).Error; err != nil {
+		return err
+	}
+	if user.Status != common.UserStatusEnabled {
+		return ErrLegacyOIDCUserNotEligible
+	}
+	if user.OidcId != "" && user.OidcId != subject {
+		return ErrExternalIdentityAlreadyClaimed
+	}
+	if err := ClaimExternalIdentityWithTx(tx, ExternalIdentityProviderOIDC, subject, user.Id); err != nil {
+		return err
+	}
+	if err := tx.Model(&User{}).Where("id = ?", user.Id).Update("oidc_id", subject).Error; err != nil {
+		return err
+	}
+	user.OidcId = subject
+	return nil
 }
 
 // BindLegacyOIDCUser consumes only the Authentik-issued legacy_username claim.

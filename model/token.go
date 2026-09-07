@@ -283,7 +283,7 @@ func GetTokenById(id int) (*Token, error) {
 	if shouldUpdateRedis(true, err) {
 		tokenID, tokenKey := token.Id, token.Key
 		goTokenCacheFill(func() {
-			if err := refreshTokenCacheFromDatabase(tokenID, tokenKey); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) && !errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := initTokenCacheFromDatabase(tokenID, tokenKey); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) && !errors.Is(err, gorm.ErrRecordNotFound) {
 				common.SysLog("failed to update user status cache: " + err.Error())
 			}
 		})
@@ -300,7 +300,7 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 		if shouldUpdateRedis(fromDB, err) && token != nil {
 			tokenID, tokenKey := token.Id, token.Key
 			goTokenCacheFill(func() {
-				if err := refreshTokenCacheFromDatabase(tokenID, tokenKey); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) && !errors.Is(err, gorm.ErrRecordNotFound) {
+				if err := initTokenCacheFromDatabase(tokenID, tokenKey); err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) && !errors.Is(err, gorm.ErrRecordNotFound) {
 					common.SysLog("failed to update user status cache: " + err.Error())
 				}
 			})
@@ -314,9 +314,18 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 		}
 		// Don't return error - fall through to DB
 	}
-	fromDB = true
-	err = DB.Where(commonKeyCol+" = ?", key).First(&token).Error
-	return token, err
+	token = &Token{}
+	if err = DB.Where(commonKeyCol+" = ?", key).First(token).Error; err != nil {
+		return nil, err
+	}
+	if common.RedisEnabled {
+		// 冷缓存时用数据库快照初始化；已存在的哈希只刷新 TTL，
+		// 避免快照覆盖 Redis 中已被原子预扣的余额。初始化失败不影响本次读取。
+		if _, cacheErr := cacheInitToken(*token); cacheErr != nil {
+			common.SysLog("failed to init token cache: " + cacheErr.Error())
+		}
+	}
+	return token, nil
 }
 
 func (token *Token) Insert() error {
@@ -329,6 +338,9 @@ func (token *Token) Insert() error {
 // stale ordinary edit must never re-enable a token that was disabled after the
 // edit read its snapshot. Status transitions use UpdateStatus instead.
 func (token *Token) Update() (err error) {
+	if err := invalidateTokenCacheForMutation(token.Key); err != nil {
+		return err
+	}
 	result := DB.Model(token).Select("name", "expired_time", "remain_quota", "unlimited_quota",
 		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token)
 	err = result.Error
@@ -422,7 +434,7 @@ func (token *Token) SelectUpdate() (err error) {
 		if shouldUpdateRedis(true, err) {
 			tokenID, tokenKey := token.Id, token.Key
 			goTokenCacheFill(func() {
-				err := refreshTokenCacheFromDatabase(tokenID, tokenKey)
+				err := initTokenCacheFromDatabase(tokenID, tokenKey)
 				if err != nil && !errors.Is(err, ErrTokenCacheRevocationPending) && !errors.Is(err, gorm.ErrRecordNotFound) {
 					common.SysLog("failed to update token cache: " + err.Error())
 				}
@@ -504,8 +516,9 @@ func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
 	}
 	if common.RedisEnabled {
 		gopool.Go(func() {
-			err := cacheIncrTokenQuota(key, int64(quota))
-			if err != nil {
+			// 守卫式增量：哈希不存在时跳过，由下次读取从数据库水合，
+			// 绝不创建只有配额字段的残缺哈希。
+			if _, err := cacheApplyTokenQuotaDelta(tokenId, key, int64(quota)); err != nil {
 				common.SysLog("failed to increase token quota: " + err.Error())
 			}
 		})
@@ -534,8 +547,7 @@ func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 	}
 	if common.RedisEnabled {
 		gopool.Go(func() {
-			err := cacheDecrTokenQuota(key, int64(quota))
-			if err != nil {
+			if _, err := cacheApplyTokenQuotaDelta(id, key, int64(-quota)); err != nil {
 				common.SysLog("failed to decrease token quota: " + err.Error())
 			}
 		})
@@ -582,6 +594,9 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	if err := tx.Where("user_id = ? AND id IN (?)", userId, ids).Find(&tokens).Error; err != nil {
 		tx.Rollback()
 		return 0, err
+	}
+	if err := invalidateTokensCache(tokens); err != nil {
+		common.SysLog("failed to invalidate token cache before batch delete: " + err.Error())
 	}
 
 	if len(tokens) == 0 {
@@ -681,7 +696,7 @@ func invalidateTokensCache(tokens []Token) error {
 		if t.Key == "" {
 			continue
 		}
-		if err := cacheDeleteToken(t.Key); err != nil && firstErr == nil {
+		if err := invalidateTokenCacheForMutation(t.Key); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

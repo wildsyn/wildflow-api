@@ -17,6 +17,7 @@ type WildFlowOperation struct {
 	RequestID                string `json:"request_id" gorm:"type:varchar(64);index"`
 	ProductModelRef          string `json:"model" gorm:"type:varchar(200);index"`
 	ModelVersionRef          string `json:"model_version_ref" gorm:"type:varchar(200)"`
+	TaskID                   string `json:"task_id,omitempty" gorm:"type:varchar(200);index"`
 	JobID                    string `json:"job_id,omitempty" gorm:"type:varchar(200);index"`
 	State                    string `json:"state" gorm:"type:varchar(32);index"`
 	LastErrorCode            string `json:"error,omitempty" gorm:"type:varchar(64)"`
