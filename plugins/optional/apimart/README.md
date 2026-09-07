@@ -16,6 +16,9 @@ Run the actual Go plugin engine fixtures with:
 go test ./plugins -run TestAPIMartOptionalPluginContract -count=1
 ```
 
+Image creates require an `Idempotency-Key` header (up to 200 characters).
+Use the same key and body to recover a request; use a new key for a new image.
+
 The client entry uses the existing `POST /v1/responses` and
 `GET /v1/responses/{id}`. The internal plugin key is not part of a client request.
 The user confirmed that no existing image scripts need compatibility. APIMart
@@ -95,8 +98,24 @@ production retail price. Each task recorded 5000 quota once in both user and tok
 usage; two consume logs and two task rows existed after retrieval/downloads.
 This verifies real APIMart + OSS with local public routes, not a production release.
 
-Submission idempotency remains a release gap: the task-plugin path does not yet
-recover submissions by Idempotency-Key. No paid submission was replayed to test it.
-Do not advertise safe automatic POST retries until that path is implemented and
-verified. Provider switching, the full database matrix and production release gates
-also remain open. The earlier mocked-storage tests remain unit evidence only.
+The image protocol now reserves a user-scoped Operation before provider submission
+and atomically attaches its preassigned task ID. Duplicate in-flight POSTs return
+202 and the same response ID; changed requests using that key return 409. Completed
+replays read the existing result instead of submitting again. An expired unknown
+submission returns recovery_required and never grants a new submission attempt.
+The public task polling URL also exposes this state before a Task row exists.
+Image operations disable automatic retries after invoking a provider. A failed
+storage readiness check does not reserve an operation.
+
+A third real local image request exercised first POST (200 queued), immediate same
+POST (202 with the same ID), conflicting POST (409), and completed POST replay
+(200 completed with the same ID). The replayed PNG had 662132 bytes and SHA-256
+09b04bfb89155bf820d469d28c71fd0aea7a734c89aba5df8f4746036c32cbc8.
+Across these requests only one Task, one Operation and one 5000-quota charge were
+added; total user/token usage changed from 10000 to 15000 and consume logs from
+two to three. The subsequent readiness-ordering refinement passed local tests;
+the running fixture binary predates that refinement.
+
+Transport-unknown and crash/settlement recovery, provider switching, the full
+MySQL/PostgreSQL migration and concurrency matrix, and production release gates
+remain open. Happy-path duplicate replay is not proof of every failure path.

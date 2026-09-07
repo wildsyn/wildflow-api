@@ -409,3 +409,58 @@ func TestImageSubmissionRejectsUnavailableStorageBeforeProviderAndBilling(t *tes
 	require.Zero(t, calls)
 	require.Nil(t, info.Billing)
 }
+
+func TestImageOperationHTTPReplaySkipsSubmissionAndRejectsConflict(t *testing.T) {
+	setupGenericTaskTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.WildFlowOperation{}))
+	request := pluginruntime.ProtocolRequestContext{Protocol: "openai_responses", Model: "studio-image"}
+	request.Body = map[string]any{"kind": "json", "value": map[string]any{"model": "studio-image", "input": "draw a leaf", "background": true}}
+	contextFor := func(user int, key string) (*gin.Context, *httptest.ResponseRecorder) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		c.Request.Header.Set("Idempotency-Key", key)
+		c.Set(string(constant.ContextKeyUserId), user)
+		c.Set(string(constant.ContextKeyTokenId), 1)
+		return c, recorder
+	}
+	deps := defaultPluginProtocolBridgeDeps()
+	deps.imageStorageReady = func(context.Context, int) error { return nil }
+	first, _ := contextFor(7, "same-image")
+	require.False(t, prepareTaskImageOperation(first, request, deps))
+	value, ok := first.Get(taskImageOperationContextKey)
+	require.True(t, ok)
+	operation := value.(*model.WildFlowOperation)
+	second, response := contextFor(7, "same-image")
+	require.True(t, prepareTaskImageOperation(second, request, deps))
+	require.Equal(t, http.StatusAccepted, response.Code)
+	require.Contains(t, response.Body.String(), "resp_"+strings.TrimPrefix(operation.TaskID, "task_"))
+	require.Equal(t, "3", response.Header().Get("Retry-After"))
+	_, ok = second.Get(taskImageOperationContextKey)
+	require.False(t, ok, "replay must never acquire submission ownership")
+	changed := request
+	changed.Body = map[string]any{"kind": "json", "value": map[string]any{"input": "different image"}}
+	conflict, conflictResponse := contextFor(7, "same-image")
+	require.True(t, prepareTaskImageOperation(conflict, changed, deps))
+	require.Equal(t, http.StatusConflict, conflictResponse.Code)
+	other, _ := contextFor(8, "same-image")
+	require.False(t, prepareTaskImageOperation(other, request, deps))
+	missing, missingResponse := contextFor(7, "")
+	require.True(t, prepareTaskImageOperation(missing, request, deps))
+	require.Equal(t, http.StatusBadRequest, missingResponse.Code)
+	require.NoError(t, model.DB.Model(operation).Update("submission_lease_expires_at", time.Now().Unix()-1).Error)
+	polling, pollingResponse := contextFor(7, "")
+	require.True(t, findPendingTaskImageOperation(polling, 7, operation.TaskID))
+	require.Equal(t, http.StatusServiceUnavailable, pollingResponse.Code)
+	require.Contains(t, pollingResponse.Body.String(), "recovery_required")
+	unrelated, _ := contextFor(8, "")
+	require.False(t, findPendingTaskImageOperation(unrelated, 8, operation.TaskID))
+	deps.imageStorageReady = func(context.Context, int) error { return errors.New("storage unavailable") }
+	unavailable, unavailableResponse := contextFor(7, "storage-down")
+	require.True(t, prepareTaskImageOperation(unavailable, request, deps))
+	require.Equal(t, 503, unavailableResponse.Code)
+	var count int64
+	require.NoError(t, model.DB.Model(&model.WildFlowOperation{}).Where("user_id = ?", 7).Count(&count).Error)
+	require.EqualValues(t, 1, count, "failed readiness must not reserve another operation")
+
+}

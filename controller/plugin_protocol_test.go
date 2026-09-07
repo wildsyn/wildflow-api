@@ -1311,6 +1311,8 @@ func TestRetrieveTaskPluginResponseFailureUsesFailedEnvelope(t *testing.T) {
 }
 
 func TestRetrieveTaskPluginResponseNotFound(t *testing.T) {
+	setupGenericTaskTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.WildFlowOperation{}))
 	pinned := compilePluginProtocolRetrieveEndpoint(t, "retrieve-404", `
 		export const protocols = {openai_responses: {
 			renderFinal: function() { return {}; }

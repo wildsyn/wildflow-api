@@ -95,3 +95,18 @@ func InsertTaskForOperation(operationID string, task *Task) error {
 		return tx.Create(task).Error
 	})
 }
+
+// GetTaskOperationForUserAndTask also makes an expired unknown submission
+// visible as recovery_required when the caller only uses the polling URL.
+func GetTaskOperationForUserAndTask(userID int, taskID string) (*WildFlowOperation, error) {
+	var operation WildFlowOperation
+	err := DB.Where("user_id = ? AND task_id = ? AND billing_state = ?", userID, taskID, TaskOperationBillingState).First(&operation).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	current, _, err := resolveTaskOperationReplay(&operation, operation.RequestDigest)
+	return current, err
+}

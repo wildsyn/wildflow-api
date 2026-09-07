@@ -647,11 +647,18 @@ func executeTaskSubmissionWith(
 	relayInfo *relaycommon.RelayInfo,
 	submit taskSubmitAttempt,
 ) (*taskSubmissionOutcome, *taskdto.TaskError) {
-	if relayInfo.TaskRelayInfo != nil && relayInfo.Action == "image_generation" {
+	var imageOperation *model.WildFlowOperation
+	if value, ok := c.Get(taskImageOperationContextKey); ok {
+		imageOperation, _ = value.(*model.WildFlowOperation)
+	}
+	if imageOperation == nil && relayInfo.TaskRelayInfo != nil && relayInfo.Action == "image_generation" {
 		if err := service.GetTaskArtifactStore().Ready(c.Request.Context(), relayInfo.UserId); err != nil {
 			c.Header("Retry-After", "10")
 			return nil, service.TaskErrorWrapperLocal(errors.New("Image storage is temporarily unavailable"), "artifact_storage_unavailable", http.StatusServiceUnavailable)
 		}
+	}
+	if imageOperation != nil {
+		relayInfo.PublicTaskID = imageOperation.TaskID
 	}
 	diagnostics := newTaskPluginSubmitDiagnostics(c)
 	diagnostics.start(relayInfo)
@@ -740,7 +747,7 @@ func executeTaskSubmissionWith(
 				relayInfo)
 		}
 
-		willRetry := shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry())
+		willRetry := imageOperation == nil && shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry())
 		diagnostics.attemptFailed(retryParam.GetRetry()+1, channel, taskErr, willRetry)
 		if !willRetry {
 			break
@@ -825,7 +832,13 @@ func executeTaskSubmissionWith(
 		}
 	}
 	diagnostics.insertStart(task)
-	if insertErr := task.InsertWithContext(c.Request.Context()); insertErr != nil {
+	var insertErr error
+	if imageOperation != nil {
+		insertErr = model.InsertTaskForOperation(imageOperation.OperationID, task)
+	} else {
+		insertErr = task.InsertWithContext(c.Request.Context())
+	}
+	if insertErr != nil {
 		common.SysError("insert task error: " + insertErr.Error())
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist task"), "task_insert_failed", http.StatusInternalServerError)
 		diagnostics.failed("insert", "database_error", taskErr, false)

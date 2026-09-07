@@ -27,6 +27,7 @@ import (
 )
 
 type pluginProtocolBridgeDeps struct {
+	imageStorageReady  func(context.Context, int) error
 	submit             func(*gin.Context, *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError)
 	loadTask           func(context.Context, int, constant.TaskPlatform, string) (*model.Task, bool, error)
 	now                func() time.Time
@@ -63,6 +64,7 @@ func defaultPluginProtocolBridgeDeps() pluginProtocolBridgeDeps {
 		loadTimeout = halfHeartbeat
 	}
 	return pluginProtocolBridgeDeps{
+		imageStorageReady:  func(ctx context.Context, userID int) error { return service.GetTaskArtifactStore().Ready(ctx, userID) },
 		submit:             executeTaskSubmission,
 		loadTask:           model.GetTaskForProtocolObservation,
 		now:                time.Now,
@@ -83,6 +85,9 @@ func defaultPluginProtocolBridgeDeps() pluginProtocolBridgeDeps {
 
 func (d pluginProtocolBridgeDeps) withDefaults() pluginProtocolBridgeDeps {
 	defaults := defaultPluginProtocolBridgeDeps()
+	if d.imageStorageReady == nil {
+		d.imageStorageReady = defaults.imageStorageReady
+	}
 	if d.submit == nil {
 		d.submit = defaults.submit
 	}
@@ -220,6 +225,10 @@ func serveTaskPluginProtocol(
 	}
 	defer release()
 	logger.LogDebug(c, "task_plugin subsystem=protocol event=admission_acquired generation=%d plugin=%q", generation, pluginKey)
+
+	if c.GetString("task_action") == "image_generation" && prepareTaskImageOperation(c, protocolRequest, deps) {
+		return
+	}
 
 	clientRequest := c.Request
 	var relayInfo *relaycommon.RelayInfo
@@ -945,6 +954,9 @@ func retrieveTaskPluginResponse(c *gin.Context, deps pluginProtocolBridgeDeps) {
 		return
 	}
 	if !exists || task == nil {
+		if findPendingTaskImageOperation(c, userID, taskID) {
+			return
+		}
 		writeTaskPluginResponseNotFound(c, responseID, "missing")
 		return
 	}
