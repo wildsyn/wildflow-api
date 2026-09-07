@@ -69,3 +69,13 @@ func (m postgresSchemaMigrator) MigrateColumn(value any, field *schema.Field, co
 type charColumnType struct{ migrationColumnType }
 
 func (charColumnType) DatabaseTypeName() string { return "char" }
+
+// Existing PostgreSQL UNIQUE constraints can carry historical names. A model
+// uniqueIndex still requires the same uniqueness, so retain the constraint
+// instead of asking GORM to drop its guessed default constraint name.
+func (m postgresSchemaMigrator) MigrateColumnUnique(value any, field *schema.Field, column gorm.ColumnType) error {
+	if unique, ok := column.Unique(); ok && unique && field.UniqueIndex != "" {
+		return nil
+	}
+	return m.Migrator.MigrateColumnUnique(value, field, column)
+}

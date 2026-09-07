@@ -718,6 +718,35 @@
         }
       ],
       "expectedError": "image artifact URLs unavailable"
+    },
+    {
+      "name": "billing normalizes resolution and reserves official credits",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": {
+            "n": 2,
+            "resolution": "2K"
+          }
+        }
+      ],
+      "expected": {
+        "images": 2,
+        "resolution": "2k",
+        "credits": 2
+      }
+    },
+    {
+      "name": "billing rejects unsupported resolution",
+      "hook": "extractUsage",
+      "args": [
+        {
+          "requestBody": {
+            "resolution": "8k"
+          }
+        }
+      ],
+      "expectedError": "unsupported image resolution"
     }
   ]
 }

@@ -1,11 +1,11 @@
 // WildFlow optional adapter for the New API task-plugin v1 host.
 // Registration, channel selection, persistence, polling and billing belong to the host.
 export const meta = {
-  apiVersion: 1, key: "apimart-image", name: "APIMart Images", version: "0.1.0",
+  apiVersion: 1, key: "apimart-image", name: "APIMart Images", version: "0.1.1",
   author: { name: "WildFlow" }, models: ["gpt-image-2", "gpt-image-2-official"],
   fetchMode: "per_task",
   protocols: [{ name: "openai_responses", supports: ["sync", "background"] }],
-  usageSchema: { images: { type: "number", unit: "count" }, credits: { type: "number", unit: "credit" } },
+  usageSchema: { images: { type: "number", unit: "count" }, credits: { type: "number", unit: "credit" }, resolution: { enum: ["1k", "2k", "4k"] } },
 };
 
 function apiBase(baseUrl) {
@@ -66,7 +66,14 @@ export function parseTaskResult(ctx, body, response) {
 }
 
 export function extractUsage(ctx) {
-  return { images: ctx.requestBody.n === undefined ? 1 : ctx.requestBody.n };
+  const images = ctx.requestBody.n === undefined ? 1 : ctx.requestBody.n;
+  const resolution = String(ctx.requestBody.resolution || "1k").toLowerCase();
+  if (!["1k", "2k", "4k"].includes(resolution)) throw new Error("unsupported image resolution");
+  // Official token cost is measured at completion; reserve 1 credit per image.
+  // This is an estimate, not the retail price. The frozen expression settles
+  // against APIMart credits_cost when the result arrives.
+  return { images, resolution, credits: images };
+
 }
 
 export function extractUsageOnComplete(task, result, body) {
