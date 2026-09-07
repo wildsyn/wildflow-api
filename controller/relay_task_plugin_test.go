@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -463,4 +464,38 @@ func TestImageOperationHTTPReplaySkipsSubmissionAndRejectsConflict(t *testing.T)
 	require.NoError(t, model.DB.Model(&model.WildFlowOperation{}).Where("user_id = ?", 7).Count(&count).Error)
 	require.EqualValues(t, 1, count, "failed readiness must not reserve another operation")
 
+}
+
+func TestImageSubmissionUnknownOutcomeRetainsReservation(t *testing.T) {
+	for _, scenario := range []struct{ started, rejected bool }{{false, false}, {true, false}, {true, true}} {
+		started, rejected := scenario.started, scenario.rejected
+		t.Run(fmt.Sprintf("started=%t/rejected=%t", started, rejected), func(t *testing.T) {
+			events := []string{}
+			db := setupTaskSubmissionDatabase(t, true, &events)
+			require.NoError(t, db.AutoMigrate(&model.WildFlowOperation{}))
+			operation, created, err := model.ReserveTaskOperation(&model.WildFlowOperation{OperationID: "op-unknown", TaskID: "task_unknown", UserID: 7, IdempotencyKeyDigest: strings.Repeat("a", 64), RequestDigest: strings.Repeat("b", 64), SubmissionLeaseExpiresAt: time.Now().Unix() + 60})
+			require.NoError(t, err)
+			require.True(t, created)
+			c := taskSubmissionTestContext()
+			c.Set(taskImageOperationContextKey, operation)
+			billing := &taskSubmissionTestBilling{events: &events}
+			info := taskSubmissionRelayInfo(billing)
+			outcome, taskErr := executeTaskSubmissionWith(c, info, func(*gin.Context, *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
+				info.ProviderRequestStarted = started
+				info.ProviderRequestRejected = rejected
+				return nil, service.TaskErrorWrapperLocal(errors.New("connection interrupted"), "do_request_failed", 502)
+			})
+			require.Nil(t, outcome)
+			require.NotNil(t, taskErr)
+			saved, err := model.GetWildFlowOperationForUser(7, operation.OperationID)
+			require.NoError(t, err)
+			if started && !rejected {
+				require.Zero(t, billing.refunds)
+				require.Equal(t, "recovery_required", saved.State)
+			} else {
+				require.Equal(t, 1, billing.refunds)
+				require.Equal(t, "task_failed", saved.State)
+			}
+		})
+	}
 }

@@ -347,6 +347,8 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	// 10. 发送请求
+	info.ProviderRequestStarted = true
+	info.ProviderRequestRejected = false
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
@@ -356,6 +358,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		switch resp.StatusCode {
+		case 400, 401, 403, 404, 422, 429:
+			info.ProviderRequestRejected = true
+		}
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}

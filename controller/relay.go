@@ -667,6 +667,23 @@ func executeTaskSubmissionWith(
 	durable := false
 	stage := "start"
 	defer func() {
+		if !durable && imageOperation != nil {
+			uncertain := relayInfo.ProviderRequestStarted && !relayInfo.ProviderRequestRejected
+			changed, err := model.RecordTaskOperationSubmissionFailure(imageOperation.OperationID, uncertain)
+			if err != nil {
+				common.SysError("failed to record image submission recovery state")
+			}
+			if changed {
+				if uncertain {
+					imageOperation.State = "recovery_required"
+				} else {
+					imageOperation.State = "task_failed"
+				}
+			}
+			if uncertain {
+				return
+			} // The durable provider_started reservation must not be released.
+		}
 		if !durable && relayInfo.Billing != nil {
 			diagnostics.refund(stage)
 			relayInfo.Billing.Refund(c)

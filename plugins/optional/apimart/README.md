@@ -119,3 +119,29 @@ the running fixture binary predates that refinement.
 Transport-unknown and crash/settlement recovery, provider switching, the full
 MySQL/PostgreSQL migration and concurrency matrix, and production release gates
 remain open. Happy-path duplicate replay is not proof of every failure path.
+
+## Unknown submission outcome and reservation evidence
+
+Task dispatch records whether an upstream request may have started and whether
+an explicit HTTP rejection was received. For image Operations, transport/parse
+failures after dispatch preserve the existing `provider_started` reservation and
+mark the Operation `recovery_required`; the public response includes the polling
+Location. No automatic resubmission occurs. Pre-dispatch failures and explicit
+HTTP 400/401/403/404/422/429 rejection use the normal refund path and a terminal
+`task_failed` Operation. The Operation stores the existing billing request ID.
+
+A local fault provider exercised the complete API path without paid generation:
+
+- Connection closed after reading POST: first request and same-key replay both
+  returned 503/recovery_required. Upstream count stayed one; the 5000 reservation
+  remained provider_started.
+- Explicit HTTP 400: first request and replay both returned 400 (initial upstream
+  error and subsequent image_submission_failed). Upstream count stayed one and
+  the 5000 reservation was released.
+- Neither case created a Task row or consumption log. The fixture wallet and Key
+  each retained only the uncertain request's 5000 quota. User consumed usage and
+  token used quota differ while a reservation is held; this is not a second charge.
+
+This is fault injection against a local provider, not evidence of APIMart's own
+failure semantics. Process death after task insertion but before settlement/log
+completion still requires recovery verification before release.

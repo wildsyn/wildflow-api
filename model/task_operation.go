@@ -110,3 +110,17 @@ func GetTaskOperationForUserAndTask(userID int, taskID string) (*WildFlowOperati
 	current, _, err := resolveTaskOperationReplay(&operation, operation.RequestDigest)
 	return current, err
 }
+
+// RecordTaskOperationSubmissionFailure never overwrites an attached task. It
+// does not touch quota: the existing reservation lifecycle owns that decision.
+func RecordTaskOperationSubmissionFailure(operationID string, uncertain bool) (bool, error) {
+	state, phase, code := "task_failed", WildFlowSubmissionPhaseFailed, "task_submission_rejected"
+	if uncertain {
+		state = "recovery_required"
+		phase = WildFlowSubmissionPhaseRecoveryRequired
+		code = "task_submission_outcome_unknown"
+	}
+	result := DB.Model(&WildFlowOperation{}).Where("operation_id = ? AND state = ? AND billing_state = ?", operationID, TaskOperationSubmitting, TaskOperationBillingState).
+		Updates(map[string]any{"state": state, "submission_phase": phase, "last_error_code": code, "updated_time": time.Now().Unix()})
+	return result.RowsAffected == 1, result.Error
+}

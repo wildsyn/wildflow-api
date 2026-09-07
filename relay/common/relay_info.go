@@ -919,8 +919,12 @@ type OriginTaskRef struct {
 }
 
 type TaskRelayInfo struct {
-	Action       string
-	OriginTaskID string
+	// Dispatch outcome flags let task-host operations distinguish safe refunds
+	// from transport/parse failures after a provider may have accepted work.
+	ProviderRequestStarted  bool
+	ProviderRequestRejected bool
+	Action                  string
+	OriginTaskID            string
 	// PublicTaskID 是提交时预生成的 task_xxxx 格式公开 ID，
 	// 供 DoResponse 在返回给客户端时使用（避免暴露上游真实 ID）。
 	PublicTaskID string

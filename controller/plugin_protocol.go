@@ -277,6 +277,12 @@ func serveTaskPluginProtocol(
 		logger.LogDebug(c, "task_plugin subsystem=protocol event=client_disconnected generation=%d plugin=%q stage=%s", generation, pluginKey, submissionStage)
 		return
 	}
+	if value, ok := c.Get(taskImageOperationContextKey); ok {
+		if operation, ok := value.(*model.WildFlowOperation); ok && operation.State == "recovery_required" {
+			writePendingTaskImageOperation(c, operation)
+			return
+		}
+	}
 	if relayInfoErr != nil {
 		err := relayInfoErr
 		logger.LogError(c, "build task protocol relay info failed: "+err.Error())

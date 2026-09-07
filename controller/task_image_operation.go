@@ -49,7 +49,7 @@ func prepareTaskImageOperation(c *gin.Context, request pluginruntime.ProtocolReq
 	}
 	id := strings.ReplaceAll(uuid.NewString(), "-", "")
 	operation, created, err := model.ReserveTaskOperation(&model.WildFlowOperation{
-		OperationID: "op-" + id, TaskID: "task_" + id,
+		OperationID: "op-" + id, TaskID: "task_" + id, RequestID: c.GetString(common.RequestIdKey),
 		UserID: common.GetContextKeyInt(c, constant.ContextKeyUserId), TokenID: common.GetContextKeyInt(c, constant.ContextKeyTokenId),
 		IdempotencyKeyDigest: keyDigest, RequestDigest: fmt.Sprintf("%x", sha256.Sum256(body)),
 		ProductModelRef: request.Model, SubmissionLeaseExpiresAt: time.Now().Add(deps.submissionTimeout).Unix(),
@@ -86,6 +86,10 @@ func writePendingTaskImageOperation(c *gin.Context, operation *model.WildFlowOpe
 	responseID := "resp_" + strings.TrimPrefix(operation.TaskID, "task_")
 	c.Header("Location", "/v1/responses/"+responseID)
 	c.Header("Retry-After", "3")
+	if operation.State == "task_failed" {
+		respondPluginProtocolError(c, 400, "image_submission_failed", "This image submission was not accepted; use a new Idempotency-Key for a new attempt")
+		return
+	}
 	if operation.State == "recovery_required" {
 		respondPluginProtocolError(c, 503, "recovery_required", "Image submission outcome is unknown; keep the same Idempotency-Key and do not resubmit with a new key")
 		return
