@@ -109,6 +109,9 @@ func setupWildFlowJobsControllerTest(t *testing.T, inference http.Handler) (*gin
 	})
 	engine.POST("/v1/jobs", CreateWildFlowJob)
 	engine.POST("/v1/input-artifacts", CreateWildFlowInputArtifact)
+ engine.POST("/v1/voices", CreateWildFlowVoice)
+ engine.GET("/v1/voices", ListWildFlowVoices)
+ engine.GET("/v1/voices/:voice_id", GetWildFlowVoice)
 	engine.POST("/api/v1/audio/speech", CreateWildFlowLegacySpeechJob)
 	engine.POST("/api/v1/images/generations", CreateWildFlowLegacyImageJob)
 	engine.GET("/v1/jobs/:operation_id", GetWildFlowJob)
@@ -1934,4 +1937,18 @@ func TestDownloadVoxCPM2ArtifactPersistsRecoveryAfterStreamFailure(t *testing.T)
 	require.NoError(t, model.DB.Where("operation_id = ?", operationID).First(&persisted).Error)
 	assert.Equal(t, "recovery_required", persisted.State)
 	assert.Equal(t, "artifact_stream_error", persisted.LastErrorCode)
+}
+
+func TestVoiceUploadUsesExistingAccountAndKey(t *testing.T) {
+ payload:=[]byte("RIFFtest-reference");digest:=fmt.Sprintf("%x",sha256.Sum256(payload))
+ engine,_:=setupWildFlowJobsControllerTest(t,http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  require.Equal(t,"/internal/v1/voices",r.URL.Path)
+  require.Equal(t,"user:42",r.Header.Get("X-WildFlow-Tenant-Ref"))
+  require.Equal(t,"Book account",r.Header.Get("X-WildFlow-Voice-Name"))
+  w.Header().Set("Content-Type","application/json");w.WriteHeader(http.StatusCreated)
+  _,_=fmt.Fprintf(w,`{"voice_id":"voice-1","name":"Book account","sha256":%q,"media_type":"audio/wav","size_bytes":%d,"retention_state":"active"}`,digest,len(payload))
+ }))
+ response:=performWildFlowBytesRequest(t,engine,http.MethodPost,"/v1/voices",payload,map[string]string{"Content-Type":"audio/wav","X-WildFlow-Content-SHA256":digest,"X-WildFlow-Voice-Name":"Book account"})
+ require.Equal(t,http.StatusCreated,response.Code,response.Body.String())
+ assert.Contains(t,response.Body.String(),`"voice_id":"voice-1"`)
 }
