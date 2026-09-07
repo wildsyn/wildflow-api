@@ -295,6 +295,20 @@ func TaskArtifactContent(c *gin.Context) {
 		writeTaskArtifactError(c, http.StatusConflict, "artifact_not_ready", "Task artifacts are not ready")
 		return
 	}
+	// Persisted content remains available independently of the provider plugin
+	// and channel that originally generated it.
+	artifactStore := service.GetTaskArtifactStore()
+	ref, resolveErr := artifactStore.Resolve(task, artifactKey)
+	if resolveErr != nil {
+		writeTaskArtifactError(c, http.StatusServiceUnavailable, "artifact_storage_unavailable", "Stored artifact is temporarily unavailable")
+		return
+	}
+	if ref != nil {
+		if err := artifactStore.Serve(c, task, ref); err != nil && !c.Writer.Written() {
+			writeTaskArtifactError(c, http.StatusServiceUnavailable, "artifact_storage_unavailable", "Stored artifact is temporarily unavailable")
+		}
+		return
+	}
 	if !taskHasPluginExecution(task) {
 		if artifactKey != "video" || !legacyVideoAvailable(task) {
 			writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
@@ -324,11 +338,6 @@ func TaskArtifactContent(c *gin.Context) {
 	}
 	if !found {
 		writeTaskArtifactError(c, http.StatusNotFound, "artifact_not_found", "Task or artifact not found")
-		return
-	}
-	artifactStore := service.GetTaskArtifactStore()
-	if ref, resolveErr := artifactStore.Resolve(task, artifactKey); resolveErr == nil && ref != nil {
-		_ = artifactStore.Serve(c, task, ref)
 		return
 	}
 

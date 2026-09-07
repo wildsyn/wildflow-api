@@ -588,3 +588,22 @@ func TestSelfTaskMediaURLGuard(t *testing.T) {
 	assert.True(t, isTaskMediaFallbackLoop(remoteURL.String(), "task-1"))
 	assert.False(t, isTaskMediaFallbackLoop(remoteURL.String(), "task-2"))
 }
+
+func TestStoredArtifactUnavailableDoesNotFallBackToProvider(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	task.PrivateData.StoredArtifacts = map[string]model.StoredTaskArtifact{
+		"image-0": {Backend: "inference", ObjectKey: strings.Repeat("a", 64), MimeType: "image/png", Size: 12},
+	}
+	require.NoError(t, model.DB.Save(task).Error)
+	// Removing the source channel must not change a stored result into a
+	// plugin error or trigger a fetch from the original supplier.
+	require.NoError(t, model.DB.Delete(&model.Channel{}, task.ChannelId).Error)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", task.UserId)
+	c.Params = gin.Params{{Key: "key", Value: task.TaskID}, {Key: "artifact_key", Value: "image-0"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.TaskID+"/artifacts/image-0/content", nil)
+	TaskArtifactContent(c)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "artifact_storage_unavailable")
+}

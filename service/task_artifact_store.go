@@ -13,13 +13,7 @@ import (
 
 // StoredArtifactRef describes a persisted artifact object. No reference is
 // produced until a concrete storage backend is implemented.
-type StoredArtifactRef struct {
-	Backend   string
-	Bucket    string
-	ObjectKey string
-	MimeType  string
-	Size      int64
-}
+type StoredArtifactRef = model.StoredTaskArtifact
 
 // TaskArtifactStore is the persistence boundary for generated artifact bytes.
 // types.TaskArtifact is re-exported by relay/channel as channel.TaskArtifact.
@@ -38,7 +32,12 @@ func (disabledArtifactStore) Enabled() bool {
 	return false
 }
 
-func (disabledArtifactStore) Resolve(*model.Task, string) (*StoredArtifactRef, error) {
+func (disabledArtifactStore) Resolve(task *model.Task, key string) (*StoredArtifactRef, error) {
+	if task != nil {
+		if _, exists := task.PrivateData.StoredArtifacts[key]; exists {
+			return nil, ErrTaskArtifactStoreDisabled
+		}
+	}
 	return nil, nil
 }
 
