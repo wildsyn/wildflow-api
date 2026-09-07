@@ -311,6 +311,9 @@ func InitResources() error {
 	ratio_setting.InitRatioSettings()
 
 	service.InitHttpClient()
+	if err := service.InitTaskArtifactStore(); err != nil {
+		return err
+	}
 
 	service.InitTokenEncoders()
 

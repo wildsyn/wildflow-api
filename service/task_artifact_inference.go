@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"strconv"
@@ -29,6 +31,37 @@ func NewInferenceTaskArtifactStore(client TaskImageClient) TaskArtifactStore {
 }
 
 func (store *inferenceTaskArtifactStore) Enabled() bool { return store.client != nil }
+
+// Ready verifies a tiny immutable object through the same tenant-scoped write
+// and read path used for generated images. Repeated checks reuse one object per
+// user, without adding probe jobs or billing records.
+func (store *inferenceTaskArtifactStore) Ready(ctx context.Context, userID int) error {
+	if !store.Enabled() {
+		return ErrTaskArtifactStoreDisabled
+	}
+	if userID <= 0 {
+		return errors.New("artifact owner required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var payload bytes.Buffer
+	if err := png.Encode(&payload, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		return err
+	}
+	tenant := "user:" + strconv.Itoa(userID)
+	ref, err := store.client.StoreTaskImage(ctx, tenant, "image/png", payload.Bytes())
+	if err != nil {
+		return err
+	}
+	stored, err := store.client.ReadTaskImage(ctx, tenant, ref)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(stored, payload.Bytes()) {
+		return errors.New("artifact readiness content mismatch")
+	}
+	return nil
+}
 
 func (store *inferenceTaskArtifactStore) Resolve(task *model.Task, key string) (*StoredArtifactRef, error) {
 	if task == nil {

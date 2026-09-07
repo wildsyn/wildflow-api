@@ -20,9 +20,10 @@ import (
 )
 
 type taskImageClientFixture struct {
-	fail    bool
-	tenant  string
-	payload []byte
+	fail     bool
+	readFail bool
+	tenant   string
+	payload  []byte
 }
 
 func (f *taskImageClientFixture) StoreTaskImage(_ context.Context, tenant, media string, payload []byte) (inferenceclient.TaskImage, error) {
@@ -36,7 +37,7 @@ func (f *taskImageClientFixture) StoreTaskImage(_ context.Context, tenant, media
 }
 func (f *taskImageClientFixture) ReadTaskImage(_ context.Context, tenant string, _ inferenceclient.TaskImage) ([]byte, error) {
 	f.tenant = tenant
-	if f.fail {
+	if f.fail || f.readFail {
 		return nil, errors.New("storage unavailable")
 	}
 	return f.payload, nil
@@ -114,4 +115,34 @@ func TestStoredImageReadAndImmutability(t *testing.T) {
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/artifact", nil)
 	require.Error(t, store.Serve(ctx, task, ref))
 	require.False(t, ctx.Writer.Written())
+}
+
+func TestImageStorageAdmissionChecksBothWriteAndRead(t *testing.T) {
+	client := &taskImageClientFixture{}
+	store := NewInferenceTaskArtifactStore(client)
+	require.NoError(t, store.Ready(t.Context(), 9))
+	require.Equal(t, "user:9", client.tenant)
+	require.Error(t, store.Ready(t.Context(), 0))
+	client.fail = true
+	require.Error(t, store.Ready(t.Context(), 9))
+	client.fail = false
+	client.readFail = true
+	require.Error(t, store.Ready(t.Context(), 9))
+	require.ErrorIs(t, (disabledArtifactStore{}).Ready(t.Context(), 9), ErrTaskArtifactStoreDisabled)
+}
+
+func TestInferenceArtifactStorageStartupUsesExistingIdentity(t *testing.T) {
+	original := taskArtifactStore
+	t.Cleanup(func() { taskArtifactStore = original })
+	t.Setenv("TASK_ARTIFACT_STORE_MODE", "inference")
+	t.Setenv("WILDFLOW_INFERENCE_URL", "https://inference.example.com")
+	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "test-internal-token")
+	require.NoError(t, InitTaskArtifactStore())
+	require.True(t, GetTaskArtifactStore().Enabled())
+	t.Setenv("WILDFLOW_INTERNAL_TOKEN", "")
+	require.Error(t, InitTaskArtifactStore())
+	require.False(t, GetTaskArtifactStore().Enabled())
+	t.Setenv("TASK_ARTIFACT_STORE_MODE", "upstream")
+	require.NoError(t, InitTaskArtifactStore())
+	require.False(t, GetTaskArtifactStore().Enabled())
 }

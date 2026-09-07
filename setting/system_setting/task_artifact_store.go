@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	TaskArtifactStoreModeUpstream = "upstream"
-	TaskArtifactStoreModeS3       = "s3"
+	TaskArtifactStoreModeUpstream  = "upstream"
+	TaskArtifactStoreModeS3        = "s3"
+	TaskArtifactStoreModeInference = "inference"
 
 	DefaultTaskArtifactStorePresignTTLSeconds = 900
 	MaxTaskArtifactStorePresignTTLSeconds     = 7 * 24 * 60 * 60
@@ -36,8 +37,8 @@ var (
 	taskArtifactStoreRegionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 )
 
-// TaskArtifactStoreConfig reserves the configuration contract for a future S3
-// implementation. The current release always falls back to upstream proxying.
+// TaskArtifactStoreConfig selects upstream proxying or inference-owned storage.
+// Direct S3 fields remain reserved; API does not hold OSS credentials.
 type TaskArtifactStoreConfig struct {
 	Mode                string
 	S3Endpoint          string
@@ -77,6 +78,9 @@ func LoadTaskArtifactStoreConfig() TaskArtifactStoreConfig {
 // ValidateTaskArtifactStoreConfig performs syntax checks only. It never
 // resolves hosts, contacts an endpoint, or verifies credentials.
 func ValidateTaskArtifactStoreConfig(config TaskArtifactStoreConfig) error {
+	if config.Mode == TaskArtifactStoreModeInference {
+		return nil
+	}
 	if config.Mode != TaskArtifactStoreModeUpstream && config.Mode != TaskArtifactStoreModeS3 {
 		return fmt.Errorf("unsupported mode %q", config.Mode)
 	}

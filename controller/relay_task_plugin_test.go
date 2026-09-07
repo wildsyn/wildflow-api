@@ -390,3 +390,22 @@ func taskSubmissionRelayInfo(billing relaycommon.BillingSettler) *relaycommon.Re
 
 func (b *taskSubmissionTestBilling) RefundUnsent(c *gin.Context)            { b.Refund(c) }
 func (b *taskSubmissionTestBilling) MarkProviderStarted(*gin.Context) error { return nil }
+
+func TestImageSubmissionRejectsUnavailableStorageBeforeProviderAndBilling(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+	require.False(t, service.GetTaskArtifactStore().Enabled())
+	calls := 0
+	info := &relaycommon.RelayInfo{UserId: 7, TaskRelayInfo: &relaycommon.TaskRelayInfo{Action: "image_generation"}}
+	outcome, taskErr := executeTaskSubmissionWith(c, info, func(*gin.Context, *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *dto.TaskError) {
+		calls++
+		return nil, nil
+	})
+	require.Nil(t, outcome)
+	require.NotNil(t, taskErr)
+	require.Equal(t, http.StatusServiceUnavailable, taskErr.StatusCode)
+	require.Equal(t, "artifact_storage_unavailable", taskErr.Code)
+	require.Equal(t, "10", c.Writer.Header().Get("Retry-After"))
+	require.Zero(t, calls)
+	require.Nil(t, info.Billing)
+}

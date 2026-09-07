@@ -647,6 +647,12 @@ func executeTaskSubmissionWith(
 	relayInfo *relaycommon.RelayInfo,
 	submit taskSubmitAttempt,
 ) (*taskSubmissionOutcome, *taskdto.TaskError) {
+	if relayInfo.TaskRelayInfo != nil && relayInfo.Action == "image_generation" {
+		if err := service.GetTaskArtifactStore().Ready(c.Request.Context(), relayInfo.UserId); err != nil {
+			c.Header("Retry-After", "10")
+			return nil, service.TaskErrorWrapperLocal(errors.New("Image storage is temporarily unavailable"), "artifact_storage_unavailable", http.StatusServiceUnavailable)
+		}
+	}
 	diagnostics := newTaskPluginSubmitDiagnostics(c)
 	diagnostics.start(relayInfo)
 	var result *relay.TaskSubmitResult

@@ -49,9 +49,17 @@ existing URL and redirect checks. Stored manifests and content reads do not need
 the original provider plugin; restoring still-missing bytes currently needs that
 plugin and channel. Missing dependencies leave the task pending, without resubmission.
 
-The inference-backed store is implemented but not yet enabled at startup. Storage
-admission checks, real Beijing OSS verification, the database compatibility matrix,
-and complete billing/restart journeys remain release requirements. Tests currently
+Enable the byte store with `TASK_ARTIFACT_STORE_MODE=inference`, using the existing
+`WILDFLOW_INFERENCE_URL`, `WILDFLOW_INTERNAL_TOKEN` and (when applicable)
+`WILDFLOW_INFERENCE_ALLOW_INTERNAL_HTTP`. API must not receive OSS credentials.
+Before an image submission, the host writes and reads a tiny fixed PNG in the
+same tenant namespace. Checks reuse one object per user. If storage is disabled
+or the check fails, submission returns 503 with `Retry-After: 10`, before provider
+submission and precharge. A successful check is a point-in-time check; later
+storage failures use the saved-completion recovery path above.
+
+Real Beijing OSS verification, the database compatibility matrix, and complete
+billing/restart journeys remain release requirements. Tests currently
 exercise HTTP download fixtures, storage failures and SQLite task recovery; they
 are not evidence of production OSS durability. This candidate alone is not an
 onboarded model. It reuses inference artifact ownership and the existing task and
