@@ -70,3 +70,33 @@ Sources checked 2026-09-07:
 - [Standard image generation](https://docs.apimart.ai/cn/api-reference/images/gpt-image-2/generation)
 - [Official channel generation](https://docs.apimart.ai/cn/api-reference/images/gpt-image-2/official)
 - [Task status](https://docs.apimart.ai/cn/api-reference/tasks/status)
+
+## Local public-route journey evidence (2026-09-07)
+
+API `953399be` and inference `4edc7d1` ran as separate local processes, with a fresh
+SQLite API database and a local PostgreSQL inference database. The channel used
+existing APIMart credentials and inference used existing Beijing OSS credentials.
+An ordinary user token called `/v1/responses` through public aliases:
+
+| Alias | Upstream model | Result bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| studio-image-official | gpt-image-2-official | 793132 | 5999a5e7e25a9dfda6d1b64e7eb20ac80fcb78b8526a3e47b647755cce587454 |
+| studio-image | gpt-image-2 | 806922 | 11381427075502bedabd7675372dbb77f4f22de0b8074b52b02de95b3f5c0ebc |
+
+Both submissions returned queued response IDs, polling reached completed, and host
+artifact capability URLs downloaded PNG bytes matching persisted content digests.
+The official result remained retrievable and downloadable after API process restart.
+The local `ServerAddress` initially had its default port; correcting it to the actual
+candidate origin fixed generated URLs without regenerating the image. Another
+ordinary user's token received 404 when retrieving the first user's response.
+
+The fixture used USD 0.01 per task solely to verify the existing ledger, not as a
+production retail price. Each task recorded 5000 quota once in both user and token
+usage; two consume logs and two task rows existed after retrieval/downloads.
+This verifies real APIMart + OSS with local public routes, not a production release.
+
+Submission idempotency remains a release gap: the task-plugin path does not yet
+recover submissions by Idempotency-Key. No paid submission was replayed to test it.
+Do not advertise safe automatic POST retries until that path is implemented and
+verified. Provider switching, the full database matrix and production release gates
+also remain open. The earlier mocked-storage tests remain unit evidence only.
