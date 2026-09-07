@@ -244,7 +244,7 @@ func TestCreateDualASRJobAllowsStandardRegisteredUserTokenAndPreauthorizesRetail
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"job":{"id":"job-asr-1","state":"queued"}}`))
 	}))
-	body := `{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"行业访谈","hotwords":["青蜂六边形"]}}`
+	body := `{"model":"wildflow/exam-replay-dual-asr-v1","input_artifact_ids":["input-1"],"parameters":{"language":"zh","context":"行业访谈","hotwords":["播客账号六边形"]}}`
 
 	response := performWildFlowRequest(t, engine, http.MethodPost, "/v1/jobs", body, map[string]string{
 		"Idempotency-Key": "asr-standard-token",
@@ -1978,15 +1978,15 @@ func TestContentAccountVoicesStayIndependent(t *testing.T) {
 		_, _ = w.Write([]byte(`{"voice_id":"` + id + `","name":"Account voice","retention_state":"active"}`))
 	}))
 	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", 42).Update("setting", `{"language":"zh","indextts_default_voice":"voice-general"}`).Error)
-	for _, body := range []string{`{"voice_id":"voice-book","content_account":"图书账号"}`, `{"voice_id":"voice-qingfeng","content_account":"青蜂"}`} {
+	for _, body := range []string{`{"voice_id":"voice-book","content_account":"图书账号"}`, `{"voice_id":"voice-podcast","content_account":"播客账号"}`} {
 		response := performWildFlowRequest(t, engine, http.MethodPut, "/v1/voice-preference", body, nil)
 		require.Equal(t, 200, response.Code, response.Body.String())
 	}
 	var user model.User
 	require.NoError(t, model.DB.First(&user, 42).Error)
 	assert.Equal(t, "voice-general", user.GetSetting().IndexTTSDefaultVoice)
-	assert.Equal(t, map[string]string{"图书账号": "voice-book", "青蜂": "voice-qingfeng"}, user.GetSetting().IndexTTSAccountVoices)
+	assert.Equal(t, map[string]string{"图书账号": "voice-book", "播客账号": "voice-podcast"}, user.GetSetting().IndexTTSAccountVoices)
 	response := performWildFlowRequest(t, engine, http.MethodGet, "/v1/voice-preference", "", nil)
 	require.Equal(t, 200, response.Code)
-	assert.Contains(t, response.Body.String(), "voice-qingfeng")
+	assert.Contains(t, response.Body.String(), "voice-podcast")
 }
