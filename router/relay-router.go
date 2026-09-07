@@ -90,6 +90,12 @@ func SetRelayRouter(router *gin.Engine) {
 		// service owns execution and artifacts.
 		relayV1Router.POST("/jobs", controller.CreateWildFlowJob)
 		relayV1Router.POST("/input-artifacts", controller.CreateWildFlowInputArtifact)
+		relayV1Router.POST("/voices", controller.CreateWildFlowVoice)
+		relayV1Router.GET("/voice-preference", controller.GetWildFlowVoicePreference)
+		relayV1Router.PUT("/voice-preference", controller.SetWildFlowVoicePreference)
+		relayV1Router.GET("/voices", controller.ListWildFlowVoices)
+		relayV1Router.GET("/voices/:voice_id", controller.GetWildFlowVoice)
+		relayV1Router.GET("/voices/:voice_id/content", controller.DownloadWildFlowVoice)
 		relayV1Router.GET("/jobs/:operation_id", controller.GetWildFlowJob)
 		relayV1Router.POST("/jobs/:operation_id/cancel", controller.CancelWildFlowJob)
 		relayV1Router.GET("/artifacts/:artifact_id", controller.GetWildFlowArtifact)

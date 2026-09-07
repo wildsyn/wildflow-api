@@ -56,8 +56,12 @@ func validIndexTTSControls(parameters map[string]any) bool {
 			if !indexTTSNumberInRange(value, 0.5, 2, false) {
 				return false
 			}
-		case "emo_alpha", "top_p":
+		case "emo_alpha":
 			if !indexTTSNumberInRange(value, 0, 1, false) {
+				return false
+			}
+		case "top_p":
+			if !indexTTSNumberInRange(value, 0.01, 1, false) {
 				return false
 			}
 		case "temperature":
@@ -104,4 +108,23 @@ func indexTTSNumberInRange(value any, min, max float64, integer bool) bool {
 		return false
 	}
 	return !math.IsNaN(number) && !math.IsInf(number, 0) && number >= min && number <= max && (!integer || math.Trunc(number) == number)
+}
+
+// WildFlowRuntimeInputArtifactIDs resolves immutable custom voices while leaving
+// the caller's normalized request (and its idempotency digest) unchanged.
+func WildFlowRuntimeInputArtifactIDs(modelRef string, parameters map[string]any, inputs []string) []string {
+	if modelRef != WildFlowModelIndexTTS25 {
+		return inputs
+	}
+	result := []string{}
+	for _, key := range []string{"voice_id", "emotion_voice_id"} {
+		id, _ := parameters[key].(string)
+		if id == "" || id == "legacy-default-v1" || strings.HasPrefix(id, "official-") {
+			continue
+		}
+		if len(result) == 0 || result[0] != id {
+			result = append(result, id)
+		}
+	}
+	return result
 }

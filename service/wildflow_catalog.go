@@ -131,7 +131,7 @@ var canonicalWildFlowCatalog = []WildFlowOffering{
 		Vendor:            "IndexTeam",
 		ModelVersionRef:   "indextts-2.5@0b328234",
 		RuntimeOfferingID: "indextts25-internal",
-		Description:       "固定服务端参考音频的 IndexTTS-2.5 语音合成，仅供团队内部使用。",
+		Description:       "支持固定音色、自定义声音、五种语言、语速及情绪控制的 IndexTTS-2.5 语音合成。",
 		RequiredParameters: []string{
 			"text",
 		},
