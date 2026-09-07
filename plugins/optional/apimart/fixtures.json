@@ -583,6 +583,141 @@
         "images": 2,
         "credits": 0.085
       }
+    },
+    {
+      "name": "shared endpoint preserves public alias and normalizes multimodal input",
+      "hook": "protocols",
+      "path": [
+        "openai_responses",
+        "decodeRequest"
+      ],
+      "args": [
+        {
+          "model": "studio-image",
+          "body": {
+            "kind": "json",
+            "value": {
+              "model": "studio-image",
+              "input": [
+                {
+                  "role": "user",
+                  "content": [
+                    {
+                      "type": "input_text",
+                      "text": "Draw a circle"
+                    },
+                    {
+                      "type": "input_image",
+                      "image_url": "https://example.invalid/ref.png"
+                    }
+                  ]
+                }
+              ],
+              "background": true,
+              "size": "1:1"
+            }
+          }
+        }
+      ],
+      "expected": {
+        "kind": "submit",
+        "model": "studio-image",
+        "action": "image_generation",
+        "requestBody": {
+          "prompt": "Draw a circle",
+          "image_urls": [
+            "https://example.invalid/ref.png"
+          ],
+          "size": "1:1"
+        }
+      }
+    },
+    {
+      "name": "shared endpoint rejects non image input instead of ignoring it",
+      "hook": "protocols",
+      "path": [
+        "openai_responses",
+        "decodeRequest"
+      ],
+      "args": [
+        {
+          "model": "studio-image",
+          "body": {
+            "kind": "json",
+            "value": {
+              "input": [
+                {
+                  "role": "user",
+                  "content": [
+                    {
+                      "type": "input_audio",
+                      "audio_url": "https://example.invalid/a.mp3"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "expectedError": "unsupported image input"
+    },
+    {
+      "name": "response contains only host artifact URLs",
+      "hook": "protocols",
+      "path": [
+        "openai_responses",
+        "renderFinal"
+      ],
+      "args": [
+        {
+          "artifacts": {
+            "image-0": {
+              "key": "image-0",
+              "type": "image",
+              "url": "https://wildflow.example/v1/tasks/public/artifacts/image-0/content?access=fixture"
+            }
+          }
+        },
+        {
+          "status": "SUCCESS",
+          "data": {
+            "private_upstream_url": "https://provider.invalid/private"
+          }
+        }
+      ],
+      "expected": {
+        "output": [
+          {
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "{\"images\":[{\"id\":\"image-0\",\"url\":\"https://wildflow.example/v1/tasks/public/artifacts/image-0/content?access=fixture\"}]}",
+                "annotations": [],
+                "logprobs": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing durable artifact URLs do not return fake success",
+      "hook": "protocols",
+      "path": [
+        "openai_responses",
+        "renderFinal"
+      ],
+      "args": [
+        {},
+        {
+          "status": "SUCCESS"
+        }
+      ],
+      "expectedError": "image artifact URLs unavailable"
     }
   ]
 }

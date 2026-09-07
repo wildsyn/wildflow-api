@@ -16,9 +16,31 @@ Run the actual Go plugin engine fixtures with:
 go test ./plugins -run TestAPIMartOptionalPluginContract -count=1
 ```
 
-The internal plugin key is not the client contract. A provider-independent submit
-entry, durable recovery and Beijing OSS persistence must be completed before
-release. The upstream artifact store is currently a disabled placeholder; its
+The client entry uses the existing `POST /v1/responses` and
+`GET /v1/responses/{id}`. The internal plugin key is not part of a client request.
+The user confirmed that no existing image scripts need compatibility. APIMart
+is the first provider; configure a stable public model alias on its channel.
+
+Example body (the alias is illustrative and must exist in channel configuration):
+
+```json
+{
+  "model": "studio-image",
+  "background": true,
+  "input": "Draw a blue circle on a white background",
+  "image": {"size": "1:1", "resolution": "1k"}
+}
+```
+
+Use Responses `input_image` parts for references. Image background controls live
+under `image.background`; top-level `background` is exclusively the async flag.
+On completion, the assistant output text contains a JSON object with `images`,
+each containing `id` and a host artifact `url`. Provider URLs never appear there.
+Only non-streaming sync and background modes are declared. The host pins task
+identity for later reads; end-to-end channel switching still needs verification.
+
+Durable recovery and Beijing OSS persistence must be completed before release.
+The upstream artifact store is currently a disabled placeholder; its
 proxy URL does not prove permanent storage. Reuse the inference repository's
 artifact ownership and existing OSS configuration, rather than creating a second
 independent task or billing ledger. This candidate alone is not an onboarded model.

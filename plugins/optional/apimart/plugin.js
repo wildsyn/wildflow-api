@@ -4,6 +4,7 @@ export const meta = {
   apiVersion: 1, key: "apimart-image", name: "APIMart Images", version: "0.1.0",
   author: { name: "WildFlow" }, models: ["gpt-image-2", "gpt-image-2-official"],
   fetchMode: "per_task",
+  protocols: [{ name: "openai_responses", supports: ["sync", "background"] }],
   usageSchema: { images: { type: "number", unit: "count" }, credits: { type: "number", unit: "credit" } },
 };
 
@@ -88,3 +89,49 @@ export function buildContentRequest(ctx) {
   // Host applies SSRF/redirect checks. Never forward the provider key to its CDN.
   return { url: urls[index], method: ctx.clientRequest.method, credentialless: true };
 }
+
+export const protocols = {
+  openai_responses: {
+    decodeRequest(ctx) {
+      if (!ctx.body || ctx.body.kind !== "json" || !ctx.body.value || Array.isArray(ctx.body.value)) throw new Error("JSON object required");
+      const req = ctx.body.value;
+      const texts = [];
+      const images = [];
+      if (typeof req.input === "string") texts.push(req.input);
+      else if (Array.isArray(req.input)) {
+        for (const message of req.input) {
+          if (!message || typeof message !== "object" || !Array.isArray(message.content)) throw new Error("unsupported image input");
+          for (const part of message.content) {
+            if (part && part.type === "input_text" && typeof part.text === "string") texts.push(part.text);
+            else if (part && part.type === "input_image" && typeof part.image_url === "string") images.push(part.image_url);
+            else throw new Error("unsupported image input");
+          }
+        }
+      } else throw new Error("unsupported image input");
+      const prompt = texts.join("\n");
+      if (!prompt.trim()) throw new Error("prompt is required");
+      const requestBody = { prompt };
+      if (images.length) requestBody.image_urls = images;
+      for (const field of ["n", "size", "resolution", "quality", "moderation", "output_format", "output_compression", "mask_url", "nsfw_check", "official_fallback"]) {
+        if (req[field] !== undefined) requestBody[field] = req[field];
+      }
+      // Responses.background is the host's async flag, not the image background.
+      if (req.image !== undefined) {
+        if (!req.image || typeof req.image !== "object" || Array.isArray(req.image)) throw new Error("image options must be an object");
+        for (const field of ["n", "size", "resolution", "quality", "background", "moderation", "output_format", "output_compression", "mask_url", "nsfw_check", "official_fallback"]) {
+          if (req.image[field] !== undefined) requestBody[field] = req.image[field];
+        }
+      }
+      return { kind: "submit", model: ctx.model, action: "image_generation", requestBody };
+    },
+    renderFinal(ctx) {
+      const images = [];
+      for (const key of Object.keys(ctx.artifacts || {}).sort()) {
+        const artifact = ctx.artifacts[key];
+        if (artifact.type === "image" && typeof artifact.url === "string" && artifact.url) images.push({ id: key, url: artifact.url });
+      }
+      if (!images.length) throw new Error("image artifact URLs unavailable");
+      return { output: [{ type: "message", status: "completed", role: "assistant", content: [{ type: "output_text", text: JSON.stringify({ images }), annotations: [], logprobs: [] }] }] };
+    },
+  },
+};
