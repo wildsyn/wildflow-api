@@ -325,7 +325,7 @@ func validateWildFlowRequest(kind string, request WildFlowJobRequest) error {
 		return validateWildFlowIdeogram4Parameters(request.Parameters)
 	}
 	if request.Model == WildFlowModelIndexTTS25 {
-		if len(request.Parameters) != 1 {
+		if !validIndexTTSControls(request.Parameters) {
 			return ErrWildFlowInvalidParameters
 		}
 		text, ok := request.Parameters["text"].(string)

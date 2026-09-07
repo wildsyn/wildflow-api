@@ -286,14 +286,20 @@ func validateWildFlowIndexTTS25Artifact(artifacts []inferenceclient.Artifact) er
 	metadataSHA256, shaOK := artifact.Metadata["sha256"].(string)
 	language, languageOK := artifact.Metadata["lang"].(string)
 	referenceMode, referenceModeOK := artifact.Metadata["reference_audio_mode"].(string)
+	if referenceMode == "voice_id" {
+		voiceID, ok := artifact.Metadata["voice_id"].(string)
+		if !ok || !indexTTSVoiceID.MatchString(voiceID) {
+			return ErrWildFlowInvalidArtifact
+		}
+	}
 	if !codecOK || codec != "pcm_s16le" ||
 		!sampleRateOK || sampleRate < 8_000 || sampleRate > 192_000 ||
 		!channelsOK || channels < 1 || channels > 2 ||
 		!durationOK || duration <= 0 ||
 		!sizeOK || metadataSize != artifact.SizeBytes ||
 		!shaOK || !validWildFlowSHA256(metadataSHA256) || !strings.EqualFold(metadataSHA256, artifact.SHA256) ||
-		!languageOK || language != "zh" ||
-		!referenceModeOK || referenceMode != "server_fixed" {
+		!languageOK || !validIndexTTSControls(map[string]any{"lang": language}) ||
+		!referenceModeOK || (referenceMode != "server_fixed" && referenceMode != "voice_id") {
 		return ErrWildFlowInvalidArtifact
 	}
 	return nil

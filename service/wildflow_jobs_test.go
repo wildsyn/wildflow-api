@@ -296,13 +296,13 @@ func TestResolveWildFlowRuntimeOfferingRefKeepsPublicAndRuntimeIdentityDistinct(
 }
 
 func TestIndexTTS25VoiceControls(t *testing.T) {
- p:=map[string]any{"text":"Hello", "lang":"en", "voice_id":"official-voice-01-v1", "duration_factor":1.5,"use_random":false,"emo_alpha":0.0}
- req,err:=NormalizeWildFlowJobRequest(WildFlowJobRequest{Model:WildFlowModelIndexTTS25,Parameters:p})
- require.NoError(t,err)
- require.NoError(t,validateWildFlowRequest("tts",req))
- assert.Equal(t,p,req.Parameters)
- for key,value:=range map[string]any{"voice_id":"../ref","duration_factor":100.0,"emo_vector":[]any{1.0},"interval_silence":-1.0} {
-  invalid:=map[string]any{"text":"Hello",key:value}
-  require.ErrorIs(t,validateWildFlowRequest("tts",WildFlowJobRequest{Model:WildFlowModelIndexTTS25,Parameters:invalid}),ErrWildFlowInvalidParameters)
- }
+	p := map[string]any{"text": "Hello", "lang": "en", "voice_id": "official-voice-01-v1", "duration_factor": 1.5, "use_random": false, "emo_alpha": 0.0}
+	req, err := NormalizeWildFlowJobRequest(WildFlowJobRequest{Model: WildFlowModelIndexTTS25, Parameters: p})
+	require.NoError(t, err)
+	require.NoError(t, validateWildFlowRequest("tts", req))
+	assert.Equal(t, p, req.Parameters)
+	for key, value := range map[string]any{"voice_id": "../ref", "duration_factor": 100.0, "emo_vector": []any{1.0}, "interval_silence": -1.0} {
+		invalid := map[string]any{"text": "Hello", key: value}
+		require.ErrorIs(t, validateWildFlowRequest("tts", WildFlowJobRequest{Model: WildFlowModelIndexTTS25, Parameters: invalid}), ErrWildFlowInvalidParameters)
+	}
 }
