@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/QuantumNous/new-api/internal/inferenceclient"
@@ -138,6 +139,10 @@ func SetWildFlowVoicePreference(c *gin.Context) {
 		wildFlowJobError(c, 400, "invalid_request", "voice_id is required")
 		return
 	}
+	if !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$`).MatchString(request.VoiceID) {
+		wildFlowJobError(c, 400, "invalid_request", "valid voice_id is required")
+		return
+	}
 	request.ContentAccount = strings.TrimSpace(request.ContentAccount)
 	if len(request.ContentAccount) > 200 || strings.ContainsAny(request.ContentAccount, "\r\n\x00") {
 		wildFlowJobError(c, 400, "invalid_request", "content_account must be at most 200 bytes without control characters")
@@ -175,4 +180,39 @@ func SetWildFlowVoicePreference(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"voice_id": voice.ID, "content_account": request.ContentAccount})
+}
+
+func WildFlowSpeechSegments(c *gin.Context) {
+	operation, ok := loadWildFlowOperation(c)
+	if !ok {
+		return
+	}
+	client, ok := voiceClient(c)
+	if !ok {
+		return
+	}
+	tenant := wildFlowTenantRef(c.GetInt("id"))
+	segments, err := client.SpeechSegments(c.Request.Context(), operation.JobID, tenant)
+	if err != nil {
+		writeWildFlowInferenceError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	if c.Param("segment_id") == "" {
+		c.JSON(200, segments)
+		return
+	}
+	for _, segment := range segments.Data {
+		if segment.ID != c.Param("segment_id") {
+			continue
+		}
+		data, err := client.SpeechSegmentContent(c.Request.Context(), operation.JobID, tenant, segment)
+		if err != nil {
+			writeWildFlowInferenceError(c, err)
+			return
+		}
+		c.Data(200, "audio/wav", data)
+		return
+	}
+	wildFlowJobError(c, 404, "segment_not_found", "audio segment not found")
 }

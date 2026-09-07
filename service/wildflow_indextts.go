@@ -28,7 +28,7 @@ func validIndexTTSControls(parameters map[string]any) bool {
 			default:
 				return false
 			}
-		case "use_random", "text_normalization", "use_emo_text", "do_sample":
+		case "stream", "use_random", "text_normalization", "use_emo_text", "do_sample":
 			flag, ok := value.(bool)
 			if !ok {
 				return false

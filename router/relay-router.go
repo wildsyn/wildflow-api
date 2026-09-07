@@ -96,6 +96,8 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.GET("/voices", controller.ListWildFlowVoices)
 		relayV1Router.GET("/voices/:voice_id", controller.GetWildFlowVoice)
 		relayV1Router.GET("/voices/:voice_id/content", controller.DownloadWildFlowVoice)
+		relayV1Router.GET("/jobs/:operation_id/audio-segments", controller.WildFlowSpeechSegments)
+		relayV1Router.GET("/jobs/:operation_id/audio-segments/:segment_id/content", controller.WildFlowSpeechSegments)
 		relayV1Router.GET("/jobs/:operation_id", controller.GetWildFlowJob)
 		relayV1Router.POST("/jobs/:operation_id/cancel", controller.CancelWildFlowJob)
 		relayV1Router.GET("/artifacts/:artifact_id", controller.GetWildFlowArtifact)

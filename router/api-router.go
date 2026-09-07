@@ -106,6 +106,8 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/self/voices", controller.ListWildFlowVoices)
 				selfRoute.GET("/self/voices/:voice_id", controller.GetWildFlowVoice)
 				selfRoute.GET("/self/voices/:voice_id/content", controller.DownloadWildFlowVoice)
+				selfRoute.GET("/self/voice-jobs/:operation_id/audio-segments", controller.WildFlowSpeechSegments)
+				selfRoute.GET("/self/voice-jobs/:operation_id/audio-segments/:segment_id/content", controller.WildFlowSpeechSegments)
 				selfRoute.POST("/self/voice-jobs", controller.CreateWildFlowVoiceJob)
 				selfRoute.GET("/self/voice-jobs/:operation_id", controller.GetWildFlowJob)
 				selfRoute.GET("/self/voice-artifacts/:artifact_id/content", controller.DownloadWildFlowArtifact)
