@@ -96,7 +96,7 @@ func TestWildFlowCatalogIsPublicAndDisplaysPricedAndTeamTrialModels(t *testing.T
 					"kind":"tts",
 					"vendor":"IndexTeam",
 					"model_version_ref":"indextts-2.5@0b328234",
-					"description":"固定服务端参考音频的 IndexTTS-2.5 语音合成，仅供团队内部使用。",
+					"description":"支持固定音色、自定义声音、五种语言、语速及情绪控制的 IndexTTS-2.5 语音合成。",
 					"required_parameters":["text"],
 					"pricing":{"currency":"CNY","amount":0,"unit":"team_trial","display":"团队内部使用 · 暂不扣零售余额"},
 					"callable":false,
