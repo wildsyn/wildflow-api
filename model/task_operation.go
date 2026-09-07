@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+
 	"gorm.io/gorm"
 )
 
@@ -70,12 +72,15 @@ func resolveTaskOperationReplay(operation *WildFlowOperation, digest string) (*W
 }
 
 // InsertTaskForOperation atomically links a successfully submitted task to its
-// reserved operation. A lost response after commit can be recovered by key.
+// reserved operation and settles its existing funding reservation. A lost response
+// after commit can be recovered by key without a second settlement.
 func InsertTaskForOperation(operationID string, task *Task) error {
-	if task == nil || task.UserId <= 0 {
+	if task == nil || task.UserId <= 0 || task.Quota < 0 || task.Quota > common.MaxQuota {
 		return ErrTaskOperationState
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
+	var effect billingReservationCacheEffect
+	var requestID string
+	err := DB.Transaction(func(tx *gorm.DB) error {
 		var operation WildFlowOperation
 		if err := lockForUpdate(tx).Where("operation_id = ? AND user_id = ?", operationID, task.UserId).First(&operation).Error; err != nil {
 			return err
@@ -92,8 +97,36 @@ func InsertTaskForOperation(operationID string, task *Task) error {
 		if update.RowsAffected != 1 {
 			return ErrTaskOperationState
 		}
+		requestID = operation.RequestID
+		// Free requests can have no reservation. Paid requests must bind the
+		// original user/token reservation before their task becomes visible.
+		if requestID != "" || task.Quota > 0 {
+			var reservation BillingReservationRecord
+			err := lockForUpdate(tx).Where("request_id = ?", requestID).First(&reservation).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) && task.Quota == 0 {
+				// No precharge was made for a free request.
+			} else {
+				if err != nil {
+					return err
+				}
+				if reservation.UserId != task.UserId || reservation.TokenId != task.PrivateData.TokenId ||
+					reservation.TokenId != operation.TokenID || reservation.State != BillingReservationStateProviderStarted ||
+					reservation.Amount < 0 || reservation.Amount > common.MaxQuota {
+					return ErrTaskOperationState
+				}
+				// Amount and quota have both been bounded before the conversion.
+				delta := task.Quota - int(reservation.Amount)
+				if err := settleBillingReservationTx(tx, requestID, delta, &effect); err != nil {
+					return err
+				}
+			}
+		}
 		return tx.Create(task).Error
 	})
+	if err == nil {
+		effect.apply(requestID)
+	}
+	return err
 }
 
 // GetTaskOperationForUserAndTask also makes an expired unknown submission

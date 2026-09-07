@@ -24,7 +24,8 @@ var reservationFixtureSequence atomic.Uint64
 
 func seedReservationFixture(t *testing.T, userQuota, tokenQuota int) (int, int, string) {
 	t.Helper()
-	fixtureID := fmt.Sprintf("%s-%d", t.Name(), reservationFixtureSequence.Add(1))
+	// Keep fixture identities inside real database varchar limits.
+	fixtureID := fmt.Sprintf("%012x", reservationFixtureSequence.Add(1))
 	user := &User{Username: fmt.Sprintf("reservation-user-%s", fixtureID), Quota: userQuota, Group: "default", AffCode: fmt.Sprintf("reservation-aff-%s", fixtureID)}
 	require.NoError(t, DB.Create(user).Error)
 	token := &Token{

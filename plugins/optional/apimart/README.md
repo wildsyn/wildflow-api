@@ -145,3 +145,39 @@ A local fault provider exercised the complete API path without paid generation:
 This is fault injection against a local provider, not evidence of APIMart's own
 failure semantics. Process death after task insertion but before settlement/log
 completion still requires recovery verification before release.
+
+## Task acceptance and funding transaction
+
+Image Task insertion, Operation attachment and settlement of the existing billing
+reservation now commit together. Paid acceptance checks the original user and
+Token identity and rejects missing or already released/settled reservations.
+A failed insert or quota adjustment rolls back the entire transaction. The normal
+service-layer settlement continuation becomes an idempotent no-op. Free requests
+without a reservation remain supported; a precharged request whose final cost is
+zero releases its difference in the same transaction.
+
+SQLite regression tests stop at the model acceptance boundary, covering equal,
+lower, zero and higher final quota, insert failure, wrong funding identities,
+missing/terminal reservations, and insufficient Token quota. They verify durable
+balances and reservation states without invoking the later service settlement.
+These tests are not a process-kill journey or the full database matrix. Consumption
+log/statistics recovery and completion-time adjustment remain separate unfinished
+checks; no production deployment is implied.
+
+The same ten acceptance/funding cases also passed on real PostgreSQL 16.14
+(Homebrew, aarch64) at local port 55447. A temporary Go test overlay replaced only
+`setupWildFlowBillingModelTest`: PostgreSQL connections, one newly generated
+`task_acceptance_<uuid>` schema per case, and matching dialect/column settings.
+The production code and assertions were unchanged. Test identities were shortened
+to fit actual varchar limits after the first PostgreSQL run exposed oversized
+fixture usernames. The passing command was:
+
+```sh
+go test -overlay /tmp/wildflow-task-acceptance-pg-overlay.json ./model \
+  -run TestTaskAcceptance -count=1 -v
+```
+
+The overlay and output are local evidence (`/tmp/wildflow-task-acceptance-pg-test.go`
+and `/tmp/wildflow-task-acceptance-postgres.log`); generated test schemas were
+retained. This run used fresh isolated schemas, not a released-schema migration,
+MySQL, or a production PostgreSQL database.
