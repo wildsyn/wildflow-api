@@ -851,6 +851,7 @@ func executeTaskSubmissionWith(
 	diagnostics.insertStart(task)
 	var insertErr error
 	if imageOperation != nil {
+		task.PrivateData.ConsumptionLog = model.BuildConsumeLog(c, task.UserId, service.TaskConsumptionLogParams(c, relayInfo, task))
 		insertErr = model.InsertTaskForOperation(imageOperation.OperationID, task)
 	} else {
 		insertErr = task.InsertWithContext(c.Request.Context())
@@ -872,7 +873,9 @@ func executeTaskSubmissionWith(
 		diagnostics.failed("settle", "billing_error", taskErr, true)
 		return nil, taskErr
 	}
-	service.LogTaskConsumption(c, relayInfo, task)
+	if imageOperation == nil {
+		service.LogTaskConsumption(c, relayInfo, task)
+	}
 	diagnostics.complete(task, result.Quota)
 
 	return &taskSubmissionOutcome{Result: result, Task: task, RelayInfo: relayInfo}, nil

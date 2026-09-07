@@ -2,6 +2,10 @@ package model
 
 import (
 	"fmt"
+	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -265,5 +269,104 @@ func TestTaskAcceptanceRejectsInvalidFundingWithoutPublishingTask(t *testing.T) 
 			require.NoError(t, db.First(op, op.ID).Error)
 			assert.Equal(t, TaskOperationSubmitting, op.State)
 		})
+	}
+}
+
+func TestTaskConsumptionProjectionRecoversWithoutRepeatingUsage(t *testing.T) {
+	db := setupWildFlowBillingModelTest(t)
+	require.NoError(t, db.AutoMigrate(&Task{}, &BillingReservationRecord{}, &Channel{}))
+	oldConsume, oldExport := common.LogConsumeEnabled, common.DataExportEnabled
+	common.LogConsumeEnabled, common.DataExportEnabled = true, true
+	CacheQuotaDataLock.Lock()
+	oldCache := CacheQuotaData
+	CacheQuotaData = make(map[string]*QuotaData)
+	CacheQuotaDataLock.Unlock()
+	t.Cleanup(func() {
+		common.LogConsumeEnabled, common.DataExportEnabled = oldConsume, oldExport
+		CacheQuotaDataLock.Lock()
+		CacheQuotaData = oldCache
+		CacheQuotaDataLock.Unlock()
+	})
+	userID, tokenID, tokenKey := seedReservationFixture(t, 2000, 2000)
+	channel := &Channel{Name: "original-channel", Type: 61}
+	require.NoError(t, db.Create(channel).Error)
+	reserved, err := ReserveWalletBillingQuota("image-log", userID, tokenID, tokenKey, 500, false)
+	require.NoError(t, err)
+	require.True(t, reserved)
+	require.NoError(t, MarkBillingReservationProviderStarted("image-log"))
+	op, _, err := ReserveTaskOperation(&WildFlowOperation{
+		OperationID: "image-log", TaskID: "task_image-log", UserID: userID, TokenID: tokenID,
+		RequestID: "image-log", ProductModelRef: "studio-image", IdempotencyKeyDigest: strings.Repeat("a", 64),
+		RequestDigest: strings.Repeat("b", 64), SubmissionLeaseExpiresAt: time.Now().Unix() + 60,
+	})
+	require.NoError(t, err)
+	snapshot := &Log{Username: "original-user", ModelName: "studio-image", TokenName: "original-token",
+		CreatedAt: time.Now().Unix(), Quota: 500, Group: "default", Content: "image generation",
+		Other: `{"is_task":true,"task_id":"task_image-log","model_price":0.01,"admin_info":{"original":true}}`}
+	task := &Task{TaskID: op.TaskID, UserId: userID, ChannelId: channel.Id, Quota: 500,
+		PrivateData: TaskPrivateData{TokenId: tokenID, ConsumptionLog: snapshot}}
+	// Failure to persist the canonical log intent must roll back task and funds.
+	require.NoError(t, db.Migrator().DropTable(&WildFlowBillingLogEntry{}))
+	require.Error(t, InsertTaskForOperation(op.OperationID, task))
+	var count int64
+	require.NoError(t, db.Model(&Task{}).Count(&count).Error)
+	assert.Zero(t, count)
+	assert.Equal(t, 1500, reservationUserQuota(t, userID))
+	var user User
+	require.NoError(t, db.First(&user, userID).Error)
+	assert.Zero(t, user.UsedQuota)
+	assert.Zero(t, user.RequestCount)
+	require.NoError(t, db.AutoMigrate(&WildFlowBillingLogEntry{}))
+	task.ID = 0
+	require.NoError(t, InsertTaskForOperation(op.OperationID, task))
+	// A separately configured log database is unavailable, while main DB remains
+	// committed. No request continuation or in-memory context is used to recover.
+	logDB, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "logs.db")), &gorm.Config{})
+	require.NoError(t, err)
+	LOG_DB = logDB
+	oldLogType := common.LogDatabaseType()
+	common.SetLogDatabaseType(common.DatabaseTypeSQLite)
+	t.Cleanup(func() { common.SetLogDatabaseType(oldLogType) })
+	logSQL, err := logDB.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = logSQL.Close() })
+	processed, err := ReconcileWildFlowBillingLogProjections(10)
+	require.Error(t, err)
+	assert.Zero(t, processed)
+	var audit WildFlowBillingLogEntry
+	require.NoError(t, db.Where("operation_id = ?", op.OperationID).First(&audit).Error)
+	assert.Equal(t, WildFlowBillingProjectionFailed, audit.ProjectionState)
+	require.NoError(t, logDB.AutoMigrate(&Log{}, &WildFlowBillingLogProjectionReceipt{}))
+	require.NoError(t, db.Model(&User{}).Where("id = ?", userID).Update("username", "renamed-user").Error)
+	require.NoError(t, db.Model(&Task{}).Where("task_id = ?", task.TaskID).Update("quota", 0).Error)
+	processed, err = ReconcileWildFlowBillingLogProjections(10)
+	require.NoError(t, err)
+	assert.Equal(t, 1, processed)
+	var delivered Log
+	require.NoError(t, logDB.First(&delivered).Error)
+	assert.Equal(t, snapshot.Username, delivered.Username)
+	assert.Equal(t, snapshot.ModelName, delivered.ModelName)
+	assert.Equal(t, snapshot.Other, delivered.Other)
+	assert.Equal(t, snapshot.CreatedAt, delivered.CreatedAt)
+	assert.Equal(t, channel.Id, delivered.ChannelId)
+	assert.Equal(t, 500, delivered.Quota, "later task adjustments cannot rewrite the original charge")
+	// Simulate the main DB losing the acknowledgement after log DB commit.
+	require.NoError(t, db.Model(&audit).Update("projection_state", WildFlowBillingProjectionFailed).Error)
+	_, err = ReconcileWildFlowBillingLogProjections(10)
+	require.NoError(t, err)
+	require.NoError(t, logDB.Model(&Log{}).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+	require.ErrorIs(t, InsertTaskForOperation(op.OperationID, task), ErrTaskOperationState)
+	require.NoError(t, db.First(&user, userID).Error)
+	require.NoError(t, db.First(channel, channel.Id).Error)
+	assert.Equal(t, 500, user.UsedQuota)
+	assert.Equal(t, 1, user.RequestCount)
+	assert.EqualValues(t, 500, channel.UsedQuota)
+	CacheQuotaDataLock.Lock()
+	defer CacheQuotaDataLock.Unlock()
+	require.Len(t, CacheQuotaData, 1)
+	for _, data := range CacheQuotaData {
+		assert.Equal(t, 1, data.Count)
+		assert.Equal(t, 500, data.Quota)
 	}
 }

@@ -89,8 +89,10 @@ func InsertTaskForOperation(operationID string, task *Task) error {
 		if operation.TaskID != task.TaskID || !canAttach || operation.BillingState != TaskOperationBillingState {
 			return ErrTaskOperationState
 		}
+		operation.BillingQuota = task.Quota
+		operation.BillingSettledTime = time.Now().Unix()
 		update := tx.Model(&WildFlowOperation{}).Where("id = ? AND state = ?", operation.ID, operation.State).
-			Updates(map[string]any{"state": TaskOperationAccepted, "submission_phase": WildFlowSubmissionPhaseAccepted, "last_error_code": "", "updated_time": time.Now().Unix()})
+			Updates(map[string]any{"state": TaskOperationAccepted, "billing_quota": operation.BillingQuota, "billing_settled_time": operation.BillingSettledTime, "submission_phase": WildFlowSubmissionPhaseAccepted, "last_error_code": "", "updated_time": time.Now().Unix()})
 		if update.Error != nil {
 			return update.Error
 		}
@@ -121,10 +123,36 @@ func InsertTaskForOperation(operationID string, task *Task) error {
 				}
 			}
 		}
-		return tx.Create(task).Error
+		if err := tx.Create(task).Error; err != nil {
+			return err
+		}
+		if _, err := ensureWildFlowCanonicalBillingLogTx(tx, &operation, LogTypeConsume, "Image task accepted"); err != nil {
+			return err
+		}
+		// Operation attachment admits one winner, so statistics and the durable
+		// log intent share the same exactly-once acceptance transaction.
+		if err := tx.Model(&User{}).Where("id = ?", task.UserId).Updates(map[string]any{
+			"used_quota":    gorm.Expr("used_quota + ?", task.Quota),
+			"request_count": gorm.Expr("request_count + 1"),
+		}).Error; err != nil {
+			return err
+		}
+		if task.ChannelId > 0 {
+			return tx.Model(&Channel{}).Where("id = ?", task.ChannelId).
+				Update("used_quota", gorm.Expr("used_quota + ?", task.Quota)).Error
+		}
+		return nil
 	})
 	if err == nil {
 		effect.apply(requestID)
+		// Preserve the existing best-effort dashboard cache. Financial usage
+		// counters above are durable; this optional export is not a second ledger.
+		if log := task.PrivateData.ConsumptionLog; log != nil && common.DataExportEnabled {
+			LogQuotaData(QuotaDataLogParams{UserID: task.UserId, Username: log.Username,
+				ModelName: log.ModelName, Quota: task.Quota, CreatedAt: log.CreatedAt,
+				TokenUsed: log.PromptTokens + log.CompletionTokens, UseGroup: log.Group,
+				TokenID: task.PrivateData.TokenId, ChannelID: task.ChannelId, NodeName: task.PrivateData.NodeName})
+		}
 	}
 	return err
 }

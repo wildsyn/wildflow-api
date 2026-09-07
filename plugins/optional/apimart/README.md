@@ -181,3 +181,35 @@ The overlay and output are local evidence (`/tmp/wildflow-task-acceptance-pg-tes
 and `/tmp/wildflow-task-acceptance-postgres.log`); generated test schemas were
 retained. This run used fresh isolated schemas, not a released-schema migration,
 MySQL, or a production PostgreSQL database.
+
+## Recoverable acceptance consumption logs
+
+The same Task acceptance transaction now inserts the existing canonical billing
+log intent and increments user used quota/request count and channel used quota.
+Failure at any of these writes rolls back acceptance and funding together.
+Image requests no longer invoke the later non-durable consumption logger; other
+task paths remain unchanged. The existing billing reconciler projects the durable
+intent to the configured log database, using its existing idempotent receipt.
+
+A private Task JSON snapshot preserves the original consumption metadata, model,
+channel, names, pricing/audit visibility fields and timestamp after the HTTP
+context disappears. Projection uses the canonical initial quota even when later
+task adjustments change Task.Quota. Neither projection retry nor same-operation
+attachment replay increments usage statistics again. The existing optional
+DataExport dashboard cache is still populated after successful acceptance; it
+remains best-effort, rather than a financial ledger.
+
+Regression tests cover failure to persist the canonical intent, a separately
+configured unavailable SQL log database, recovery, and a lost main-database
+acknowledgement after the log database commits. Exactly one visible log and one
+set of usage counters remain. Model/service/controller/relay suites, relevant vet
+and focused race checks passed. The acceptance cases plus this recovery case also
+passed on PostgreSQL 16.14 main DB with a separate SQLite log DB, using the prior
+temporary fixture overlay. Evidence: `/tmp/wildflow-image-log-recovery-tests.log`,
+`/tmp/wildflow-image-log-recovery-race.log`, and
+`/tmp/wildflow-image-log-recovery-postgres.log`.
+
+This is database fault injection, not an actual process-kill journey. MySQL and
+released-schema migration coverage, completion-time refund/adjustment recovery,
+and the production release gates are still outstanding. Existing accepted tasks
+from earlier candidates are not retroactively counted or logged by this change.

@@ -336,11 +336,12 @@ type RecordConsumeLogParams struct {
 	Other            *LogOther `json:"other"`
 }
 
-func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
+// BuildConsumeLog snapshots the same safe metadata used by immediate logs.
+// Durable tasks persist this entry before their request context disappears.
+func BuildConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) *Log {
 	if !common.LogConsumeEnabled {
-		return
+		return nil
 	}
-	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
@@ -379,6 +380,16 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
 	}
+	return log
+}
+
+func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
+	log := BuildConsumeLog(c, userId, params)
+	if log == nil {
+		return
+	}
+	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
+
 	err := createLog(log)
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
@@ -386,10 +397,10 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if common.DataExportEnabled {
 		LogQuotaData(QuotaDataLogParams{
 			UserID:    userId,
-			Username:  username,
+			Username:  log.Username,
 			ModelName: params.ModelName,
 			Quota:     params.Quota,
-			CreatedAt: createdAt,
+			CreatedAt: log.CreatedAt,
 			TokenUsed: params.PromptTokens + params.CompletionTokens,
 			UseGroup:  params.Group,
 			TokenID:   params.TokenId,

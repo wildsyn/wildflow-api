@@ -134,6 +134,8 @@ type TaskPrivateData struct {
 	PluginState json.RawMessage `json:"plugin_state,omitempty"`
 	// PollFailures counts consecutive unrecognized or transient poll outcomes.
 	PollFailures int `json:"poll_failures,omitempty"`
+	// ConsumptionLog is a private snapshot for the existing billing projection.
+	ConsumptionLog *Log `json:"consumption_log,omitempty"`
 }
 
 // StoredTaskArtifact points to bytes owned by inference; the task remains the
@@ -215,7 +217,7 @@ func (p TaskPrivateData) Value() (driver.Value, error) {
 	if p.Key == "" && p.UpstreamTaskID == "" && p.ResultURL == "" &&
 		p.Execution == nil && p.BillingSource == "" && p.SubscriptionId == 0 &&
 		p.TokenId == 0 && p.NodeName == "" && p.BillingContext == nil &&
-		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 && len(p.StoredArtifacts) == 0 && p.ImageCompletion == nil {
+		!p.ResponsesBackground && len(p.PluginState) == 0 && p.PollFailures == 0 && len(p.StoredArtifacts) == 0 && p.ImageCompletion == nil && p.ConsumptionLog == nil {
 		return nil, nil
 	}
 	// 同 Properties.Value:string 避免 PG simple protocol 的 bytea 编码。
