@@ -116,7 +116,7 @@ func publicWildFlowArtifactMetadata(metadata map[string]any) map[string]any {
 	for _, key := range []string{
 		"codec", "bitrate", "sample_rate", "channels", "duration_ms",
 		"input_characters", "completed_characters", "segment_count", "completed_segment_count",
-		"size_bytes", "sha256", "voice", "voice_id", "voice_sha256", "voice_profile_version", "pause_processing", "pause_removed_ms", "lang", "reference_audio_mode", "width", "height", "prompt_length",
+		"size_bytes", "sha256", "voice", "voice_id", "voice_sha256", "voice_profile_version", "audio_postprocess", "pause_processing", "pause_removed_ms", "lang", "reference_audio_mode", "width", "height", "prompt_length",
 		"schema_version", "model_version_ref", "model_revision", "vibevoice_model_revision",
 		"faster_whisper_model_revision", "runtime_version_ref", "duration_seconds", "source_artifact_id",
 	} {

@@ -119,7 +119,7 @@ func WildFlowRuntimeInputArtifactIDs(modelRef string, parameters map[string]any,
 	result := []string{}
 	for _, key := range []string{"voice_id", "emotion_voice_id"} {
 		id, _ := parameters[key].(string)
-		if id == "" || id == "legacy-default-v1" || id == "wangliqun" || strings.HasPrefix(id, "official-") {
+		if id == "" || id == "legacy-default-v1" || id == "wangliqun" || id == "wangxiaozhang" || strings.HasPrefix(id, "official-") {
 			continue
 		}
 		if len(result) == 0 || result[0] != id {
