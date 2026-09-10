@@ -466,15 +466,47 @@ func TestReconcileFreeIndexTTSRecoveryWithoutGenerationOrCharge(t *testing.T) {
 				}
 			}
 			db := setupWildFlowBillingReconcilerTest(t, options...)
+			var version string
+			versionSQL := "SELECT version()"
+			if dialect == "sqlite" {
+				versionSQL = "SELECT sqlite_version()"
+			}
+			require.NoError(t, db.Raw(versionSQL).Scan(&version).Error)
+			t.Logf("database version: %s", version)
 			suffix := uuid.NewString()
 			operation := &model.WildFlowOperation{OperationID: "op-" + suffix, UserID: 987, TokenID: 986, IdempotencyKeyDigest: suffix, RequestDigest: strings.Repeat("a", 64), RequestID: "request-" + suffix,
 				ProductModelRef: WildFlowModelIndexTTS25, ModelVersionRef: "indextts-2.5@0b328234", JobID: "job-" + suffix, State: "recovery_required", SubmissionPhase: model.WildFlowSubmissionPhaseAccepted, BillingState: model.WildFlowBillingStatePending}
 			require.NoError(t, db.Create(operation).Error)
 			t.Cleanup(func() { db.Where("operation_id = ?", operation.OperationID).Delete(&model.WildFlowOperation{}) })
+			for index, variant := range []string{"other-model", "no-job", "failed", "settled", "saved"} {
+				excluded := *operation
+				excluded.ID = 0
+				excluded.OperationID += "-" + variant
+				excluded.IdempotencyKeyDigest += fmt.Sprint(index)
+				switch variant {
+				case "other-model":
+					excluded.ProductModelRef = "other-model"
+				case "no-job":
+					excluded.JobID = ""
+				case "failed":
+					excluded.State = "failed"
+				case "settled":
+					excluded.BillingState = model.WildFlowBillingStateSettled
+				case "saved":
+					excluded.State = "succeeded"
+					excluded.ResultJSON = "{}"
+				}
+				require.NoError(t, db.Create(&excluded).Error)
+				t.Cleanup(func() {
+					db.Where("operation_id = ?", excluded.OperationID).Delete(&model.WildFlowBillingLogProjectionReceipt{})
+					db.Where("operation_id = ?", excluded.OperationID).Delete(&model.WildFlowBillingLogEntry{})
+					db.Where("operation_id = ?", excluded.OperationID).Delete(&model.WildFlowOperation{})
+				})
+			}
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				require.Equal(t, http.MethodGet, r.Method)
-				require.Equal(t, "/internal/v1/jobs/"+operation.JobID, r.URL.Path)
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "/internal/v1/jobs/"+operation.JobID, r.URL.Path)
 				calls++
 				w.Header().Set("Content-Type", "application/json")
 				if calls == 1 {

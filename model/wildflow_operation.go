@@ -174,15 +174,19 @@ func StoreWildFlowOperationResult(operationID string, resultJSON string, expires
 	return result, err
 }
 
+// Free IndexTTS jobs also need GET-only result reconciliation: a saved GPU
+// result may be recovered after the public operation entered recovery_required.
+// Once its validated result is persisted it leaves this polling set.
 func ListWildFlowOperationsForBillingReconciliation(limit int) ([]*WildFlowOperation, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 	var operations []*WildFlowOperation
 	err := DB.Where(
-		"billing_state IN ? AND job_id <> ?",
-		[]string{WildFlowBillingStateReserved, WildFlowBillingStateRefunding},
-		"",
+		"job_id <> ? AND (billing_state IN ? OR (billing_state = ? AND product_model_ref = ? AND state IN ? AND (result_json = ? OR result_json IS NULL)))",
+		"", []string{WildFlowBillingStateReserved, WildFlowBillingStateRefunding},
+		WildFlowBillingStatePending, "IndexTTS-2.5",
+		[]string{"queued", "running", "cancel_requested", "recovery_required", "succeeded"}, "",
 	).
 		Order("updated_time asc, id asc").
 		Limit(limit).
