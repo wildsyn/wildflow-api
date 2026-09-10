@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -82,13 +85,20 @@ func TestStartWildFlowBillingReconcilerProcessesReservedJobsWhenConfigured(t *te
 	}, time.Second, 10*time.Millisecond)
 }
 
-func setupWildFlowBillingReconcilerTest(t *testing.T) *gorm.DB {
+func setupWildFlowBillingReconcilerTest(t *testing.T, dialects ...gorm.Dialector) *gorm.DB {
 	t.Helper()
 	previousDB := model.DB
 	previousLogDB := model.LOG_DB
 	previousRedisEnabled := common.RedisEnabled
 	common.RedisEnabled = false
-	db, err := gorm.Open(sqlite.Open("file:wildflow-reconciler-"+uuid.NewString()+"?mode=memory&cache=shared"), &gorm.Config{})
+	var dialect gorm.Dialector = sqlite.Open("file:wildflow-reconciler-" + uuid.NewString() + "?mode=memory&cache=shared")
+	if len(dialects) > 0 {
+		dialect = dialects[0]
+	}
+	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+	common.SetDatabaseTypes(common.DatabaseType(dialect.Name()), common.DatabaseType(dialect.Name()))
+	t.Cleanup(func() { common.SetDatabaseTypes(previousMain, previousLog) })
+	db, err := gorm.Open(dialect, &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.Log{}, &model.WildFlowOperation{},
@@ -438,4 +448,66 @@ func TestReconcileWildFlowBillingRecoversSourceAddressedASROnce(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&model.WildFlowBillingLogEntry{}).Count(&count).Error)
 	assert.Equal(t, int64(1), count)
+}
+
+func TestReconcileFreeIndexTTSRecoveryWithoutGenerationOrCharge(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var options []gorm.Dialector
+			if dialect != "sqlite" {
+				dsn := os.Getenv("TEST_" + strings.ToUpper(dialect) + "_DSN")
+				if dsn == "" {
+					t.Skip("optional real database DSN is unset")
+				}
+				if dialect == "mysql" {
+					options = []gorm.Dialector{mysql.Open(dsn)}
+				} else {
+					options = []gorm.Dialector{postgres.Open(dsn)}
+				}
+			}
+			db := setupWildFlowBillingReconcilerTest(t, options...)
+			suffix := uuid.NewString()
+			operation := &model.WildFlowOperation{OperationID: "op-" + suffix, UserID: 987, TokenID: 986, IdempotencyKeyDigest: suffix, RequestDigest: strings.Repeat("a", 64), RequestID: "request-" + suffix,
+				ProductModelRef: WildFlowModelIndexTTS25, ModelVersionRef: "indextts-2.5@0b328234", JobID: "job-" + suffix, State: "recovery_required", SubmissionPhase: model.WildFlowSubmissionPhaseAccepted, BillingState: model.WildFlowBillingStatePending}
+			require.NoError(t, db.Create(operation).Error)
+			t.Cleanup(func() { db.Where("operation_id = ?", operation.OperationID).Delete(&model.WildFlowOperation{}) })
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, http.MethodGet, r.Method)
+				require.Equal(t, "/internal/v1/jobs/"+operation.JobID, r.URL.Path)
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				if calls == 1 {
+					fmt.Fprintf(w, `{"job":{"id":%q,"state":"succeeded","artifacts":[]}}`, operation.JobID)
+					return
+				}
+				if calls == 2 {
+					fmt.Fprintf(w, `{"job":{"id":%q,"state":"running"}}`, operation.JobID)
+					return
+				}
+				fmt.Fprintf(w, `{"job":{"id":%q,"state":"succeeded","artifacts":[{"id":%q,"job_id":%q,"media_type":"audio/wav","size_bytes":48044,"sha256":%q,"metadata":{"codec":"pcm_s16le","sample_rate":24000,"channels":1,"duration_ms":1000,"size_bytes":48044,"sha256":%q,"lang":"zh","reference_audio_mode":"server_fixed"}}]}}`, operation.JobID, "artifact-"+suffix, operation.JobID, strings.Repeat("b", 64), strings.Repeat("b", 64))
+			}))
+			t.Cleanup(server.Close)
+			client, err := inferenceclient.New(inferenceclient.Config{BaseURL: server.URL, Token: "internal-token", Timeout: time.Second, AllowInternalHTTP: true})
+			require.NoError(t, err)
+			for _, expectedState := range []string{"recovery_required", "running", "succeeded"} {
+				processed, err := ReconcileWildFlowBillingOnce(context.Background(), client, 100)
+				require.NoError(t, err)
+				require.Equal(t, 1, processed)
+				require.NoError(t, db.Where("operation_id = ?", operation.OperationID).First(operation).Error)
+				require.Equal(t, expectedState, operation.State)
+			}
+			processed, err := ReconcileWildFlowBillingOnce(context.Background(), client, 100)
+			require.NoError(t, err)
+			require.Zero(t, processed)
+			require.Equal(t, 3, calls)
+			require.NotEmpty(t, operation.ResultJSON)
+			require.Empty(t, operation.LastErrorCode)
+			require.Equal(t, model.WildFlowBillingStatePending, operation.BillingState)
+			require.Zero(t, operation.BillingQuota)
+			var charged int64
+			require.NoError(t, db.Model(&model.WildFlowBillingLogEntry{}).Where("operation_id = ?", operation.OperationID).Count(&charged).Error)
+			require.Zero(t, charged)
+		})
+	}
 }
